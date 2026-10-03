@@ -7,10 +7,12 @@
 #   * SHA256SUMS covering every archive, generated once from the exact files
 #     that are uploaded.
 #
-# The Linux binaries are built by docker/Dockerfile.static, which fails the
-# build if the executable is not statically linked. macOS and Windows binaries
-# are built by Stack directly and are dynamically linked against their
-# platform's system libraries, which is normal there: both targets ship the
+# The Linux binaries are built by docker/Dockerfile.linux, on the oldest glibc
+# supported (2.36) and with the compiler support libraries linked statically, so
+# the result needs glibc and nothing else. It is not a fully static binary and
+# cannot be: GHC 9.10 ships ghc-bignum, ghc-prim and ghc-internal as shared
+# objects only. macOS and Windows binaries are built by Stack directly and link
+# their platform's system libraries, which is normal there: both ship the
 # runtime anyway.
 #
 # Tag and client/package.yaml version are kept in step by the version check
@@ -65,7 +67,7 @@ jobs:
           path: ui/dist
           retention-days: 1
 
-  # ─── Linux: static, one file, no shared libraries ────────────────
+  # ─── Linux: one binary, glibc only ───────────────────────────────
   linux:
     name: linux-${{ matrix.arch }}
     runs-on: ubuntu-latest
@@ -92,10 +94,10 @@ jobs:
           docker build \
             --platform "${{ matrix.platform }}" \
             --target build \
-            -f docker/Dockerfile.static \
-            -t krivostr:static \
+            -f docker/Dockerfile.linux \
+            -t krivostr:linux-build \
             .
-          cid=$(docker create krivostr:static)
+          cid=$(docker create krivostr:linux-build)
           docker cp "$cid":/out/krivostr "dist/krivostr"
           docker rm "$cid"
           chmod +x dist/krivostr
@@ -147,8 +149,12 @@ jobs:
           restore-keys: stack-macos-${{ runner.arch }}-
 
       - name: Install Stack
+        # GitHub's runners already ship Stack, and get.haskellstack.org exits 1
+        # when it finds an existing install, so only install when it is missing.
         run: |
-          curl -sSL https://get.haskellstack.org/ | sh
+          if ! command -v stack > /dev/null; then
+            curl -sSL https://get.haskellstack.org/ | sh
+          fi
           stack --version
 
       - name: Build
@@ -196,8 +202,12 @@ jobs:
           restore-keys: stack-windows-
 
       - name: Install Stack
+        # GitHub's runners already ship Stack, and get.haskellstack.org exits 1
+        # when it finds an existing install, so only install when it is missing.
         run: |
-          curl -sSL https://get.haskellstack.org/ | sh
+          if ! command -v stack > /dev/null; then
+            curl -sSL https://get.haskellstack.org/ | sh
+          fi
           stack --version
 
       - name: Build

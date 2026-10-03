@@ -8,6 +8,8 @@ import qualified Data.ByteString as BS
 import Control.Concurrent.STM
 import Control.Monad (forM_, replicateM)
 import Data.Either (isLeft, isRight)
+import Data.Aeson (eitherDecodeStrict, encode)
+import Data.Aeson.Types (parseMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
@@ -31,6 +33,7 @@ import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Key
 import Krivostr.Logging
+import Krivostr.Bridge (parseClient)
 import Krivostr.Nip.Nip01
 import Krivostr.Relay (parseUrl)
 import Krivostr.Store
@@ -190,12 +193,35 @@ main = hspec $ do
       length entries `shouldBe` 1
 
   describe "Wire" $ do
-    it "encodes REQ into a JSON array" $ do
-      let v = encodeClient (CReq "s1" [onlyKinds [1]])
-      v `shouldSatisfy` (not . null . show)
+    it "encodes REQ with the filters as trailing elements" $
+      -- The UI sends ["REQ", id, filter] and relays demand exactly that shape.
+      encode (encodeClient (CReq "s1" [onlyKinds [1]]))
+        `shouldBe` "[\"REQ\",\"s1\",{\"kinds\":[1]}]"
     it "encodes CLOSE" $ do
       let v = encodeClient (CClose "s1")
       show v `shouldContain` "CLOSE"
+
+  describe "Bridge protocol" $ do
+    let parsed :: BS.ByteString -> Maybe ClientMessage
+        parsed = either (const Nothing) (parseMaybe parseClient) . eitherDecodeStrict
+
+    it "parses the variadic REQ the UI sends" $
+      parsed "[\"REQ\",\"s1\",{\"kinds\":[1]}]"
+        `shouldBe` Just (CReq "s1" [onlyKinds [1]])
+
+    it "parses a REQ carrying several filters" $
+      parsed "[\"REQ\",\"s1\",{\"kinds\":[1]},{\"kinds\":[2]}]"
+        `shouldBe` Just (CReq "s1" [onlyKinds [1], onlyKinds [2]])
+
+    it "round-trips its own REQ encoding" $
+      parseMaybe parseClient (encodeClient (CReq "s1" [onlyKinds [1], onlyKinds [2]]))
+        `shouldBe` Just (CReq "s1" [onlyKinds [1], onlyKinds [2]])
+
+    it "rejects a REQ with no filters" $
+      parsed "[\"REQ\",\"s1\"]" `shouldBe` Nothing
+
+    it "parses CLOSE" $
+      parsed "[\"CLOSE\",\"s1\"]" `shouldBe` Just (CClose "s1")
 
   describe "Key" $ do
     it "generates distinct keys" $ do

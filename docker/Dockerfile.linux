@@ -1,22 +1,31 @@
-# ─── Static Linux binary ───────────────────────────────────────────────
-# Produces one self-contained executable with no shared-library
-# dependencies, for the release workflow to publish.
+# ─── Portable Linux binary ──────────────────────────────────────────────
+# Produces the Linux executable the release workflow publishes, and fails the
+# build if it turns out to need anything unusual at runtime.
 #
-# Alpine/musl would be the easy way to get a portable static binary, but
-# Docker Hub publishes no Alpine image for GHC 9.10, and Stackage pins
-# lts-24.61 to GHC 9.10.3. So this links glibc statically instead, and the
-# verification step below is what decides whether the artifact is usable,
-# rather than a guess.
+# Why this is not a fully static binary
+# ------------------------------------
+# `-optl-static` cannot work for GHC 9.10 on glibc. GHC 9.10 links its own
+# internals -- ghc-bignum, ghc-prim, ghc-internal -- and Stackage's bindist
+# ships those as shared objects only, with no .a to link against:
 #
-# libsecp256k1 is deliberately absent: BIP-340 is implemented in pure Haskell
-# (core/src/Krivostr/Schnorr.hs), so the only C in the build is the sqlite3
-# amalgamation that sqlite-simple compiles itself.
+#   /usr/bin/ld.bfd: cannot find -lHSghc-bignum-1.3-627a-ghc9.10.3
 #
-#   docker build -f docker/Dockerfile.static -t krivostr:static .
-#   docker build --platform linux/amd64 -f docker/Dockerfile.static .
+# Alpine/musl would sidestep this (musl has no NSS problem and no split of
+# GHC's libraries into .so-only pieces), but Docker Hub publishes no Alpine
+# image for GHC 9.10 and lts-24.61 pins 9.10.3. So: build on the oldest glibc
+# we support and link the compiler support libraries statically, which leaves
+# glibc itself as the only runtime requirement.
+#
+# The verification step below is what holds this file to its promise: it lists
+# the shared libraries the result needs, and fails if anything beyond the
+# expected glibc set shows up.
 
 FROM haskell:9.10.3-slim-bookworm AS build
 
+# Debian 12 (bookworm) ships glibc 2.36, which is the floor this binary
+# supports. libsecp256k1 is deliberately absent: BIP-340 is implemented in pure
+# Haskell (core/src/Krivostr/Schnorr.hs), so the only C in the build is the
+# sqlite3 amalgamation that sqlite-simple compiles itself.
 RUN apt-get update && apt-get install --no-install-recommends -y \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -32,21 +41,37 @@ RUN stack build --only-dependencies
 
 # --copy-bins puts the executable at /out/krivostr.
 #
-#   -optl-static       links glibc statically, so the result needs nothing
-#                      installed to run.
-#   -optl-fuse-ld=bfd  Debian's gcc defaults to ld.gold, which cannot link a
-#                      static glibc: libc.a is built with TLS relocations that
-#                      gold rejects with "unsupported reloc ... in non-static
-#                      TLSLE mode". bfd handles them.
+#   -optl-static-libgcc      no libgcc_s.so.1 at runtime
+#   -optl-static-libstdc++   no libstdc++.so.6 at runtime
+#
+# What is deliberately *not* passed: -optl-static, which cannot link GHC 9.10's
+# own shared-only libraries, and -optl-fuse-ld=bfd, which is only needed to
+# work around ld.gold's refusal to link a static glibc at all.
 RUN stack build --copy-bins --local-bin-path /out \
-      --ghc-options "-optl-static -optl-fuse-ld=bfd"
+      --ghc-options "-optl-static-libgcc -optl-static-libstdc++"
 
-# Fail the build here rather than in a user's hands: a binary that still has
-# shared-library dependencies is not the artifact this file promises.
-RUN ldd /out/krivostr 2>&1 | tee /tmp/ldd.txt; \
-    if grep -q "=>" /tmp/ldd.txt; then \
-      echo "::error::binary is not statically linked"; exit 1; \
+# Report the runtime dependencies, and fail on anything unexpected.
+#
+# Expected, and present on any glibc distribution worth the name:
+#   libc, libm         the C runtime and the resolver
+#   libdl, libpthread  separate files on glibc older than 2.34
+#   libgmp             GHC's Integer arithmetic
+#   libz               pulled in by the compression libraries in the dependency
+#                      set
+# Anything outside that list means the binary has picked up a dependency the
+# release notes would not mention.
+RUN set -eu; \
+    ldd /out/krivostr | tee /tmp/ldd.txt; \
+    if grep "=>" /tmp/ldd.txt \
+       | grep -vE "libc\.so|libm\.so|libdl\.so|libpthread\.so|libgmp\.so|libz\.so|ld-linux|ld64"; then \
+      echo "::error::binary depends on libraries this file does not expect"; \
+      exit 1; \
     fi; \
+    if grep -q "not a dynamic executable" /tmp/ldd.txt; then \
+      echo "::error::binary came out fully static: update the release notes, not the check"; \
+      exit 1; \
+    fi; \
+    /out/krivostr --version; \
     /out/krivostr --help > /dev/null
 
 FROM scratch AS artifact

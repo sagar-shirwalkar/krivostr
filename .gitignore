@@ -25,3 +25,6 @@ docker/.env
 # Env
 .env
 .env.local
+
+# AI
+.agents/

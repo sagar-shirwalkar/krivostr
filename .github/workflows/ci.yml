@@ -32,10 +32,12 @@ jobs:
           restore-keys: stack-${{ runner.os }}-
 
       - name: Install Stack
-        # No action for this: Stack's own installer pins the tool, and
-        # stack.yaml decides which GHC it then downloads.
+        # GitHub's runners already ship Stack, and get.haskellstack.org exits 1
+        # when it finds an existing install, so only install when it is missing.
         run: |
-          curl -sSL https://get.haskellstack.org/ | sh
+          if ! command -v stack > /dev/null; then
+            curl -sSL https://get.haskellstack.org/ | sh
+          fi
           stack --version
 
       - name: Test
@@ -83,6 +85,13 @@ jobs:
       - name: Typecheck and build
         working-directory: ui
         run: pnpm build
+
+      - name: Install Chromium for the browser tests
+        working-directory: ui
+        # The component tests run in a real Chromium through Playwright, and
+        # `pnpm install` fetches the driver, not the browser: without this the
+        # run fails with "Executable doesn't exist at .../chrome-headless-shell".
+        run: pnpm exec playwright install --with-deps chromium
 
       - name: Test
         working-directory: ui

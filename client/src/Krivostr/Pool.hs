@@ -12,6 +12,8 @@ import Control.Concurrent.STM
 import Control.Concurrent.Async
 import Control.Exception (SomeException, try)
 import Control.Monad (forM_, forever)
+import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Map.Strict as M
@@ -102,6 +104,10 @@ drain p rh = forever $ do
 broadcast :: Pool -> ClientMessage -> IO ()
 broadcast p cm = do
   relays <- readTVarIO (plRelays p)
+  -- What went out, in the form the relay saw it: when a relay answers "bad
+  -- req", the only way to tell whether it is our filter or our framing is to
+  -- read the frame that was actually sent.
+  emit (plLogger p) Debug ("relay <- " <> T.pack (BL.unpack (Aeson.encode (encodeClient cm))))
   forM_ (M.elems relays) $ \e -> sendClient (peRelay e) cm
 
 subscribe :: Pool -> Text -> [Krivostr.Filter.Filter] -> IO ()

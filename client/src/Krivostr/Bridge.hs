@@ -13,6 +13,7 @@
 module Krivostr.Bridge
   ( runBridge
   , BridgeConfig(..)
+  , parseClient
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -75,9 +76,6 @@ runBridge lg cfg store = do
   clients <- newTVarIO M.empty
   nextId  <- newTVarIO 0
   pool    <- newPool lg (onUpstreamEvent lg clients store)
-  forM_ (bcUpstreams cfg) (addRelay pool)
-  emit lg Info
-    ("bridge: " <> T.pack (show (length (bcUpstreams cfg))) <> " upstream relays")
   let bst = BridgeState lg pool store clients nextId
 
   -- Background GC thread: evict expired events every hour.
@@ -85,12 +83,19 @@ runBridge lg cfg store = do
     threadDelay (60 * 60 * 1000000)
     void $ evictExpired store
 
-  -- Background reconnect thread: 'addRelay' skips relays that are already
-  -- connected, so re-offering the upstream set every half minute brings back
-  -- any that were unreachable at startup or have since dropped.
+  -- Background relay thread: connect the upstream set now, then re-offer it
+  -- every half minute. 'addRelay' skips relays that are already connected, so
+  -- the repeat brings back any that were unreachable or have since dropped.
+  --
+  -- This runs in the background on purpose. Connecting first meant a relay on a
+  -- network that blackholes packets delayed the point where the HTTP listener
+  -- started, so a bridge with one unreachable relay could sit silent instead of
+  -- serving the UI and reporting the relay as unavailable.
   _ <- async $ forever $ do
-    threadDelay (30 * 1000000)
     forM_ (bcUpstreams cfg) (addRelay pool)
+    threadDelay (30 * 1000000)
+  emit lg Info
+    ("bridge: " <> T.pack (show (length (bcUpstreams cfg))) <> " upstream relays")
 
   let settings =
         setPort (bcPort cfg)
@@ -247,11 +252,15 @@ dedupe = go mempty
       | otherwise          = e : go (evId e : seen) es
 
 -- | Parse a client message into our ADT. Mirrors @decodeRelay@.
+--
+-- Subscriptions are variadic, @[\"REQ\", <subscription_id>, <filter>, ...]@, so
+-- every element after the subscription id is a filter. A REQ with no filters
+-- carries no subscription at all and is rejected.
 parseClient :: Value -> Parser ClientMessage
 parseClient = withArray "ClientMessage" $ \arr -> case toList arr of
-  [String "EVENT", ev]           -> CEvent <$> parseJSON ev
-  [String "REQ", String sid, fs] -> CReq sid <$> parseJSON fs
-  [String "CLOSE", String sid]   -> pure (CClose sid)
-  _                             -> fail "unknown"
+  [String "EVENT", ev]                        -> CEvent <$> parseJSON ev
+  (String "REQ" : String sid : fs@(_:_))      -> CReq sid <$> traverse parseJSON fs
+  [String "CLOSE", String sid]                -> pure (CClose sid)
+  _                                          -> fail "unknown"
   where
     toList = foldr (:) []

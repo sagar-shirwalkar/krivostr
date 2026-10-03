@@ -286,9 +286,15 @@ main = hspec $ do
       map leMsg entries `shouldBe` ["visible"]
 
   describe "Wire" $ do
-    it "encodes a REQ message" $ do
+    it "encodes a REQ with the filters as trailing elements" $
+      -- NIP-01: ["REQ", <subscription_id>, <filters1>, ...]. Relays reject a
+      -- nested filter array, so this exact shape is part of the contract.
       BL.toStrict (encode (encodeClient (CReq "s1" [onlyKinds [1]])))
-        `shouldSatisfy` BS.isPrefixOf "[\"REQ\",\"s1\""
+        `shouldBe` "[\"REQ\",\"s1\",{\"kinds\":[1]}]"
+
+    it "encodes every filter of a multi-filter REQ separately" $
+      BL.toStrict (encode (encodeClient (CReq "s1" [onlyKinds [1], onlyKinds [2]])))
+        `shouldBe` "[\"REQ\",\"s1\",{\"kinds\":[1]},{\"kinds\":[2]}]"
 
     it "encodes a CLOSE message" $
       BL.toStrict (encode (encodeClient (CClose "s1")))

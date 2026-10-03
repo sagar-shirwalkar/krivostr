@@ -1,4 +1,4 @@
-.PHONY: all build build-backend build-ui static test test-backend test-ui \
+.PHONY: all build build-backend build-ui linux-binary test test-backend test-ui \
         test-ui-browser coverage coverage-backend coverage-ui docker docker-down \
         verify-version clean
 
@@ -18,12 +18,13 @@ build-backend:
 build-ui:
 	cd ui && pnpm install --frozen-lockfile && pnpm build
 
-# One statically linked Linux executable, built and checked inside Docker so the
-# result is the same on a laptop and on a release runner.
-static:
-	docker build -f docker/Dockerfile.static --target build -t krivostr:static .
+# The Linux release binary, built and checked inside Docker so the result is
+# the same on a laptop and on a release runner. Depends on glibc alone; see
+# docker/Dockerfile.linux for why it is not fully static.
+linux-binary:
+	docker build -f docker/Dockerfile.linux --target build -t krivostr:linux-build .
 	mkdir -p dist
-	cid=$$(docker create krivostr:static); \
+	cid=$$(docker create krivostr:linux-build); \
 	  docker cp "$$cid":/out/krivostr dist/krivostr; \
 	  docker rm "$$cid" > /dev/null; \
 	  chmod +x dist/krivostr; \
@@ -37,8 +38,15 @@ test-backend:
 
 # Unit and browser are separate vitest projects; running only `pnpm test` left
 # the 15 browser tests (real WebSocket relay behaviour) unrun.
+#
+# `pnpm install` fetches the Playwright driver, not the browser, so the install
+# step is here too: without it a fresh clone fails with "Executable doesn't
+# exist at .../chrome-headless-shell". Add --with-deps on CI, where the system
+# libraries are missing too and sudo is available.
 test-ui:
-	cd ui && pnpm install --frozen-lockfile && pnpm test && pnpm test:browser
+	cd ui && pnpm install --frozen-lockfile \
+	  && pnpm exec playwright install chromium \
+	  && pnpm test && pnpm test:browser
 
 test-ui-browser:
 	cd ui && pnpm test:browser

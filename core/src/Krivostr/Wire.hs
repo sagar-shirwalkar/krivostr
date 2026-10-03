@@ -26,9 +26,15 @@ data RelayMessage
   | RClosed Text Text
   deriving (Show, Eq)
 
+-- | Encode an outgoing client message.
+--
+-- NIP-01 spells a subscription @[\"REQ\", <subscription_id>, <filters1>,
+-- <filters2>, ...]@: the filters are trailing elements of the message array,
+-- not one nested array. Relays answer the nested spelling with @provided
+-- filter is not an object@, so the variadic form is what goes on the wire.
 encodeClient :: ClientMessage -> Value
 encodeClient (CEvent e)     = toJSON (["EVENT", toJSON e] :: [Value])
-encodeClient (CReq sid fs)  = toJSON (["REQ", toJSON sid, toJSON fs] :: [Value])
+encodeClient (CReq sid fs)  = toJSON (["REQ", toJSON sid] ++ map toJSON fs)
 encodeClient (CClose sid)   = toJSON (["CLOSE", toJSON sid] :: [Value])
 
 decodeRelay :: Value -> Parser RelayMessage
