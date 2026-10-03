@@ -31,19 +31,35 @@ canonicalBytes e = BS.concat
   , ","
   , TE.encodeUtf8 (tagsJson (evTags e))
   , ",\""
-  , escapeJson (evContent e)
+  , TE.encodeUtf8 (escapeJson (evContent e))
   , "\"]"
   ]
   where
     tagsJson :: [[Text]] -> Text
     tagsJson = TE.decodeUtf8 . BL.toStrict . encode
+
+    -- | NIP-01 requires the standard JSON escapes for @"@, \\ and every
+    -- control character in U+0000-U+001F. The previous version only handled
+    -- \\n, \\r and \\t, so any content containing e.g. NUL or a form feed
+    -- produced a different serialization -- and therefore a different event id
+    -- and an unverifiable signature -- from every other Nostr implementation.
     escapeJson :: Text -> Text
-    escapeJson =
-        T.replace "\n" "\\n"
-      . T.replace "\r" "\\r"
-      . T.replace "\t" "\\t"
-      . T.replace "\"" "\\\""
-      . T.replace "\\" "\\\\"
+    escapeJson = T.concatMap escape
+      where
+        escape c = case c of
+          '"' -> "\\\""
+          '\\' -> "\\\\"
+          '\b' -> "\\b"
+          '\f' -> "\\f"
+          '\n' -> "\\n"
+          '\r' -> "\\r"
+          '\t' -> "\\t"
+          _
+            | c < ' ' ->
+                let n = fromEnum c
+                    hex = T.pack [("0123456789abcdef" !! (n `div` 16)), ("0123456789abcdef" !! (n `mod` 16))]
+                in T.pack ['\\', 'u', '0', '0', T.index hex 0, T.index hex 1]
+            | otherwise -> T.singleton c
 
 computeEventId :: Event -> Text
 computeEventId = TE.decodeUtf8 . B16.encode . hash . canonicalBytes
@@ -65,9 +81,12 @@ verifyEvent :: Event -> Bool
 verifyEvent e =
   computeEventId e == evId e && sigOk
   where
-    sigOk = case (B16.decode (TE.encodeUtf8 (evSig e)),
-                    B16.decode (TE.encodeUtf8 (evPubkey e))) of
+    sigOk =
+      case ( B16.decode (TE.encodeUtf8 (evSig e))
+           , B16.decode (TE.encodeUtf8 (evPubkey e)) ) of
         (Right sig, Right pkBytes) ->
-        maybe False (\pk -> verifySchnorr pk (hash (canonicalBytes e)) sig)
-                    (publicKeyFromBytes pkBytes)
+          maybe
+            False
+            (\pk -> verifySchnorr pk (hash (canonicalBytes e)) sig)
+            (publicKeyFromBytes pkBytes)
         _ -> False

@@ -4,7 +4,7 @@ import { Signer } from '../nostr/signer';
 
 @customElement('nostr-compose')
 export class NostrCompose extends LitElement {
-  static styles = css`
+  static override styles = css`
     :host { display: block; margin-bottom: var(--s-6); }
     form {
       display: flex;
@@ -75,7 +75,7 @@ export class NostrCompose extends LitElement {
     this.text = '';
   }
 
-  render() {
+  override render() {
     const disabled = !this.text.trim() || !this.signer;
     return html`
       <form @submit=${this.submit}>

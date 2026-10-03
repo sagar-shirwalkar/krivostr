@@ -11,8 +11,8 @@
  * a drop-in replacement at the transport layer.
  */
 
-import { NostrEvent, parseEvent } from './event';
-import { FilterSpec, toWire } from './filter';
+import { parseEvent } from './event';
+import { toWire } from './filter';
 import { RelayHandle, RelayState, RelayHandlers } from './relay';
 
 export const BRIDGE_URL = (() => {

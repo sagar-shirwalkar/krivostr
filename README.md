@@ -1,6 +1,6 @@
 # krivostr
 
-[![Haskell](https://img.shields.io/badge/Haskell-9.14.1-5e5086?style=for-the-badge&label=Haskell&labelColor=gray&logo=haskell&logoColor=white)](https://haskell.org)
+[![Haskell](https://img.shields.io/badge/Haskell-9.10.3-5e5086?style=for-the-badge&label=Haskell&labelColor=gray&logo=haskell&logoColor=white)](https://haskell.org)
 [![Lit](https://img.shields.io/badge/Lit-3.3.3-324fff?style=for-the-badge&label=Lit&labelColor=gray&logo=lit&logoColor=white)](https://lit.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?style=for-the-badge&label=TypeScript&labelColor=gray&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
@@ -64,8 +64,8 @@ evaluated by pure reduction, with effects quarantined at the boundary.
 
 ## Quick start
 
-**Prerequisites:** GHC 9.14.1, Cabal 3.18.1.0, Stack 3.11.1, Node 22+, pnpm 9+,
-Docker (optional).
+**Prerequisites:** GHC 9.10.3 (pinned by Stack via `lts-24.61`), Stack 3.11.1,
+Node 22+, pnpm 9+, Docker (optional).
 
 ```bash
 git clone https://github.com/yourhandle/krivostr

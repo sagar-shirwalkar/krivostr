@@ -1,5 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+
+-- | Nostr key material: BIP-340 x-only public keys, plus NIP-19 @nsec@ and
+-- @npub@ encoding.
+--
+-- 'PublicKey' is the x-only field element (32 bytes), not a compressed point,
+-- so a key that arrives via @importNpub@, via @nprofile@ or via a NIP-01
+-- event's @pubkey@ field is byte-for-byte the same value as one derived from
+-- a private key. Previously keys were stored as compressed points and the
+-- leading @0x02@ was dropped in some paths but re-attached in others, which is
+-- what made derived and imported keys disagree.
 module Krivostr.Key
   ( PrivateKey
   , PublicKey
@@ -11,108 +21,153 @@ module Krivostr.Key
   , exportHex
   , pubKeyHex
   , pubKeyBytes
+  , publicKeyFromBytes
   , exportNsec
   , exportNpub
   , importNsec
   , importNpub
   ) where
 
+import Codec.Binary.Bech32
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as B16
 import Data.Text (Text)
-import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Crypto.Secp256k1
-import System.IO.Unsafe (unsafePerformIO)
-import Codec.Binary.Bech32
-import Codec.Binary.Bech32.TH
-import Data.Maybe (fromMaybe)
+import Krivostr.Schnorr
+import System.IO (IOMode(ReadMode), withBinaryFile)
 
-newtype PrivateKey = PrivateKey SecKey
+-- | A secret scalar, always in @[1, groupOrder)@.
+newtype PrivateKey = PrivateKey Integer
   deriving (Show, Eq)
 
-newtype PublicKey = PublicKey PubKey
+-- | A BIP-340 x-only public key: a field element in @[0, p)@ that lifts to a
+-- curve point.
+newtype PublicKey = PublicKey Integer
   deriving (Show, Eq)
 
+-- | Draw a uniformly random secret scalar.
+--
+-- This is the only impure function in the pure core. It reads 32 bytes from
+-- the operating system's CSPRNG rather than pulling in a dependency, and
+-- rejection-samples until the scalar lands in range.
 generatePrivateKey :: IO PrivateKey
-generatePrivateKey = PrivateKey <$> secKeyGen
+generatePrivateKey = do
+  bytes <- withBinaryFile "/dev/urandom" ReadMode $ \h -> BS.hGet h 32
+  let d = intFromBytes' bytes
+  if isValidSecret d
+    then pure (PrivateKey d)
+    else generatePrivateKey
+
+-- | Big-endian encoding of an integer in exactly 32 bytes.
+bytes32 :: Integer -> BS.ByteString
+bytes32 n =
+  BS.pack
+    [ fromIntegral (n `div` (256 ^ i) `mod` 256)
+    | i <- reverse ([0 .. 31] :: [Int])
+    ]
+
+intFromBytes' :: BS.ByteString -> Integer
+intFromBytes' = BS.foldl' (\acc w -> acc * 256 + fromIntegral w) 0
+
+-- | Drop a private key to its 32-byte big-endian secret.
+privateKeyBytes :: PrivateKey -> BS.ByteString
+privateKeyBytes (PrivateKey d) = bytes32 d
 
 derivePublicKey :: PrivateKey -> PublicKey
-derivePublicKey (PrivateKey sk) =
-  let PubKey bytes = derivePubKey sk
-  in PublicKey (PubKey (BS.drop 1 bytes))
+derivePublicKey (PrivateKey d) =
+  case publicKeyX d of
+    Nothing -> PublicKey 0
+    Just x -> PublicKey x
 
 pubKeyBytes :: PublicKey -> BS.ByteString
-pubKeyBytes (PublicKey (PubKey bs)) = bs
+pubKeyBytes (PublicKey x) = bytes32 x
 
 pubKeyHex :: PublicKey -> Text
 pubKeyHex = TE.decodeUtf8 . B16.encode . pubKeyBytes
 
+-- | Parse a 32-byte x-only key. Fails if the bytes are not a valid length or
+-- do not lift to a curve point.
+publicKeyFromBytes :: BS.ByteString -> Maybe PublicKey
+publicKeyFromBytes bs
+  | BS.length bs /= 32 = Nothing
+  | otherwise =
+      let x = intFromBytes' bs
+      in if x < fieldPrime && maybe False (const True) (liftX x)
+           then Just (PublicKey x)
+           else Nothing
+
+-- | Schnorr-sign a 32-byte message. Pure and deterministic: BIP-340 permits
+-- zero auxiliary randomness, and a deterministic core keeps events
+-- reproducible.
 signSchnorr :: PrivateKey -> BS.ByteString -> BS.ByteString
-signSchnorr (PrivateKey sk) msg = unsafePerformIO $ do
-  sig <- schnorrSignMsg sk msg
-  pure (exportSig sig)
-{-# NOINLINE signSchnorr #-}
+signSchnorr sk msg =
+  case signBip340 (privateScalar sk) (BS.replicate 32 0) msg of
+    Right sig -> sig
+    Left _ -> BS.replicate 64 0
 
 verifySchnorr :: PublicKey -> BS.ByteString -> BS.ByteString -> Bool
-verifySchnorr pk msg sigBytes =
-  case importSig sigBytes of
-    Nothing -> False
-    Just sig ->
-      let xonly = pubKeyBytes pk
-          pkFull = fromMaybe (PubKey BS.empty) (importPubKey (BS.cons 0x02 xonly))
-      in schnorrVerify sig pkFull msg
+verifySchnorr (PublicKey x) msg sig = verifyBip340 x msg sig
+
+privateScalar :: PrivateKey -> Integer
+privateScalar (PrivateKey d) = d
 
 importHex :: Text -> Either String PrivateKey
 importHex t =
   case B16.decode (TE.encodeUtf8 t) of
-    Left e   -> Left e
-    Right bs -> case secKeyImport bs of
-      Nothing -> Left "invalid secp256k1 secret key"
-      Just sk -> Right (PrivateKey sk)
+    Left e -> Left e
+    Right bs
+      | BS.length bs /= 32 -> Left "secret key must be 32 bytes"
+      | isValidSecret d -> Right (PrivateKey d)
+      | otherwise -> Left "invalid secp256k1 secret key"
+      where
+        d = intFromBytes' bs
 
 exportHex :: PrivateKey -> Text
-exportHex (PrivateKey sk) = TE.decodeUtf8 (B16.encode (exportSecKey sk))
+exportHex = TE.decodeUtf8 . B16.encode . privateKeyBytes
 
--- | nsec bech32 (BIP-173).
+-- | Bech32 with an arbitrary-length payload.
+--
+-- 'Codec.Binary.Bech32.encode' and 'decode' enforce BIP-173's 90-character
+-- ceiling, which is a segwit-address rule and has no business applying to
+-- NIP-19: a single-relay @nprofile@ is already 97 characters. The @Lenient@
+-- variants enforce only the minimum length.
+encodeNip19 :: Text -> BS.ByteString -> Text
+encodeNip19 hrp payload =
+  case humanReadablePartFromText hrp of
+    Left _ -> ""
+    Right h -> encodeLenient h (dataPartFromBytes payload)
+
+decodeNip19 :: Text -> Either String (Text, BS.ByteString)
+decodeNip19 t =
+  case decodeLenient t of
+    Left e -> Left (show e)
+    Right (h, dp) ->
+      case dataPartToBytes dp of
+        Nothing -> Left "bech32 payload is not whole bytes"
+        Just bs -> Right (humanReadablePartToText h, bs)
+
+-- | @nsec@ bech32.
 exportNsec :: PrivateKey -> Text
-exportNsec (PrivateKey sk) =
-  let bytes = exportSecKey sk
-      dp    = dataPartFromBytes bytes
-  in case encode (humanReadablePartToText [nsecHrp|nsec|]) dp of
-       Left _  -> ""
-       Right t -> t
+exportNsec = encodeNip19 "nsec" . privateKeyBytes
 
--- | npub bech32.
+-- | @npub@ bech32.
 exportNpub :: PublicKey -> Text
-exportNpub pk =
-  let bytes = pubKeyBytes pk
-      dp    = dataPartFromBytes bytes
-  in case encode (humanReadablePartToText [npubHrp|npub|]) dp of
-       Left _  -> ""
-       Right t -> t
+exportNpub = encodeNip19 "npub" . pubKeyBytes
 
 importNsec :: Text -> Either String PrivateKey
-importNsec t = case decode t of
-  Left e -> Left (show e)
-  Right (hrp, dp) | humanReadablePartToText hrp == "nsec" ->
-    let bs = dataPartToBytes dp
-    in case secKeyImport bs of
-         Nothing -> Left "bad nsec"
-         Just sk -> Right (PrivateKey sk)
-  _ -> Left "wrong hrp"
+importNsec t = case decodeNip19 t of
+  Left e -> Left e
+  Right (hrp, bs)
+    | hrp == "nsec" -> importHex (TE.decodeUtf8 (B16.encode bs))
+    | otherwise -> Left "wrong hrp"
 
+-- | Decode an @npub@ into a 32-byte x-only key.
 importNpub :: Text -> Either String PublicKey
-importNpub t = case decode t of
-  Left e -> Left (show e)
-  Right (hrp, dp) | humanReadablePartToText hrp == "npub" ->
-    let bs = dataPartToBytes dp
-        pk = PubKey (BS.cons 0x02 bs)
-    in Right (PublicKey pk)
-  _ -> Left "wrong hrp"
-
-  publicKeyFromBytes :: BS.ByteString -> Maybe PublicKey
-  publicKeyFromBytes bs = do
-    full <- importPubKey (BS.cons 0x02 bs)
-    let PubKey raw = full
-    pure (PublicKey (PubKey (BS.drop 1 raw)))
+importNpub t = case decodeNip19 t of
+  Left e -> Left e
+  Right (hrp, bs)
+    | hrp == "npub" ->
+        case publicKeyFromBytes bs of
+          Nothing -> Left "npub is not a valid x-only public key"
+          Just pk -> Right pk
+    | otherwise -> Left "wrong hrp"

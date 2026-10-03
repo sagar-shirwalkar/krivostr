@@ -17,6 +17,7 @@ dependencies:
   - async
   - wuss
   - websockets
+  - network
   - monad-logger
   - warp
   - wai
@@ -42,11 +43,12 @@ executables:
 
 tests:
   spec:
-    type: exitcode-stdio-1.0
     main: Spec.hs
-    source-dirs: test
+    # There is no library component, so the client modules are compiled into the
+    # test suite directly. Depending on `krivostr-client` here failed configure
+    # with "missing or private dependencies" because only an exe is exposed.
+    source-dirs: [test, src]
     dependencies:
-      - krivostr-client
       - krivostr-core
       - hspec
       - QuickCheck

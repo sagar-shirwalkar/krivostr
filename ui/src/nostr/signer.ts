@@ -172,17 +172,18 @@ export const nip46Signer = async (
     // Sign with our local key so the bunker can authenticate us.
     const signed = await localSigner(localSecret).signEvent(ev);
     if (signed._tag === 'Err') return Err(signed.error);
-    handle.publish(signed.value);
 
-    return new Promise<Result<string, string>>((resolve) => {
+    // Register the waiter *before* publishing. A bunker can answer before
+    // `publish` returns, and with the old ordering the reply found no entry in
+    // `pending`, was dropped, and the caller sat there until the 30s timeout.
+    const result = new Promise<Result<string, string>>((resolve) => {
       pending.set(id, resolve);
       setTimeout(() => {
-        if (pending.has(id)) {
-          pending.delete(id);
-          resolve(Err('nip46 timeout'));
-        }
+        if (pending.delete(id)) resolve(Err('nip46 timeout'));
       }, 30_000);
     });
+    handle.publish(signed.value);
+    return result;
   };
 
   return {

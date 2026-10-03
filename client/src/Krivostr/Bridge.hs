@@ -1,31 +1,44 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+
+-- | The bridge: an HTTP static file server plus a @\/ws@ WebSocket endpoint.
+--
+-- Two things were wrong here before. 'runBridge' wrote @app@ with an 'Application'
+-- arity while calling 'websocketsOr' with a 'ServerApp' arity, so it did not
+-- compile. More importantly, events arriving from upstream relays were only
+-- written to the store: nothing was ever pushed to the browser clients that
+-- had actually sent the REQ, so a subscription delivered its cached events and
+-- its EOSE and then stayed silent forever. Upstream events now fan out to every
+-- client whose subscriptions match.
 module Krivostr.Bridge
   ( runBridge
   , BridgeConfig(..)
   ) where
 
-import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.Async (async)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
-import Control.Monad (forever, forM_, unless, void, when)
-import Data.Aeson
-import Data.Aeson.Types (parseMaybe)
+import Control.Exception (SomeException, finally, try)
+import Control.Monad (forever, forM_, void, when)
+import Data.Aeson (Value (String), encode, eitherDecode, parseJSON, toJSON, withArray)
 import qualified Data.ByteString.Lazy as BL
+import Data.Aeson.Types (Parser, parseMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import qualified Data.Map.Strict as M
-import Network.HTTP.Types (status200)
+import Network.HTTP.Types (status400)
 import Network.Wai
-import Network.Wai.Handler.Warp (runSettings, setPort, setBeforeMainLoop, defaultSettings)
-import Network.Wai.Application.Static (staticApp, defaultWebAppSettings)
+import Network.Wai.Handler.Warp
+  ( defaultSettings
+  , runSettings
+  , setBeforeMainLoop
+  , setPort
+  )
+import Network.Wai.Application.Static (defaultWebAppSettings, staticApp)
 import Network.Wai.Handler.WebSockets (websocketsOr)
 import Network.WebSockets
-import System.FilePath ((</>))
-import Krivostr.Event
-import Krivostr.Filter
+import Krivostr.Event (Event, evId)
+import qualified Krivostr.Filter as Filter
 import Krivostr.Logging
 import Krivostr.Pool
 import Krivostr.Store
@@ -37,110 +50,190 @@ data BridgeConfig = BridgeConfig
   , bcUpstreams :: ![Text]
   }
 
+-- | Everything one connected browser client owns.
+data ClientState = ClientState
+  { csId     :: !Int
+  , csOutbox :: !(TQueue Value)
+  -- | Subscription id to that subscription's filters. A REQ may carry several
+  -- filters and the event matches if it matches any of them, so this holds a
+  -- list rather than the single filter the old code kept.
+  , csSubs   :: !(TVar (M.Map Text [Filter.Filter]))
+  }
+
+data BridgeState = BridgeState
+  { bsLogger  :: !Logger
+  , bsPool    :: !Pool
+  , bsStore   :: !Store
+  , bsClients :: !(TVar (M.Map Int ClientState))
+  , bsNextId  :: !(TVar Int)
+  }
+
 -- | Run the bridge: HTTP static file server + /ws WebSocket endpoint.
 runBridge :: Logger -> BridgeConfig -> Store -> IO ()
 runBridge lg cfg store = do
-  pool <- newPool lg (onUpstreamEvent lg store)
+  clients <- newTVarIO M.empty
+  nextId  <- newTVarIO 0
+  pool    <- newPool lg (onUpstreamEvent lg clients store)
   forM_ (bcUpstreams cfg) (addRelay pool)
-  emit lg Info ("bridge: " <> T.pack (show (length (bcUpstreams cfg)))
-                <> " upstream relays")
+  emit lg Info
+    ("bridge: " <> T.pack (show (length (bcUpstreams cfg))) <> " upstream relays")
+  let bst = BridgeState lg pool store clients nextId
 
   -- Background GC thread: evict expired events every hour.
   _ <- async $ forever $ do
     threadDelay (60 * 60 * 1000000)
     void $ evictExpired store
 
-  let settings = setPort (bcPort cfg)
-               $ setBeforeMainLoop (emit lg Info
-                   ("bridge: listening on :" <> T.pack (show (bcPort cfg))))
-               $ defaultSettings
+  let settings =
+        setPort (bcPort cfg)
+          $ setBeforeMainLoop
+              (emit lg Info ("bridge: listening on :" <> T.pack (show (bcPort cfg))))
+          $ defaultSettings
 
-  runSettings settings (app pool store)
+  runSettings settings (app bst cfg)
   where
-    app pool store' req respond
+    -- 'websocketsOr' is a 'Middleware': it upgrades matching requests and hands
+    -- everything else to the fallback 'Application'.
+    app :: BridgeState -> BridgeConfig -> Application
+    app bst' cfg' =
+      websocketsOr
+        defaultConnectionOptions
+        (wsApp bst')
+        (fallback cfg')
+    fallback cfg' req respond
       | pathInfo req == ["ws"] =
-          websocketsOr defaultConnectionOptions (wsApp pool store') (const (respond (responseLBS status200 [] "upgrade required"))) req
+          respond (responseLBS status400 [] "expected a websocket upgrade")
       | otherwise =
-          staticApp (defaultWebAppSettings (bcStaticDir cfg)) req respond
+          staticApp (defaultWebAppSettings (bcStaticDir cfg')) req respond
 
--- | Wire a single WebSocket client.
-wsApp :: Pool -> Store -> ServerApp
-wsApp pool store pending = do
+-- | Wire a single WebSocket client. Registers it for upstream fan-out, serves
+-- its requests until the socket dies, then unregisters it and stops its writer.
+wsApp :: BridgeState -> ServerApp
+wsApp bst pending = do
   conn <- acceptRequest pending
-  subs <- newTVarIO (M.empty :: M.Map Text Filter)
-  -- Per-client outbound queue drained by a writer thread.
+  cid <- atomically $ do
+    n <- readTVar (bsNextId bst)
+    writeTVar (bsNextId bst) (n + 1)
+    pure n
   outbox <- newTQueueIO
-  _ <- async (writerLoop conn outbox)
-  readerLoop pool store subs outbox conn
+  subs   <- newTVarIO M.empty
+  let cs = ClientState cid outbox subs
+  atomically $ modifyTVar' (bsClients bst) (M.insert cid cs)
+  writer <- async (writerLoop (bsLogger bst) cid conn outbox)
+  emit (bsLogger bst) Debug ("bridge: client " <> T.pack (show cid) <> " connected")
+  let cleanup = do
+        cancel writer
+        atomically $ modifyTVar' (bsClients bst) (M.delete cid)
+  flip finally cleanup $ readerLoop bst cs conn
 
-writerLoop :: Connection -> TQueue Value -> IO ()
-writerLoop conn q = forever $ do
-  v <- atomically $ readTQueue q
-  sendTextData conn (BL.toStrict (encode v))
+writerLoop :: Logger -> Int -> Connection -> TQueue Value -> IO ()
+writerLoop lg cid conn q = loop
+  where
+    loop = do
+      v <- atomically $ readTQueue q
+      outcome <-
+        try (sendTextData conn (encode v)) :: IO (Either SomeException ())
+      case outcome of
+        -- The client is gone; the reader thread is what notices, so just stop.
+        Left err -> emit lg Debug
+          ("bridge: client " <> T.pack (show cid) <> " write failed: " <> T.pack (show err))
+        Right () -> loop
+
+readerLoop :: BridgeState -> ClientState -> Connection -> IO ()
+readerLoop bst cs conn = loop
+  where
+    lg = bsLogger bst
+    loop = do
+      outcome <-
+        try (receiveData conn) :: IO (Either SomeException BL.ByteString)
+      case outcome of
+        Left err -> emit lg Debug
+          ("bridge: client " <> T.pack (show (csId cs)) <> " read ended: " <> T.pack (show err))
+        Right raw -> case eitherDecode raw of
+          Left err -> enqueue (csOutbox cs) (noticeMsg ("invalid json: " <> T.pack err))
+          Right v -> handleClientMsg bst cs v >> loop
 
 enqueue :: TQueue Value -> Value -> IO ()
 enqueue q v = atomically $ writeTQueue q v
 
-readerLoop
-  :: Pool
-  -> Store
-  -> TVar (M.Map Text Filter)
-  -> TQueue Value
-  -> Connection
-  -> IO ()
-readerLoop pool store subs outbox conn = do
-  r <- try (forever $ do
-    raw <- receiveData conn
-    case eitherDecode (BL.fromStrict raw) of
-      Left err -> enqueue outbox (toJSON (["NOTICE", String (T.pack err)] :: [Value]))
-      Right v  -> handleClientMsg pool store subs outbox v)
-  case r of
-    Left (_ :: SomeException) -> pure ()
-    Right () -> pure ()
+-- | Relay-to-client frames. Each element needs its own 'toJSON': tagging the
+-- list as @[Value]@ made the string elements fail to typecheck.
+noticeMsg :: Text -> Value
+noticeMsg t = toJSON [toJSON ("NOTICE" :: Text), toJSON t]
 
-handleClientMsg
-  :: Pool
-  -> Store
-  -> TVar (M.Map Text Filter)
-  -> TQueue Value
-  -> Value
-  -> IO ()
-handleClientMsg pool store subs outbox v = case parseMaybe parseClient v of
-  Nothing -> enqueue outbox (toJSON (["NOTICE", String "unknown message"] :: [Value]))
+eventMsg :: Text -> Event -> Value
+eventMsg sid e = toJSON [toJSON ("EVENT" :: Text), toJSON sid, toJSON e]
+
+eoseMsg :: Text -> Value
+eoseMsg sid = toJSON [toJSON ("EOSE" :: Text), toJSON sid]
+
+okMsg :: Text -> Bool -> Text -> Value
+okMsg eid accepted msg =
+  toJSON [toJSON ("OK" :: Text), toJSON eid, toJSON accepted, toJSON msg]
+
+handleClientMsg :: BridgeState -> ClientState -> Value -> IO ()
+handleClientMsg bst cs v = case parseMaybe parseClient v of
+  Nothing -> enqueue (csOutbox cs) (noticeMsg "unknown message")
   Just (CReq sid filters) -> do
-    let f = case filters of
-              (x:_) -> x
-              []    -> empty
-    atomically $ modifyTVar' subs (M.insert sid f)
-    -- Serve cached events first, then live subscription upstream.
-    cached <- queryEvents store f
-    forM_ cached $ \e ->
-      enqueue outbox (toJSON (["EVENT", String sid, toJSON e] :: [Value]))
-    enqueue outbox (toJSON (["EOSE", String sid] :: [Value]))
-    broadcast pool (CReq sid filters)
+    atomically $ modifyTVar' (csSubs cs) (M.insert sid filters)
+    -- Serve cached events first, then stay subscribed for live ones.
+    cached <- concat <$> mapM (queryEvents (bsStore bst)) filters
+    forM_ (dedupe cached) $ \e -> enqueue (csOutbox cs) (eventMsg sid e)
+    enqueue (csOutbox cs) (eoseMsg sid)
+    broadcast (bsPool bst) (CReq sid filters)
 
   Just (CEvent e) -> do
-    _ <- insertEvent store e
-    broadcast pool (CEvent e)
-    enqueue outbox (toJSON (["OK", String (evId e), Bool True, String ""] :: [Value]))
+    _ <- insertEvent (bsStore bst) e
+    broadcast (bsPool bst) (CEvent e)
+    -- Other local clients watching the same kinds should see this too.
+    deliverEvent bst e
+    enqueue (csOutbox cs) (okMsg (evId e) True "")
 
   Just (CClose sid) -> do
-    atomically $ modifyTVar' subs (M.delete sid)
-    broadcast pool (CClose sid)
+    atomically $ modifyTVar' (csSubs cs) (M.delete sid)
+    broadcast (bsPool bst) (CClose sid)
 
--- | Parse a client message into our ADT. Mirrors `decodeRelay`.
-parseClient :: Value -> Maybe ClientMessage
+-- | Push an event to every connected client with a matching subscription.
+deliverEvent :: BridgeState -> Event -> IO ()
+deliverEvent bst e = do
+  clients <- readTVarIO (bsClients bst)
+  forM_ (M.elems clients) $ \cs -> do
+    subs <- readTVarIO (csSubs cs)
+    forM_ (M.toList subs) $ \(sid, filters) ->
+      -- One REQ may carry many filters; any match delivers.
+      when (any (\f -> Filter.matches f e) filters) $
+        enqueue (csOutbox cs) (eventMsg sid e)
+
+-- | Called whenever an upstream relay delivers an event: persist it, then hand
+-- it to the local clients that asked for it.
+onUpstreamEvent :: Logger -> TVar (M.Map Int ClientState) -> Store -> Event -> IO ()
+onUpstreamEvent lg clientsVar store e = do
+  inserted <- insertEvent store e
+  when inserted $ do
+    emit lg Debug ("bridge: cached " <> evId e)
+    clients <- readTVarIO clientsVar
+    forM_ (M.elems clients) $ \cs -> do
+      subs <- readTVarIO (csSubs cs)
+      forM_ (M.toList subs) $ \(sid, filters) ->
+        when (any (\f -> Filter.matches f e) filters) $
+          enqueue (csOutbox cs) (eventMsg sid e)
+
+-- | Distinct events by id, keeping first-seen order. A REQ with overlapping
+-- filters can return the same row more than once.
+dedupe :: [Event] -> [Event]
+dedupe = go mempty
+  where
+    go _ [] = []
+    go seen (e:es)
+      | evId e `elem` seen = go seen es
+      | otherwise          = e : go (evId e : seen) es
+
+-- | Parse a client message into our ADT. Mirrors @decodeRelay@.
+parseClient :: Value -> Parser ClientMessage
 parseClient = withArray "ClientMessage" $ \arr -> case toList arr of
-  [String "EVENT", ev]         -> CEvent <$> parseJSON ev
+  [String "EVENT", ev]           -> CEvent <$> parseJSON ev
   [String "REQ", String sid, fs] -> CReq sid <$> parseJSON fs
-  [String "CLOSE", String sid] -> pure (CClose sid)
-  _ -> fail "unknown"
+  [String "CLOSE", String sid]   -> pure (CClose sid)
+  _                             -> fail "unknown"
   where
     toList = foldr (:) []
-
--- | Called whenever an upstream relay delivers an event. Persist it.
-onUpstreamEvent :: Logger -> Store -> Event -> IO ()
-onUpstreamEvent lg store e = do
-  inserted <- insertEvent store e
-  when inserted $
-    emit lg Debug ("bridge: cached " <> evId e)

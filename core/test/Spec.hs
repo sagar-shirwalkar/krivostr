@@ -1,133 +1,317 @@
 {-# LANGUAGE OverloadedStrings #-}
+
 module Main (main) where
 
-import Test.Hspec
-import Test.QuickCheck
+import Bip340 (bip340Spec)
+import Data.Aeson (Value, decode, encode, eitherDecodeStrict, toJSON)
+import qualified Data.Aeson.Types as Aeson
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BL
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Key
+import Krivostr.Logging
 import Krivostr.Nip.Nip01
 import Krivostr.Nip.Nip65
-import Krivostr.Logging
 import Krivostr.Wire
-import Data.Aeson (encode, decode, toJSON)
-import qualified Data.ByteString.Lazy as BL
+import Test.Hspec
 
 sampleEvent :: Event
-sampleEvent = Event
-  { evId = "abc"
-  , evPubkey = "pub"
-  , evCreatedAt = 1700000000
-  , evKind = 1
-  , evTags = []
-  , evContent = "hello"
-  , evSig = "sig"
-  }
+sampleEvent =
+  Event
+    { evId = "abc"
+    , evPubkey = "pub"
+    , evCreatedAt = 1700000000
+    , evKind = 1
+    , evTags = []
+    , evContent = "hello"
+    , evSig = "sig"
+    }
+
+-- | The event from the NIP-01 example, whose id is well known.
+nip01Example :: Event
+nip01Example =
+  Event
+    { evId = ""
+    , evPubkey = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+    , evCreatedAt = 1672280822
+    , evKind = 1
+    , evTags = []
+    , evContent = ""
+    , evSig = ""
+    }
+
+isLeft :: Either a b -> Bool
+isLeft (Left _) = True
+isLeft _ = False
+
+isRight :: Either a b -> Bool
+isRight = not . isLeft
+
+hasPrefix :: Text -> Text -> Bool
+hasPrefix p s = T.isPrefixOf p s
 
 main :: IO ()
 main = hspec $ do
-  describe "NIP-01 canonical id" $ do
+  bip340Spec
+
+  describe "NIP-01 canonical serialization" $ do
     it "is deterministic" $
       computeEventId sampleEvent `shouldBe` computeEventId sampleEvent
+
     it "changes when content changes" $
-      computeEventId sampleEvent `shouldNotBe`
-      computeEventId sampleEvent { evContent = "bye" }
-    it "matches a known vector" $ do
-      let e = Event
-            { evId = ""
-            , evPubkey = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
-            , evCreatedAt = 1672280822
-            , evKind = 1
-            , evTags = []
-            , evContent = ""
-            , evSig = ""
-            }
-      computeEventId e `shouldBe`
-        "0df9a2f3b6ff9dbd3a06ee1250a71df3f8e3c0d67e2bd0f9a2cd0e0e6e40a4f1"
+      computeEventId sampleEvent
+        `shouldNotBe` computeEventId sampleEvent {evContent = "bye"}
+
+    it "matches the known NIP-01 example id" $
+      -- The expected value is sha256 of
+      -- [0,"3bf0...",1672280822,1,[],""] ; the test previously asserted a
+      -- hash that no implementation could produce.
+      computeEventId nip01Example
+        `shouldBe` "1af087cb638c43c2303b54d02466ab73c8712157fe662dc3ad80d8c1709a813c"
+
+    it "emits the exact canonical byte string" $
+      canonicalBytes nip01Example
+        `shouldBe` "[0,\"3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d\",1672280822,1,[],\"\"]"
+
+  describe "NIP-01 control character escaping" $ do
+    let bytesOf c = canonicalBytes nip01Example {evContent = T.singleton c}
+        shortForms = ['\b', '\f', '\n', '\r', '\t']
+
+    it "escapes NUL as \\u0000" $
+      bytesOf '\NUL' `shouldSatisfy` BS.isInfixOf "\\u0000"
+
+    it "escapes every other C0 control as \\u00xx" $
+      mapM_
+        (\c -> bytesOf c `shouldSatisfy` BS.isInfixOf "\\u00")
+        ( filter (< ' ')
+            (filter (`notElem` shortForms) ['\NUL' .. '\US'])
+        )
+
+    it "uses the short forms for backspace and form feed" $ do
+      bytesOf '\b' `shouldSatisfy` BS.isInfixOf "\\b"
+      bytesOf '\f' `shouldSatisfy` BS.isInfixOf "\\f"
+
+    it "uses the short forms for newline, carriage return and tab" $ do
+      bytesOf '\n' `shouldSatisfy` BS.isInfixOf "\\n"
+      bytesOf '\r' `shouldSatisfy` BS.isInfixOf "\\r"
+      bytesOf '\t' `shouldSatisfy` BS.isInfixOf "\\t"
+
+    it "does not double-escape the short forms" $ do
+      bytesOf '\n' `shouldNotSatisfy` BS.isInfixOf "\\u000a"
+      bytesOf '\t' `shouldNotSatisfy` BS.isInfixOf "\\u0009"
+
+    it "leaves ordinary and non-control text alone" $ do
+      -- The needle must be built with encodeUtf8, not an OverloadedStrings
+      -- literal: IsString ByteString goes through Char8.pack and truncates
+      -- anything above U+00FF to a single byte.
+      let content = "hello \10009 world"
+      canonicalBytes nip01Example {evContent = content}
+        `shouldSatisfy` BS.isInfixOf (TE.encodeUtf8 content)
+      canonicalBytes nip01Example {evContent = "\8364 euro"}
+        `shouldSatisfy` BS.isInfixOf (TE.encodeUtf8 "\8364 euro")
+
+    it "escapes a quote and a backslash" $ do
+      bytesOf '"' `shouldSatisfy` BS.isInfixOf "\\\""
+      bytesOf '\\' `shouldSatisfy` BS.isInfixOf "\\\\"
+
+    it "changes the id when a control character is present" $
+      computeEventId nip01Example {evContent = "\NUL"}
+        `shouldNotBe` computeEventId nip01Example
 
   describe "Key" $ do
     it "round-trips a private key to nsec and back" $ do
       sk <- generatePrivateKey
       let nsec = exportNsec sk
-      nsec `shouldSatisfy` ("nsec1" `isPrefix`)
+      nsec `shouldSatisfy` hasPrefix "nsec1"
       importNsec nsec `shouldBe` Right sk
-    it "round-trips pubkey to npub" $ do
+
+    it "round-trips a pubkey to npub and back" $ do
       sk <- generatePrivateKey
       let pk = derivePublicKey sk
       importNpub (exportNpub pk) `shouldBe` Right pk
+
+    it "produces a 32-byte x-only public key" $ do
+      sk <- generatePrivateKey
+      pubKeyBytes (derivePublicKey sk) `shouldSatisfy` ((== 32) . BS.length)
+
+    it "agrees between derived keys and imported npubs" $ do
+      -- The bug this guards: importNpub used to keep the leading 0x02 while
+      -- derivePublicKey dropped it, so the two disagreed byte-for-byte.
+      sk <- generatePrivateKey
+      let pk = derivePublicKey sk
+      importNpub (exportNpub pk) `shouldBe` Right pk
+      pubKeyHex pk `shouldBe` pubKeyHex (either error id (importNpub (exportNpub pk)))
+
+    it "round-trips a private key through hex" $ do
+      sk <- generatePrivateKey
+      importHex (exportHex sk) `shouldBe` Right sk
+
     it "rejects malformed hex" $
       importHex "not-hex" `shouldSatisfy` isLeft
-    where
-      isPrefix p s = take (length p) s == p
-      isLeft (Left _) = True
-      isLeft _        = False
+
+    it "rejects a secret key outside the group order" $ do
+      importHex (T.replicate 64 "0") `shouldSatisfy` isLeft
+      importHex (T.replicate 64 "f") `shouldSatisfy` isLeft
+
+    it "rejects a public key that is not on the curve" $ do
+      -- x = 0 lifts to no curve point, so it cannot be a public key.
+      publicKeyFromBytes (BS.replicate 32 0) `shouldBe` Nothing
+      publicKeyFromBytes (BS.replicate 31 0) `shouldBe` Nothing
+      publicKeyFromBytes (BS.replicate 33 0) `shouldBe` Nothing
 
   describe "sign / verify" $ do
     it "signs then verifies" $ do
       sk <- generatePrivateKey
       let e = signEvent sk sampleEvent
       verifyEvent e `shouldBe` True
-    it "detects tampering" $ do
+
+    it "detects tampering with the content" $ do
       sk <- generatePrivateKey
       let e = signEvent sk sampleEvent
-      verifyEvent e { evContent = "tampered" } `shouldBe` False
+      verifyEvent e {evContent = "tampered"} `shouldBe` False
+
+    it "detects tampering with the created_at" $ do
+      sk <- generatePrivateKey
+      let e = signEvent sk sampleEvent
+      verifyEvent e {evCreatedAt = evCreatedAt e + 1} `shouldBe` False
+
+    it "detects tampering with the kind" $ do
+      sk <- generatePrivateKey
+      let e = signEvent sk sampleEvent
+      verifyEvent e {evKind = 7} `shouldBe` False
+
+    it "fills in the pubkey and id when signing" $ do
+      sk <- generatePrivateKey
+      let pk = pubKeyHex (derivePublicKey sk)
+          e = signEvent sk sampleEvent
+      evPubkey e `shouldBe` pk
+      evId e `shouldBe` computeEventId e
+      evSig e `shouldSatisfy` ((== 128) . T.length) -- 64 bytes, hex
+
+    it "signs deterministically" $ do
+      sk <- generatePrivateKey
+      signEvent sk sampleEvent `shouldBe` signEvent sk sampleEvent
+
+    it "rejects a truncated signature" $ do
+      sk <- generatePrivateKey
+      let e = signEvent sk sampleEvent
+      verifyEvent e {evSig = T.take 100 (evSig e)} `shouldBe` False
 
   describe "Filter" $ do
     it "empty filter matches everything" $
       matches empty sampleEvent `shouldBe` True
+
     it "matches kinds" $
       matches (onlyKinds [1]) sampleEvent `shouldBe` True
+
     it "rejects wrong kinds" $
       matches (onlyKinds [7]) sampleEvent `shouldBe` False
+
     it "matches authors" $
       matches (byAuthors ["pub"]) sampleEvent `shouldBe` True
+
     it "filters tags" $ do
-      let e = sampleEvent { evTags = [["p", "alice"], ["p", "bob"]] }
+      let e = sampleEvent {evTags = [["p", "alice"], ["p", "bob"]]}
       matches (tagEq "p" ["bob"]) e `shouldBe` True
       matches (tagEq "p" ["carol"]) e `shouldBe` False
+
     it "round-trips through JSON" $ do
-      let f = Filter (Just ["a"]) (Just ["b"]) (Just [1, 2])
-                     (Just 0) (Just 9) (Just 5) [("e", ["x"])]
+      let f = Filter (Just ["a"]) (Just ["b"]) (Just [1, 2]) (Just 0) (Just 9) (Just 5) [("e", ["x"])]
       decode (encode f) `shouldBe` Just f
+
+    it "encodes tags under their #e keys" $
+      BL.toStrict (encode (tagEq "p" ["bob"]))
+        `shouldSatisfy` BS.isInfixOf "#p"
 
   describe "NIP-65" $ do
     it "parses read/write hints" $ do
-      let e = sampleEvent { evKind = 10002
-                          , evTags = [ ["r", "wss://a", "read"]
-                                     , ["r", "wss://b", "write"]
-                                     , ["r", "wss://c"] ] }
-      parseRelayList e `shouldBe`
-        [ RelayHint "wss://a" Read
-        , RelayHint "wss://b" Write
-        , RelayHint "wss://c" Both ]
+      let e =
+            sampleEvent
+              { evKind = 10002
+              , evTags =
+                  [ ["r", "wss://a", "read"]
+                  , ["r", "wss://b", "write"]
+                  , ["r", "wss://c"]
+                  ]
+              }
+      parseRelayList e
+        `shouldBe` [ RelayHint "wss://a" Read
+                   , RelayHint "wss://b" Write
+                   , RelayHint "wss://c" Both
+                   ]
+
+    it "ignores tags that are too short" $
+      parseRelayList sampleEvent {evTags = [["r"], []]} `shouldBe` []
+
     it "extracts read and write relays" $ do
-      let hs = [ RelayHint "a" Read, RelayHint "b" Write, RelayHint "c" Both ]
-      readRelays hs  `shouldBe` ["a", "c"]
+      let hs = [RelayHint "a" Read, RelayHint "b" Write, RelayHint "c" Both]
+      readRelays hs `shouldBe` ["a", "c"]
       writeRelays hs `shouldBe` ["b", "c"]
+
     it "round-trips tags" $
-      buildRelayListTags
-        [RelayHint "a" Read, RelayHint "b" Write, RelayHint "c" Both]
+      buildRelayListTags [RelayHint "a" Read, RelayHint "b" Write, RelayHint "c" Both]
         `shouldBe` [ ["r", "a", "read"], ["r", "b", "write"], ["r", "c"] ]
 
   describe "Logging" $ do
-    it "accumulates entries in Writer" $ do
+    it "accumulates entries in the pure writer" $ do
       let ((), entries) = runPureLog $ do
             info "start"
             warn "careful"
       length entries `shouldBe` 2
       map leLevel entries `shouldBe` [Info, Warn]
-    it "respects minimum level in IO" $ do
+
+    it "respects the minimum level in IO" $ do
       lg <- newLogger Warn
       emit lg Debug "hidden"
       emit lg Error "shown"
       entries <- drainQueue lg
       map leMsg entries `shouldBe` ["shown"]
 
+    it "drains in order and empties the queue" $ do
+      lg <- newLogger Debug
+      mapM_ (emit lg Info) ["a", "b", "c"]
+      entries <- drainQueue lg
+      map leMsg entries `shouldBe` ["a", "b", "c"]
+      again <- drainQueue lg
+      again `shouldBe` []
+
+    it "honours a withLevel override" $ do
+      lg <- newLogger Error
+      emit (withLevel lg Debug) Debug "visible"
+      entries <- drainQueue lg
+      map leMsg entries `shouldBe` ["visible"]
+
   describe "Wire" $ do
-    it "encodes a REQ message" $
-      encode (encodeClient (CReq "s1" [onlyKinds [1]]))
-        `shouldSatisfy` (not . BL.null)
-    it "round-trips an EVENT relay message" $ do
-      let v = toJSON (["EVENT", "s1", toJSON sampleEvent] :: [Data.Aeson.Value])
-      -- decodeRelay is a Parser; feed via fromJSON
-      undefined
+    it "encodes a REQ message" $ do
+      BL.toStrict (encode (encodeClient (CReq "s1" [onlyKinds [1]])))
+        `shouldSatisfy` BS.isPrefixOf "[\"REQ\",\"s1\""
+
+    it "encodes a CLOSE message" $
+      BL.toStrict (encode (encodeClient (CClose "s1")))
+        `shouldSatisfy` BS.isInfixOf "\"CLOSE\""
+
+    it "decodes an EVENT relay message" $
+      Aeson.parseEither decodeRelay (toJSON (["EVENT", "s1", toJSON sampleEvent] :: [Value]))
+        `shouldSatisfy` isRight
+
+    it "decodes an OK relay message" $
+      Aeson.parseEither decodeRelay (toJSON (["OK", "s1", toJSON True, "ok"] :: [Value]))
+        `shouldSatisfy` isRight
+
+    it "decodes EOSE and NOTICE" $ do
+      Aeson.parseEither decodeRelay (toJSON (["EOSE", "s1"] :: [Value]))
+        `shouldSatisfy` isRight
+      Aeson.parseEither decodeRelay (toJSON (["NOTICE", "hi"] :: [Value]))
+        `shouldSatisfy` isRight
+
+    it "rejects an unknown relay message" $
+      Aeson.parseEither decodeRelay (toJSON (["NOPE"] :: [Value]))
+        `shouldSatisfy` isLeft
+
+  describe "Event JSON" $
+    it "round-trips through Aeson" $
+      eitherDecodeStrict (BL.toStrict (encode sampleEvent)) `shouldBe` Right sampleEvent

@@ -1,0 +1,80 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.39.6.
+--
+-- see: https://github.com/sol/hpack
+
+name:           krivostr-core
+version:        0.2.0.0
+category:       Network
+homepage:       https://github.com/yourhandle/krivostr#readme
+bug-reports:    https://github.com/yourhandle/krivostr/issues
+author:         you
+maintainer:     you@example.com
+license:        MIT
+build-type:     Simple
+
+source-repository head
+  type: git
+  location: https://github.com/yourhandle/krivostr
+
+library
+  exposed-modules:
+      Krivostr.Event
+      Krivostr.Filter
+      Krivostr.Key
+      Krivostr.Logging
+      Krivostr.Nip.Nip01
+      Krivostr.Nip.Nip65
+      Krivostr.Schnorr
+      Krivostr.Wire
+  other-modules:
+      Paths_krivostr_core
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+  build-depends:
+      aeson >=2.2
+    , base >=4.19 && <5
+    , base16-bytestring
+    , bech32
+    , bytestring
+    , containers
+    , cryptohash-sha256
+    , memory
+    , mtl
+    , scientific
+    , stm
+    , text
+    , time
+    , transformers
+  default-language: Haskell2010
+
+test-suite spec
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Bip340
+      Paths_krivostr_core
+  hs-source-dirs:
+      test
+  ghc-options: -threaded
+  build-depends:
+      QuickCheck
+    , aeson
+    , base >=4.19 && <5
+    , base16-bytestring
+    , bech32
+    , bytestring
+    , containers
+    , cryptohash-sha256
+    , hspec
+    , krivostr-core
+    , memory
+    , mtl
+    , scientific
+    , stm
+    , text
+    , time
+    , transformers
+  default-language: Haskell2010

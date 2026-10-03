@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { page } from '@vitest/browser/context';
 import '../../components/nostr-compose';
 import type { NostrCompose } from '../../components/nostr-compose';
 import { localSigner } from '../../nostr/signer';
 
-const NSEC_HEX = '0000000000000000000000000000000000000000000000000000000000000001';
+const NSEC_HEX =
+  '0000000000000000000000000000000000000000000000000000000000000001';
 
 describe('<nostr-compose>', () => {
   let el: NostrCompose;
@@ -16,18 +16,96 @@ describe('<nostr-compose>', () => {
 
   afterEach(() => el.remove());
 
+  /**
+   * Type into the textarea the way a person would.
+   *
+   * Assigning `value` does not notify Lit: the component only learns about text
+   * through its `@input` listener, so a bare `ta.value = 'x'` leaves `text`
+   * empty and the submit button stays disabled. The event has to be
+   * `composed` as well as bubbling so it crosses the shadow root.
+   */
+  const type = async (text: string): Promise<HTMLTextAreaElement> => {
+    const ta = el.shadowRoot!.querySelector('textarea')!;
+    ta.value = text;
+    ta.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    await el.updateComplete;
+    return ta;
+  };
+
+  const button = (): HTMLButtonElement =>
+    el.shadowRoot!.querySelector('button')!;
+
+  const collect = (): CustomEvent[] => {
+    const events: CustomEvent[] = [];
+    el.addEventListener('publish-request', (e) => events.push(e as CustomEvent));
+    return events;
+  };
+
   it('disables submit when empty', async () => {
     el.signer = localSigner(NSEC_HEX);
     await el.updateComplete;
-    const btn = el.shadowRoot!.querySelector('button')!;
-    expect(btn.hasAttribute('disabled')).toBe(true);
+    expect(button().hasAttribute('disabled')).toBe(true);
+  });
+
+  it('disables submit without a signer', async () => {
+    el.signer = null;
+    await type('hello');
+    expect(button().hasAttribute('disabled')).toBe(true);
+  });
+
+  it('enables submit once there is text', async () => {
+    el.signer = localSigner(NSEC_HEX);
+    await type('hello');
+    expect(button().hasAttribute('disabled')).toBe(false);
+  });
+
+  it('treats whitespace-only text as empty', async () => {
+    el.signer = localSigner(NSEC_HEX);
+    await type('   \n  ');
+    expect(button().hasAttribute('disabled')).toBe(true);
   });
 
   it('emits publish-request on submit', async () => {
     el.signer = localSigner(NSEC_HEX);
+    const events = collect();
+    await type('hello');
+    button().click();
     await el.updateComplete;
-    const events: CustomEvent[] = [];
-    el.addEventListener('publish-request', (e) => events.push(e as CustomEvent));
-    const ta = el.shadowRoot!.querySelector('textarea')!;
-    ta.value = 'hello';
-    ta.dispatch
+
+    expect(events).toHaveLength(1);
+    expect(events[0].detail).toEqual({ content: 'hello', kind: 1 });
+  });
+
+  it('trims the content it publishes', async () => {
+    el.signer = localSigner(NSEC_HEX);
+    const events = collect();
+    await type('  hello  ');
+    button().click();
+    await el.updateComplete;
+
+    expect(events[0].detail.content).toBe('hello');
+  });
+
+  it('clears the textarea after publishing', async () => {
+    el.signer = localSigner(NSEC_HEX);
+    await type('hello');
+    button().click();
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.querySelector('textarea')!.value).toBe('');
+    expect(button().hasAttribute('disabled')).toBe(true);
+  });
+
+  it('does not publish without a signer', async () => {
+    el.signer = null;
+    const events = collect();
+    await type('hello');
+    // Bypass the disabled state to prove the handler itself also refuses.
+    el.shadowRoot!.querySelector('form')!.dispatchEvent(
+      new Event('submit', { bubbles: true, composed: true, cancelable: true }),
+    );
+    await el.updateComplete;
+
+    expect(events).toHaveLength(0);
+  });
+});

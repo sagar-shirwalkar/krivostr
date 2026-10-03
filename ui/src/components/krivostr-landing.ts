@@ -3,7 +3,7 @@ import { customElement } from 'lit/decorators.js';
 
 @customElement('krivostr-landing')
 export class KrivostrLanding extends LitElement {
-  static styles = css`
+  static override styles = css`
     :host {
       display: block;
       min-height: 100vh;
@@ -86,7 +86,7 @@ export class KrivostrLanding extends LitElement {
     this.dispatchEvent(new CustomEvent('enter', { bubbles: true, composed: true }));
   }
 
-  render() {
+  override render() {
     return html`
       <header class="nav">
         <div class="mark">krivostr<span style="color:var(--mute)">/0.2</span></div>

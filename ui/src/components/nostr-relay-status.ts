@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { RelayHandle, RelayState, connect } from '../nostr/relay';
 import { connectBridge, chooseTransport } from '../nostr/bridge';
 import { DEFAULT_RELAYS, outboxFor, parseRelayList, RelayHint } from '../nostr/nip65';
+import { NostrEvent } from '../nostr/event';
 
 interface Slot {
   url: string;
@@ -10,9 +11,18 @@ interface Slot {
   state: RelayState;
 }
 
+/**
+ * Owns the relay transport.
+ *
+ * This element is the single place in the UI that opens sockets. `app-shell`
+ * used to declare its own `relay` field, never assigned it, and so silently
+ * dropped every publish on the floor; it now goes through `publish` below
+ * instead of keeping a second, dead reference.
+ */
+
 @customElement('krivostr-relay-status')
 export class NostrRelayStatus extends LitElement {
-  static styles = css`
+  static override styles = css`
     :host { display: flex; gap: var(--s-4); align-items: center; flex-wrap: wrap; }
     .dot {
       width: 6px; height: 6px; border-radius: 50%;
@@ -30,7 +40,7 @@ export class NostrRelayStatus extends LitElement {
   @state() private userHints: RelayHint[] = [];
   @state() private transport: 'bridge' | 'relay' = chooseTransport();
 
-  connectedCallback(): void {
+  override connectedCallback(): void {
     super.connectedCallback();
     const urls = this.userHints.length > 0
       ? outboxFor(this.userHints)
@@ -63,13 +73,30 @@ export class NostrRelayStatus extends LitElement {
     });
   }
 
-  private emit(e: import('../nostr/event').NostrEvent) {
+  /**
+   * Send a signed event to every connected transport.
+   *
+   * Returns false when nothing is connected, so the caller can tell the user
+   * rather than appearing to have published.
+   */
+  publish(e: NostrEvent): boolean {
+    if (this.slots.length === 0) return false;
+    for (const slot of this.slots) slot.handle.publish(e);
+    return true;
+  }
+
+  /** Relay addresses currently connected, for display and diagnostics. */
+  get connectedUrls(): string[] {
+    return this.slots.map((s) => s.url);
+  }
+
+  private emit(e: NostrEvent) {
     this.dispatchEvent(
       new CustomEvent('relay-event', { detail: e, bubbles: true, composed: true }),
     );
   }
 
-  private learnHints(e: import('../nostr/event').NostrEvent) {
+  private learnHints(e: NostrEvent) {
     const hints = parseRelayList(e);
     if (hints.length > 0 && this.userHints.length === 0) {
       this.userHints = hints;
@@ -82,7 +109,7 @@ export class NostrRelayStatus extends LitElement {
     );
   }
 
-  disconnectedCallback(): void {
+  override disconnectedCallback(): void {
     this.slots.forEach((s) => s.handle.close());
     super.disconnectedCallback();
   }
@@ -93,7 +120,7 @@ export class NostrRelayStatus extends LitElement {
     return 'bad';
   }
 
-  render() {
+  override render() {
     return html`
       ${this.transport === 'bridge'
         ? html`<span class="hint">transport: bridge</span>`

@@ -1,11 +1,11 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Signer, SignerType, localSigner, nip07Signer, isNip07Available } from '../nostr/signer';
-import { npubEncode, nsecDecode } from '../nostr/bech32';
+import { nsecDecode } from '../nostr/bech32';
 
 @customElement('krivostr-signer-picker')
 export class KrivostrSignerPicker extends LitElement {
-  static styles = css`
+  static override styles = css`
     :host { display: block; }
     .card {
       background: var(--surface);
@@ -90,7 +90,7 @@ export class KrivostrSignerPicker extends LitElement {
     );
   }
 
-  render() {
+  override render() {
     return html`
       <div class="card">
         <h3>Choose a signer</h3>

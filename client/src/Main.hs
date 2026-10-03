@@ -1,16 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main (main) where
 
-import Control.Monad (when)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
 import Krivostr.Bridge
 import Krivostr.Logging
 import Krivostr.Store
 import System.Environment (lookupEnv)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
-import System.FilePath ((</>), takeDirectory)
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath (takeDirectory)
 
 defaultUpstreams :: [Text]
 defaultUpstreams =

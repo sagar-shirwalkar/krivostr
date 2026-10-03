@@ -9,7 +9,6 @@ module Krivostr.Wire
 import Data.Aeson
 import Data.Aeson.Types (Parser)
 import Data.Text (Text)
-import qualified Data.Text as T
 import Krivostr.Event
 import Krivostr.Filter
 
@@ -42,5 +41,3 @@ decodeRelay = withArray "RelayMessage" $ \arr -> case toList arr of
   _ -> fail "unknown relay message"
   where
     toList = foldr (:) []
-
-parseRelay :: Value -> Either String RelayMessage

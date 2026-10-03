@@ -9,7 +9,7 @@ import Control.Monad (forM_, replicateM)
 import Data.Either (isLeft, isRight)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import System.IO.Temp (withSystemTempDirectory)
 import Krivostr.Event
 import Krivostr.Filter
@@ -22,12 +22,20 @@ import Krivostr.Wire
 
 -- ── Fixtures ───────────────────────────────────────────────────
 
-mkEvent :: PrivateKey -> Int -> Text -> Event
-mkEvent sk kind content =
+-- | Timestamps are fixed by default so that ids are reproducible.
+mkSigned :: PrivateKey -> Int -> Text -> Event
+mkSigned sk kind content =
+  mkSignedAt sk (1700000000 + fromIntegral kind) kind content
+
+-- | Build and sign an event with an explicit timestamp. The eviction tests need
+-- this: overriding 'evCreatedAt' on an already-signed event would change the
+-- serialized form and invalidate the signature.
+mkSignedAt :: PrivateKey -> POSIXTime -> Int -> Text -> Event
+mkSignedAt sk created kind content =
   signEvent sk Event
     { evId = ""
     , evPubkey = ""
-    , evCreatedAt = 1700000000 + fromIntegral kind
+    , evCreatedAt = created
     , evKind = kind
     , evTags = []
     , evContent = content
@@ -43,7 +51,7 @@ main = hspec $ do
       lg <- newLogger Error
       st <- openMemoryStore lg
       sk <- generatePrivateKey
-      let e = mkEvent sk 1 "hello"
+      let e = mkSigned sk 1 "hello"
       ok <- insertEvent st e
       ok `shouldBe` True
       fetched <- getEventById st (evId e)
@@ -54,7 +62,7 @@ main = hspec $ do
       lg <- newLogger Error
       st <- openMemoryStore lg
       sk <- generatePrivateKey
-      let e = mkEvent sk 1 "hello"
+      let e = mkSigned sk 1 "hello"
       _ <- insertEvent st e
       _ <- insertEvent st e
       n <- countEvents st
@@ -65,7 +73,10 @@ main = hspec $ do
       lg <- newLogger Error
       st <- openMemoryStore lg
       sk <- generatePrivateKey
-      forM_ [1, 1, 1, 7] $ \k -> insertEvent st (mkEvent sk k "x")
+      -- Content must differ per row: event ids are content addresses, so three
+      -- identical kind-1 events are one row and INSERT OR IGNORE collapses them.
+      forM_ (zip [1, 1, 1, 7] [1 .. 4 :: Int]) $ \(k, i) ->
+        insertEvent st (mkSigned sk k (T.pack ("x" <> show i)))
       rows <- queryEvents st (onlyKinds [1])
       length rows `shouldBe` 3
       closeStore st
@@ -74,7 +85,7 @@ main = hspec $ do
       lg <- newLogger Error
       st <- openMemoryStore lg
       sk <- generatePrivateKey
-      forM_ [1..10] $ \i -> insertEvent st (mkEvent sk 1 (T.pack (show i)))
+      forM_ [1..10] $ \i -> insertEvent st (mkSigned sk 1 (T.pack (show i)))
       rows <- queryEvents st (empty { fLimit = Just 3 })
       length rows `shouldBe` 3
       closeStore st
@@ -84,8 +95,7 @@ main = hspec $ do
       st <- openMemoryStore lg
       sk <- generatePrivateKey
       now <- getPOSIXTime
-      let old = mkEvent sk 1 "old"
-              { evCreatedAt = now - (40 * 24 * 60 * 60) }
+      let old = mkSignedAt sk (now - 40 * 86400) 1 "old"
       insertEvent st old
       removed <- evictExpired st
       removed `shouldBe` 1
@@ -97,7 +107,7 @@ main = hspec $ do
       sk <- generatePrivateKey
       now <- getPOSIXTime
       forM_ [0, 3, 4, 1059, 10002] $ \k -> do
-        let e = mkEvent sk k "x" { evCreatedAt = now - (400 * 24 * 60 * 60) }
+        let e = mkSignedAt sk (now - 400 * 86400) k "x"
         insertEvent st e
       removed <- evictExpired st
       removed `shouldBe` 0
@@ -109,7 +119,8 @@ main = hspec $ do
       lg <- newLogger Error
       st <- openMemoryStore lg
       sk <- generatePrivateKey
-      forM_ [1, 1, 7] $ \k -> insertEvent st (mkEvent sk k "x")
+      forM_ (zip [1, 1, 7] [1 .. 3 :: Int]) $ \(k, i) ->
+        insertEvent st (mkSigned sk k (T.pack ("x" <> show i)))
       stats <- storeStats st
       ssTotal stats `shouldBe` 3
       length (ssByKind stats) `shouldBe` 2
@@ -119,7 +130,7 @@ main = hspec $ do
       withSystemTempDirectory "krivostr" $ \dir -> do
         lg <- newLogger Error
         sk <- generatePrivateKey
-        let e = mkEvent sk 1 "persisted"
+        let e = mkSigned sk 1 "persisted"
             path = dir <> "/events.db"
         st1 <- openStore lg path
         insertEvent st1 e
@@ -180,15 +191,3 @@ main = hspec $ do
       importHex (exportHex sk) `shouldBe` Right sk
     it "rejects garbage" $
       importHex "0xDEADBEEF" `shouldSatisfy` isLeft
-
--- ── Helpers ────────────────────────────────────────────────────
-
--- | Drain a logger's queue without blocking.
-drainQueue :: Logger -> IO [LogEntry]
-drainQueue lg = go []
-  where
-    go acc = do
-      m <- atomically $ tryReadTQueue (lgQueue lg)
-      case m of
-        Nothing -> pure (reverse acc)
-        Just e  -> go (e : acc)

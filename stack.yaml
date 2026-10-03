@@ -1,20 +1,19 @@
-resolver: ghc-9.14.1
+# Stack owns the package set: everything below resolves from LTS-24 with no
+# extra-deps, so `stack build` is reproducible from this file alone.
+#
+# GHC 9.14.1 was never usable here -- Stackage has not adopted it (the
+# 2026-10-02 nightly is still on 9.12.x), so `resolver: ghc-9.14.1` resolved to
+# an empty package set and could not even construct a build plan. LTS-24 pins
+# GHC 9.10.3 and carries wuss-2.x, websockets-0.13, aeson, sqlite-simple and
+# direct-sqlite already built and tested together.
+#
+# wuss 1.1.x cannot be used on any modern GHC regardless (base < 4.17,
+# websockets < 0.13), which is why the old wuss-1.2.2 pin was unsatisfiable.
+resolver: lts-24.61
+
 packages:
   - core
   - client
-extra-deps:
-  - secp256k1-haskell-1.4.3
-  - wuss-1.2.2
-  - websockets-0.13.0.0
-  - aeson-2.3.2.0
-  - base16-bytestring-1.0.2.0
-  - cryptohash-sha256-0.11.102.1
-  - bech32-1.1.6
-  - sqlite-simple-0.4.19.0
-  - direct-sqlite-2.3.29
-  - wai-app-static-3.1.9
-  - wai-websockets-3.0.1.2
-  - temporary-1.3
-flags:
-  secp256k1-haskell:
-    schnorr: true
+
+# BIP-340 is implemented in pure Haskell (core/src/Krivostr/Schnorr.hs), so
+# there is no libsecp256k1 system dependency anywhere in the build.

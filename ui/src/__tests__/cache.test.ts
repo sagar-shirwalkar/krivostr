@@ -15,12 +15,16 @@ const e = (over: Partial<NostrEvent> = {}): NostrEvent => ({
 });
 
 beforeEach(async () => {
-  const db = await new Promise<IDBDatabase>((res, rej) => {
+  // IDBFactory.deleteDatabase resolves with `result === undefined` per spec, so
+  // the old `res(r.result)` handed back undefined and the following db.close()
+  // threw. The cache drops its own handle on `versionchange`, so this cannot
+  // block; treat `blocked` as success anyway rather than hanging the suite.
+  await new Promise<void>((res, rej) => {
     const r = indexedDB.deleteDatabase('krivostr');
-    r.onsuccess = () => res(r.result);
+    r.onsuccess = () => res();
     r.onerror = () => rej(r.error);
+    r.onblocked = () => res();
   });
-  db.close();
 });
 
 describe('cache', () => {

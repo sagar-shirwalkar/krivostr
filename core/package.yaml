@@ -14,13 +14,13 @@ dependencies:
   - containers
   - mtl
   - time
-  - secp256k1-haskell
   - base16-bytestring
   - cryptohash-sha256
   - memory
   - bech32
   - transformers
   - scientific
+  - stm
 
 library:
   source-dirs: src
@@ -33,7 +33,6 @@ library:
 
 tests:
   spec:
-    type: exitcode-stdio-1.0
     main: Spec.hs
     source-dirs: test
     dependencies:

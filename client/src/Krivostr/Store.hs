@@ -19,24 +19,26 @@ module Krivostr.Store
   , persistentKinds
   ) where
 
-import Control.Exception (bracket, try, SomeException)
+import Control.Exception (SomeException, try)
 import Control.Monad (forM_, void, when)
 import Data.Int (Int64)
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Data.Time.Clock (NominalDiffTime)
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
-import Data.Time.Clock (UTCTime, NominalDiffTime, diffUTCTime, addUTCTime)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
 import Database.SQLite.Simple
-import Database.SQLite.Simple.FromRow
+import Database.SQLite.Simple.ToField (ToField(..))
 import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Logging
-import Data.Aeson (encode, decode, eitherDecode)
+import Data.Aeson (decode, encode)
 import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString as BS
+
+-- | Row cap applied when a filter does not specify @limit@.
+defaultLimit :: Int
+defaultLimit = 500
 
 -- | Kinds that are never evicted, regardless of age.
 persistentKinds :: [Int]
@@ -58,6 +60,9 @@ data StoreStats = StoreStats
   , ssByKind     :: ![(Int, Int)]
   } deriving (Show, Eq)
 
+-- | Orphan, but 'Event' lives in krivostr-core where the SQL row shape is not
+-- known. Kept here rather than in the core, which must stay free of the
+-- database dependency.
 instance FromRow Event where
   fromRow = do
     eid     :: Text <- field
@@ -80,8 +85,10 @@ instance FromRow Event where
       , evSig = sig
       }
 
-toRow :: Event -> (Text, Text, Int64, Int, Text, Text, Text)
-toRow e =
+-- | Named @eventRow@ rather than @toRow@ because @Database.SQLite.Simple@
+-- exports a @toRow@ class method of its own.
+eventRow :: Event -> (Text, Text, Int64, Int, Text, Text, Text)
+eventRow e =
   ( evId e
   , evPubkey e
   , floor (evCreatedAt e)
@@ -134,7 +141,7 @@ insertEvent st e = do
     "INSERT OR IGNORE INTO events \
     \(id, pubkey, created_at, kind, tags, content, sig) \
     \VALUES (?, ?, ?, ?, ?, ?, ?)"
-    (toRow e)
+    (eventRow e)
   case r of
     Left (err :: SomeException) -> do
       emit (stLogger st) Error ("store.insert: " <> T.pack (show err))
@@ -151,30 +158,53 @@ insertEvents st es = do
 queryEvents :: Store -> Filter -> IO [Event]
 queryEvents st f = do
   let (whereClause, params) = buildWhere f
+      lim = fromMaybe defaultLimit (fLimit f)
+      -- The limit is a bound parameter in the SQL rather than a Haskell `take`
+      -- afterwards: `take` still pulled every matching row out of SQLite
+      -- first, so a broad filter read the entire table to return 500 of them.
       sql = "SELECT id, pubkey, created_at, kind, tags, content, sig \
-            \FROM events " <> whereClause <> " ORDER BY created_at DESC"
-      lim = fromMaybe 500 (fLimit f)
-  rows <- query (stConn st) (Query (TE.encodeUtf8 sql)) params
-  let filtered = filter (matches f) rows
-  pure (take lim filtered)
+            \FROM events " <> whereClause <> " ORDER BY created_at DESC LIMIT ?"
+      allParams = params ++ [toField lim]
+  rows <- query (stConn st) (Query sql) allParams
+  -- Tag and content predicates still run in Haskell, so the limit can be
+  -- reached before enough rows pass; fetch the bounded page and let the caller
+  -- see what survived.
+  pure (filter (matches f) rows)
 
 -- | Query with an ad-hoc SQL suffix (escape hatch for advanced callers).
-queryEventsWith :: Store -> Text -> [Param] -> IO [Event]
+queryEventsWith :: Store -> Text -> [SQLData] -> IO [Event]
 queryEventsWith st sql params =
-  query (stConn st) (Query (TE.encodeUtf8 sql)) params
+  query (stConn st) (Query sql) params
 
-buildWhere :: Filter -> (Text, [Param])
+-- | Turn a 'Filter' into a @WHERE@ fragment and its bound parameters.
+--
+-- The clause list has to be a list of @(fragment, params)@ pairs: the previous
+-- version flattened fragments and parameters into one list, which cannot
+-- typecheck and never unzip'd into the two halves it claimed to produce.
+buildWhere :: Filter -> (Text, [SQLData])
 buildWhere f =
-  let clauses = concat
-        [ maybe [] (\ids -> [ "id IN (" <> placeholders (length ids) <> ")"
-                            , map ToField ids ]) (fIds f)
-        , maybe [] (\as  -> [ "pubkey IN (" <> placeholders (length as) <> ")"
-                            , map ToField as ]) (fAuthors f)
-        , maybe [] (\ks  -> [ "kind IN (" <> placeholders (length ks) <> ")"
-                            , map (ToField . T.pack . show) ks ]) (fKinds f)
-        , maybe [] (\s   -> [ "created_at >= ?", [ToField (T.pack (show (floor s :: Integer)))]] ) (fSince f)
-        , maybe [] (\u   -> [ "created_at <= ?", [ToField (T.pack (show (floor u :: Integer)))]] ) (fUntil f)
-        ]
+  let clauses :: [(Text, [SQLData])]
+      clauses =
+        concat
+          [ maybe
+              []
+              (\ids -> [("id IN (" <> placeholders (length ids) <> ")", map toField ids)])
+              (fIds f)
+          , maybe
+              []
+              (\as -> [("pubkey IN (" <> placeholders (length as) <> ")", map toField as)])
+              (fAuthors f)
+          , maybe
+              []
+              ( \ks ->
+                  [("kind IN (" <> placeholders (length ks) <> ")", map toField ks)]
+              )
+              (fKinds f)
+          -- created_at is an INTEGER column. Binding it as Text made every
+          -- range comparison false, because SQLite sorts TEXT above INTEGER.
+          , maybe [] (\s -> [("created_at >= ?", [toField (floor s :: Int64)])]) (fSince f)
+          , maybe [] (\u -> [("created_at <= ?", [toField (floor u :: Int64)])]) (fUntil f)
+          ]
       (fragments, allParams) = unzip clauses
       whereText =
         if null fragments
@@ -214,7 +244,7 @@ evictExpired st = do
             \WHERE created_at < ? \
             \  AND kind NOT IN (" <> keep <> ")"
   before <- countEvents st
-  execute (stConn st) (Query (TE.encodeUtf8 sql)) (Only cutoff)
+  execute (stConn st) (Query sql) (Only cutoff)
   after <- countEvents st
   let removed = before - after
   when (removed > 0) $
@@ -234,11 +264,14 @@ storeStats st = do
     :: IO [(Int, Int)]
   pure StoreStats
     { ssTotal = total
-    , ssOldest = fmap fromIntegral . unOnly <$> headMay oldest
-    , ssNewest = fmap fromIntegral . unOnly <$> headMay newest
+    -- MIN/MAX over an empty table is NULL, so the aggregate row is already
+    -- Maybe Int64; headMay then adds the outer layer.
+    , ssOldest = headMay oldest >>= (toPosix . unOnly)
+    , ssNewest = headMay newest >>= (toPosix . unOnly)
     , ssByKind = byKind
     }
   where
     unOnly (Only x) = x
+    toPosix = fmap (fromIntegral :: Int64 -> POSIXTime)
     headMay []    = Nothing
     headMay (x:_) = Just x

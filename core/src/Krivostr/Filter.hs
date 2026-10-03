@@ -10,6 +10,7 @@ module Krivostr.Filter
   ) where
 
 import Data.Aeson
+import Data.Aeson.Types (parseMaybe)
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import Data.Text (Text)

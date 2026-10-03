@@ -80,7 +80,11 @@ export const encode = (hrp: string, bytes: Uint8Array): string => {
 };
 
 export const decode = (s: string): Bech32Decoded => {
-  if (s.length < 8 || s.length > 90) throw new Error('invalid length');
+  // BIP-173 caps a bech32 string at 90 characters, but NIP-19 deliberately does
+  // not: an nprofile carrying a pubkey plus a relay hint is routinely longer
+  // than that, so enforcing the cap made valid nostr: URIs undecodable. Only a
+  // lower bound is meaningful here.
+  if (s.length < 8) throw new Error('invalid length');
   const lower = s.toLowerCase();
   if (s !== lower && s !== s.toUpperCase()) throw new Error('mixed case');
   const s2 = lower;

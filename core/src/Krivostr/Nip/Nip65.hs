@@ -9,6 +9,7 @@ module Krivostr.Nip.Nip65
   ) where
 
 import Data.Text (Text)
+import qualified Data.Text as T
 import Krivostr.Event
 
 data RelayMode = Read | Write | Both
@@ -21,13 +22,17 @@ data RelayHint = RelayHint
 
 -- | Parse tags like ["r", "wss://...", "read"] into a list.
 -- Missing third element means Both.
+--
+-- The previous version used a @case@ expression as a comprehension guard,
+-- which cannot bind the pattern variable into the result expression, so @url@
+-- was never in scope. A pattern-match generator filters the same way and does
+-- bind.
 parseRelayList :: Event -> [RelayHint]
 parseRelayList e =
-  [ RelayHint url (decodeMode (drop 2 t))
+  [ RelayHint url (decodeMode rest)
   | t <- evTags e
-  , case t of
-      ("r":url:_) -> not (null url)
-      _           -> False
+  , ("r" : url : rest) <- [t]
+  , not (T.null url)
   ]
   where
     decodeMode xs = case xs of

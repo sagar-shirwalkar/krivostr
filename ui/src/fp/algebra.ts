@@ -5,9 +5,7 @@
  * must satisfy. Components consume the algebra, not ad‑hoc functions.
  */
 
-import { Result, Ok, Err, flatMap, map } from './result';
-import { Maybe, Just, Nothing, isJust } from './maybe';
-import { pipe } from './pipe';
+import { Result, Ok, Err } from './result';
 
 export interface Semigroup<A> {
   readonly concat: (a: A, b: A) => A;
@@ -33,20 +31,35 @@ export const StringMonoid: Monoid<string> = {
   empty: '',
 };
 
-/** A validated value: parse once, then trust. */
+/**
+ * A validated value: parse once, then trust.
+ *
+ * The error is a *list* because validation accumulates rather than
+ * short-circuits: the caller can report every problem at once instead of
+ * making the user rediscover them one at a time.
+ */
 export type Validated<E, A> = Result<E[], A>;
 
+/**
+ * Run every check, collecting all failures.
+ *
+ * A check may also transform the value, so each one receives the last
+ * successful result. A failing check contributes its error and leaves the
+ * running value alone, which is what lets the remaining checks still report
+ * instead of the whole thing stopping at the first problem.
+ */
 export const validate = <E, A>(
   checks: Array<(a: A) => Result<E, A>>,
-) => (a: A): Validated<E, A> =>
-  checks.reduce<Validated<E, A>>(
-    (acc, check) =>
-      pipe(
-        acc,
-        flatMap((v) => pipe(check(v), map((x) => x))),
-      ),
-    Ok(a),
-  );
+) => (a: A): Validated<E, A> => {
+  const errors: E[] = [];
+  let value = a;
+  for (const check of checks) {
+    const result = check(value);
+    if (result._tag === 'Err') errors.push(result.error);
+    else value = result.value;
+  }
+  return errors.length > 0 ? Err(errors) : Ok(value);
+};
 
 /** The rule algebra: a predicate on A, composed with and/or/not. */
 export interface Predicate<A> {

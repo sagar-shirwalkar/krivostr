@@ -4,7 +4,7 @@ import { NostrEvent, tagValue } from '../nostr/event';
 
 @customElement('nostr-feed')
 export class NostrFeed extends LitElement {
-  static styles = css`
+  static override styles = css`
     :host { display: block; }
     .empty {
       text-align: center;
@@ -69,7 +69,7 @@ export class NostrFeed extends LitElement {
     `;
   }
 
-  render() {
+  override render() {
     if (this.events.length === 0) {
       return html`<div class="empty">// no events yet — waiting on relays</div>`;
     }
