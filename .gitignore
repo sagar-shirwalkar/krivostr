@@ -1,0 +1,27 @@
+# Haskell
+.stack-work/
+dist-newstyle/
+*.hi
+*.o
+*.hpc
+.hpc/
+coverage.txt
+
+# Node / UI
+node_modules/
+ui/dist/
+ui/.vite/
+ui/coverage/
+*.log
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Docker
+docker/.env
+
+# Env
+.env
+.env.local

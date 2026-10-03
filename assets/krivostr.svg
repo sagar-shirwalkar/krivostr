@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f0c29"/>
+      <stop offset="50%" stop-color="#302b63"/>
+      <stop offset="100%" stop-color="#24243e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00d2ff"/>
+      <stop offset="100%" stop-color="#3a7bd5"/>
+    </linearGradient>
+    <linearGradient id="closure" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f5af19"/>
+      <stop offset="100%" stop-color="#f12711"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="400" height="400" rx="40" fill="url(#bg)"/>
+
+  <!-- Outer circular control loop (the machine's transition cycle) -->
+  <circle cx="200" cy="200" r="150" fill="none" stroke="url(#accent)"
+          stroke-width="3" stroke-dasharray="12 6" opacity="0.6"/>
+  <!-- Arrow tips on the loop to suggest cyclic execution -->
+  <polygon points="200,42 210,58 190,58" fill="url(#accent)" opacity="0.8"/>
+  <polygon points="200,358 190,342 210,342" fill="url(#accent)" opacity="0.8"/>
+  <polygon points="48,200 64,190 64,210" fill="url(#accent)" opacity="0.8"/>
+  <polygon points="352,200 336,210 336,190" fill="url(#accent)" opacity="0.8"/>
+
+  <!-- Stack of closures: three nested rounded rectangles, bottom to top -->
+  <g filter="url(#glow)">
+    <!-- Bottom closure -->
+    <rect x="120" y="220" width="160" height="40" rx="10"
+          fill="none" stroke="url(#closure)" stroke-width="3" opacity="0.5"/>
+    <!-- Middle closure -->
+    <rect x="135" y="175" width="130" height="40" rx="10"
+          fill="none" stroke="url(#closure)" stroke-width="3" opacity="0.75"/>
+    <!-- Top closure (active) -->
+    <rect x="150" y="130" width="100" height="40" rx="10"
+          fill="rgba(245,175,25,0.15)" stroke="url(#closure)" stroke-width="3"/>
+  </g>
+
+  <!-- Lambda glyph, centered inside the top closure -->
+  <text x="200" y="162" font-family="Georgia, serif" font-size="42"
+        fill="#ffffff" text-anchor="middle" font-style="italic">λ</text>
+
+  <!-- Small "term" dot inside middle closure -->
+  <circle cx="200" cy="195" r="6" fill="#00d2ff" opacity="0.9"/>
+
+  <!-- Small "env" dot inside bottom closure -->
+  <circle cx="200" cy="240" r="6" fill="#f5af19" opacity="0.7"/>
+
+  <!-- Title -->
+  <text x="200" y="310" font-family="Georgia, serif" font-size="22"
+        fill="#ffffff" text-anchor="middle" font-weight="bold">Krivine Machine</text>
+  <text x="200" y="335" font-family="Helvetica, Arial, sans-serif" font-size="13"
+        fill="#a0a0c0" text-anchor="middle">Call-by-Name · Stack of Closures</text>
+</svg>

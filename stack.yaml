@@ -1,0 +1,20 @@
+resolver: ghc-9.14.1
+packages:
+  - core
+  - client
+extra-deps:
+  - secp256k1-haskell-1.4.3
+  - wuss-1.2.2
+  - websockets-0.13.0.0
+  - aeson-2.3.2.0
+  - base16-bytestring-1.0.2.0
+  - cryptohash-sha256-0.11.102.1
+  - bech32-1.1.6
+  - sqlite-simple-0.4.19.0
+  - direct-sqlite-2.3.29
+  - wai-app-static-3.1.9
+  - wai-websockets-3.0.1.2
+  - temporary-1.3
+flags:
+  secp256k1-haskell:
+    schnorr: true

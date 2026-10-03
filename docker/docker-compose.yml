@@ -1,0 +1,13 @@
+services:
+  krivostr:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: krivostr:latest
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    environment:
+      KRIVOSTR_LOG_LEVEL: info
+      KRIVOSTR_STATIC_DIR: /app/static
+    restart: unless-stopped

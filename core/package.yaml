@@ -1,0 +1,44 @@
+name: krivostr-core
+version: 0.2.0.0
+github: yourhandle/krivostr
+license: MIT
+author: you
+maintainer: you@example.com
+category: Network
+
+dependencies:
+  - base >= 4.19 && < 5
+  - aeson >= 2.2
+  - bytestring
+  - text
+  - containers
+  - mtl
+  - time
+  - secp256k1-haskell
+  - base16-bytestring
+  - cryptohash-sha256
+  - memory
+  - bech32
+  - transformers
+  - scientific
+
+library:
+  source-dirs: src
+  ghc-options:
+    - -Wall
+    - -Wcompat
+    - -Wincomplete-record-updates
+    - -Wincomplete-uni-patterns
+    - -Wredundant-constraints
+
+tests:
+  spec:
+    type: exitcode-stdio-1.0
+    main: Spec.hs
+    source-dirs: test
+    dependencies:
+      - krivostr-core
+      - hspec
+      - QuickCheck
+      - aeson
+    ghc-options: [-threaded]
