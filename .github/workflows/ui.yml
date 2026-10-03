@@ -105,6 +105,28 @@ jobs:
           # CSP and no cache headers and nothing else here would notice.
           test -f dist/_headers
 
+      - name: Ensure Pages project exists
+        # wrangler refuses to create a Pages project implicitly during a deploy
+        # in a non-interactive shell: the local CLI prompts "create project?"
+        # when it sees an unknown name, but there is no TTY in CI, so it fails
+        # with "The Pages project does not exist." Creating it here first makes
+        # the deploy below a plain upload.
+        #
+        # The `|| true` makes this idempotent: on the first run the project is
+        # created, on every subsequent run wrangler exits non-zero with
+        # "A project with this name already exists" and the `|| true` swallows
+        # it. There is no `--if-not-exists` flag on `pages project create`.
+        #
+        # --production-branch=main matters only for the first run; it tells
+        # Pages which branch is the production branch, so that subsequent
+        # deploys from `main` update the live site rather than a preview URL.
+        # Re-running this step later is a no-op and cannot change it.
+        working-directory: ui
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler pages project create krivostr-ui --production-branch=main || true
+
       - name: Deploy
         # wrangler is a devDependency, so `pnpm install --frozen-lockfile` above
         # already put it on disk and this invokes that exact version.
