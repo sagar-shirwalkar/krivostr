@@ -1,5 +1,5 @@
 import { LitElement, html, css } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, state } from 'lit/decorators.js';
 
 @customElement('krivostr-landing')
 export class KrivostrLanding extends LitElement {
@@ -17,7 +17,8 @@ export class KrivostrLanding extends LitElement {
       font-size: var(--step--1); color: var(--text-dim);
       font-family: var(--font-mono);
     }
-    .nav .mark { color: var(--text); letter-spacing: 0.05em; display: flex; align-items: center; gap: var(--s-2); }
+    .nav .mark { color: var(--text); letter-spacing: 0.05em; display: flex; align-items: center; gap: var(--s-2); cursor: pointer; }
+    .nav .mark:hover { color: var(--amber); }
     .nav .mark::before {
       content: ''; width: 8px; height: 8px; border-radius: 50%;
       background: var(--amber); box-shadow: 0 0 12px var(--amber);
@@ -37,7 +38,17 @@ export class KrivostrLanding extends LitElement {
     h1 em { font-style: normal; color: var(--amber); font-family: var(--font-mono); font-weight: 400; }
     .lede {
       font-size: var(--step-2); color: var(--text-dim); line-height: 1.5;
-      max-width: 620px; margin-bottom: var(--s-7);
+      max-width: 620px; margin-bottom: var(--s-5);
+    }
+    .lede .nostr-link {
+      color: var(--amber); text-decoration: underline; text-underline-offset: 2px;
+      cursor: pointer; transition: color var(--dur) var(--ease);
+    }
+    .lede .nostr-link:hover { color: var(--amber-dim); }
+    .synergy {
+      font-size: var(--step-1); color: var(--text-dim); line-height: 1.6;
+      max-width: 620px; margin-bottom: var(--s-7); padding-left: var(--s-4);
+      border-left: 2px solid var(--amber);
     }
     .cta { display: flex; gap: var(--s-4); align-items: center; margin-bottom: var(--s-10); }
     .btn {
@@ -62,6 +73,27 @@ export class KrivostrLanding extends LitElement {
       display: inline-block; width: 8px; height: 14px; background: var(--amber);
       vertical-align: middle; animation: blink 1s steps(1) infinite;
     }
+    .revere {
+      margin-bottom: var(--s-10); padding: var(--s-6);
+      background: linear-gradient(135deg, var(--ink-2) 0%, var(--graphite-2) 100%);
+      border: 1px solid var(--border); border-radius: var(--radius-lg);
+      font-family: var(--font-mono); font-size: var(--step-0);
+      color: var(--paper-2); line-height: 1.6; position: relative; overflow: hidden;
+      cursor: pointer;
+    }
+    .revere::before {
+      content: ''; position: absolute; inset: 0;
+      background: radial-gradient(ellipse at center, var(--amber) 0%, transparent 70%);
+      opacity: 0; transition: opacity var(--dur) var(--ease);
+    }
+    .revere:hover::before { opacity: 0.08; }
+    .revere .quote { position: relative; z-index: 1; }
+    .revere .quote mark { background: transparent; color: var(--amber); font-weight: 500; }
+    .revere .cite { display: block; margin-top: var(--s-3); font-size: var(--step--1); color: var(--mute); }
+    .revere .hint { position: absolute; bottom: var(--s-2); right: var(--s-3);
+      font-size: var(--step--2); color: var(--mute); opacity: 0; transition: opacity var(--dur);
+    }
+    .revere:hover .hint { opacity: 1; }
     .features {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       gap: var(--s-1); border-top: 1px solid var(--border);
@@ -82,14 +114,25 @@ export class KrivostrLanding extends LitElement {
     }
   `;
 
+  @state() private view: 'landing' | 'app' = 'landing';
+
   private enter() {
-    this.dispatchEvent(new CustomEvent('enter', { bubbles: true, composed: true }));
+    this.view = 'app';
+  }
+
+  private back() {
+    this.view = 'landing';
   }
 
   override render() {
+    if (this.view === 'app') {
+      return html`<slot></slot>`;
+    }
     return html`
       <header class="nav">
-        <div class="mark" @click=${this.enter} style="cursor: pointer;">krivostr<span style="color:var(--mute)">/0.3</span></div>
+        <div class="mark" @click=${this.back}>
+          krvostr<span style="color:var(--mute)">/0.3</span>
+        </div>
         <nav>
           <a href="https://github.com/nostr-protocol/nostr" target="_blank">protocol</a>
           <a href="#" @click=${(e: Event) => { e.preventDefault(); this.enter(); }}>open app →</a>
@@ -103,9 +146,17 @@ export class KrivostrLanding extends LitElement {
           <em>reduce(relay) → feed</em>
         </h1>
         <p class="lede">
-          krivostr is a Nostr client built like a Krivine machine: a small set of
+          krivostr is a <span class="nostr-link" @click=${(e: Event) => { e.stopPropagation(); window.open('https://nostr.org/', '_blank'); }}>Nostr</span> client built like a Krivine machine: a small set of
           immutable terms, a rewriting relation, and nothing else. Events are
           values. Filters are predicates. The world touches the edges.
+        </p>
+        <p class="synergy">
+          This pure functional approach is naturally synergistic with <span class="nostr-link" @click=${(e: Event) => { e.stopPropagation(); window.open('https://nostr.org/', '_blank'); }}>Nostr</span>'s objectives: 
+          privacy and security through strong cryptography. 
+          When your core logic is pure—no hidden state, no side effects—there's 
+          no room for silent data leaks or supply-chain attacks. 
+          What the bridge accepts is exactly what the UI sends; what you sign is 
+          exactly what relays receive. Purity is the ultimate audit trail.
         </p>
         <div class="cta">
           <button class="btn primary" @click=${this.enter}>Open the client</button>
@@ -113,23 +164,36 @@ export class KrivostrLanding extends LitElement {
         </div>
       </section>
       <div class="demo" aria-hidden="true">
-        <div><span class="prompt">λ&gt;</span> connect <span class="comment">-- relays</span></div>
+        <div><span class="prompt">λ></span> connect <span class="comment">-- relays</span></div>
         <div><span class="ok">✓</span> wss://relay.damus.io</div>
         <div><span class="ok">✓</span> wss://nos.lol</div>
         <div><span class="ok">✓</span> wss://relay.primal.net</div>
-        <div><span class="prompt">λ&gt;</span> subscribe { kinds: [1], limit: 50 }</div>
+        <div><span class="prompt">λ></span> subscribe { kinds: [1], limit: 50 }</div>
         <div><span class="ok">←</span> 50 events reduced <span class="cursor"></span></div>
+      </div>
+      <div class="revere">
+        <div class="quote">
+          <mark>"Let the warning ride forth once more: tyranny is at our door."</mark>
+        </div>
+        <div class="cite">— Paul Revere, adapted</div>
+        <span class="hint">hover to reveal the signal</span>
       </div>
       <section class="features">
         <article class="feature">
           <span class="num">01 / core</span>
           <h3>Pure by construction</h3>
-          <p>The Haskell core has no I/O. Signing is a function. Filtering is a predicate. The canonical NIP‑01 bytes are a pure projection of the event term.</p>
+          <p>Haskell's purity isn't academic—it's battle-tested. The same guarantees that secure 
+          high-value banking operations (zero side effects, deterministic outputs) protect your 
+          keys here. Signing is a pure function. Filtering is a pure predicate. The canonical 
+          NIP‑01 bytes are a pure projection of the event term. No I/O. No hidden state. No surprises.</p>
         </article>
         <article class="feature">
           <span class="num">02 / algebra</span>
           <h3>Rules, not branches</h3>
-          <p>Filters compose with <code>and</code>/<code>or</code>/<code>not</code> — no ad-hoc if/else chains. The same pure logic runs in Haskell and TypeScript, so what the bridge accepts is exactly what the UI sends.</p>
+          <p>Filters compose with <code>and</code>/<code>or</code>/<code>not</code> — no ad-hoc if/else chains. 
+          The UI re‑expresses the same pure algebra in TypeScript with hand‑rolled <code>Maybe</code>, 
+          <code>Result</code>, and <code>IO</code>. What the bridge accepts is exactly what the UI sends; 
+          what the relay receives is exactly what you signed. Purity across the stack = high security.</p>
         </article>
         <article class="feature">
           <span class="num">03 / history</span>
