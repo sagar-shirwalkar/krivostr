@@ -1,4 +1,10 @@
-# krivostr
+# <p align="center">krivostr</p>
+
+<p align="center"><code>K = Y (λM. λ⟨t,π,ρ⟩. t ρ @ π ▷ M)</code></p>
+
+<p align="center"><strong>Blazing-fast Nostr client and bridge for people who follow way too many people.</strong></p>
+
+<div align="center">
 
 [![Haskell](https://img.shields.io/badge/Haskell-5D4F85?style=for-the-badge&logo=haskell&logoColor=white)](https://haskell.org)
 [![Lit](https://img.shields.io/badge/lit-324FFF?style=for-the-badge&logo=lit&logoColor=white)](https://lit.dev)
@@ -6,13 +12,20 @@
 [![Tailwind](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 [![License](https://img.shields.io/badge/AGPL--3.0-red?style=for-the-badge)](LICENSE)
 
-<p align="center"><picture><img src="assets/krivostr.svg" width="320" height="320" alt="krivostr"> </picture></p>
+</div>
 
-<p align="center"><code>K = Y (λM. λ⟨t,π,ρ⟩. t ρ @ π ▷ M)</code></p>
+<div align="center">
 
-A Nostr client and bridge for people who follow too many people to fit in a browser tab.
+<img width="2840" height="3708" alt="krivostr-ui-landing" src="https://github.com/user-attachments/assets/158086d5-a3dd-4267-815d-d3d3f0ad227d" />
+<img width="2842" height="4104" alt="krivostr-feed" src="https://github.com/user-attachments/assets/264442ee-13b6-455d-8676-35adcd24e653" />
 
-Everything you read lands in a SQLite file you own, indexed for full-text search, and
+</div>
+
+<br>
+
+<p align="center">See the client in action at https://krivostr-ui.pages.dev/</p>
+
+With krivostr, everything you read lands in a SQLite file you own, indexed for full-text search, and
 reachable from the command line. Relays forget; your store does not. The name is a
 portmanteau of **Nostr** and **Krivine**, the call-by-name abstract machine that evaluates
 lambda terms through a stack of closures.
