@@ -89,7 +89,7 @@ export class KrivostrLanding extends LitElement {
   override render() {
     return html`
       <header class="nav">
-        <div class="mark">krivostr<span style="color:var(--mute)">/0.2</span></div>
+        <div class="mark" @click=${this.enter} style="cursor: pointer;">krivostr<span style="color:var(--mute)">/0.3</span></div>
         <nav>
           <a href="https://github.com/nostr-protocol/nostr" target="_blank">protocol</a>
           <a href="#" @click=${(e: Event) => { e.preventDefault(); this.enter(); }}>open app →</a>
@@ -97,11 +97,11 @@ export class KrivostrLanding extends LitElement {
       </header>
       <section class="hero">
         <span class="eyebrow">a pure nostr client</span>
-        <h1>
+        <h2>
           A closed term language<br />
           for the open social web.<br />
           <em>reduce(relay) → feed</em>
-        </h1>
+        </h2>
         <p class="lede">
           krivostr is a Nostr client built like a Krivine machine: a small set of
           immutable terms, a rewriting relation, and nothing else. Events are
@@ -109,7 +109,7 @@ export class KrivostrLanding extends LitElement {
         </p>
         <div class="cta">
           <button class="btn primary" @click=${this.enter}>Open the client</button>
-          <a class="btn" href="https://github.com" target="_blank">Read the source</a>
+          <a class="btn" href="https://github.com/sagar-shirwalkar/krivostr" target="_blank">Read the source</a>
         </div>
       </section>
       <div class="demo" aria-hidden="true">
@@ -129,7 +129,7 @@ export class KrivostrLanding extends LitElement {
         <article class="feature">
           <span class="num">02 / algebra</span>
           <h3>Rules, not branches</h3>
-          <p>Filters compose as <code>∧</code>, <code>∨</code>, <code>¬</code>. The UI re‑expresses the same algebra in TypeScript with hand‑rolled Maybe, Result, and IO.</p>
+          <p>Filters compose with <code>and</code>/<code>or</code>/<code>not</code> — no ad-hoc if/else chains. The same pure logic runs in Haskell and TypeScript, so what the bridge accepts is exactly what the UI sends.</p>
         </article>
         <article class="feature">
           <span class="num">03 / history</span>
@@ -138,7 +138,7 @@ export class KrivostrLanding extends LitElement {
         </article>
       </section>
       <footer>
-        <span>MIT · built in the open</span>
+        <span>AGPL-3.0 · built in the open</span>
         <span>λ (λx.x) (λx.x)</span>
       </footer>
     `;

@@ -50,5 +50,5 @@ COPY --from=ui /ui/dist /app/static
 EXPOSE 8081
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-# The bridge serves the UI, the /ws endpoint and everything else on one port.
-CMD ["/app/krivostr", "serve", "--port", "8081", "--static", "/app/static"]
+# Bind to 0.0.0.0 so the port is reachable outside the container.
+CMD ["/app/krivostr", "serve", "--port", "8081", "--host", "0.0.0.0", "--static", "/app/static"]
