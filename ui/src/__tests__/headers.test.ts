@@ -64,8 +64,12 @@ describe('_headers Content-Security-Policy', () => {
     }
   });
 
-  it('loads only same-origin scripts', () => {
-    expect(sourcesFor('script-src')).toEqual(["'self'"]);
+  it('allows only same-origin scripts plus Cloudflare Insights', () => {
+    expect(sourcesFor('script-src')).toEqual([
+      "'self'",
+      "'sha256-Xr8ZXGdI114NdtLEpSRiuIfaCG+8K1JUU1dbe1s/LAg='",
+      'https://static.cloudflareinsights.com',
+    ]);
   });
 
   it('allows the Google Fonts stylesheet index.html links to', () => {
