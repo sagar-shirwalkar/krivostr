@@ -70,7 +70,9 @@ connect lg url = do
   reader <- async (readerLoop rh)
   writer <- async (writerLoop rh)
   atomically $ writeTVar threads (Just (reader, writer))
-  emit lg Info ("connected: " <> url)
+  -- Debug, not Info: the pool owns the authoritative "connected" line, and two
+  -- Info lines per relay made a three-relay bridge look like six connections.
+  emit lg Debug ("connected: " <> url)
   pure rh
 
 -- | Read frames until the connection fails, decoding each one onto the inbox.

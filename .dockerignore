@@ -1,0 +1,43 @@
+# Keep the build context small and free of local state.
+#
+# .stack-work alone is hundreds of megabytes and would be uploaded on every
+# build; ui/node_modules is the same. The .env files are the reason this file
+# matters most: they are not copied by any Dockerfile stage, but a build
+# context is still sent to the daemon, and "not copied" is a weaker guarantee
+# than "never sent".
+
+# Haskell build output
+.stack-work/
+**/.stack-work/
+dist-newstyle/
+*.hi
+*.o
+*.hpc
+.hpc/
+
+# UI
+ui/node_modules/
+ui/dist/
+ui/coverage/
+ui/.vite/
+
+# Generated reports
+coverage.txt
+
+# Local secrets
+.env
+.env.local
+docker/.env
+
+# Version control and editors
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# Docs and assets the images do not need
+docs/
+*.md
+!README.md
+assets/

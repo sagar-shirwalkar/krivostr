@@ -1,0 +1,82 @@
+# Deploy the UI to Cloudflare Pages.
+#
+# Setup, once, in the Cloudflare dashboard (Pages is the part that needs
+# configuring; the token does not):
+#
+#   1. Workers & Pages -> Create -> Pages -> Upload assets (drag-and-drop
+#      deploys are fine to discard; this creates the project).
+#   2. Project -> Settings -> Builds & deployments -> Environment variables:
+#        VITE_BRIDGE_URL  = wss://your-bridge-host/ws
+#      A Pages deployment is static, so it cannot reach a bridge on your
+#      laptop, and this variable is how the page learns where the bridge is. It
+#      is read at build time (Vite inlines it), so it has to be set on the
+#      environment this workflow deploys from. Left unset, the UI assumes the
+#      bridge shares its own origin, which is what `krivostr serve` gives you.
+#   3. Repository -> Settings -> Secrets -> Actions -> New repository secret:
+#        CLOUDFLARE_API_TOKEN  (Edit Cloudflare Workers, template)
+#        CLOUDFLARE_ACCOUNT_ID (from the dashboard sidebar)
+#
+# Cloudflare Pages can also build this repository itself with no workflow at
+# all: set the build command to "pnpm install --frozen-lockfile && pnpm build",
+# the output directory to "dist", and the root directory to "ui". Use whichever
+# fits; this workflow exists so the deploy is visible in the same history as
+# the code that produced it.
+name: ui
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ui/**"
+      - ".github/workflows/ui.yml"
+  workflow_dispatch:
+
+# Only one deployment at a time, and never cancel one halfway: a half-written
+# deployment is worse than a slightly stale one.
+concurrency:
+  group: ui-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: build and deploy to Cloudflare Pages
+    runs-on: ubuntu-latest
+    environment: pages
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('ui/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install, test and build
+        working-directory: ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+          pnpm build
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          # Deploying by project name needs no wrangler config file, and the
+          # token stays in the repository secret rather than in the checkout.
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=krivostr-ui --branch=main

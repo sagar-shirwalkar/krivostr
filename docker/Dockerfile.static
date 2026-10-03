@@ -1,0 +1,53 @@
+# ─── Static Linux binary ───────────────────────────────────────────────
+# Produces one self-contained executable with no shared-library
+# dependencies, for the release workflow to publish.
+#
+# Alpine/musl would be the easy way to get a portable static binary, but
+# Docker Hub publishes no Alpine image for GHC 9.10, and Stackage pins
+# lts-24.61 to GHC 9.10.3. So this links glibc statically instead, and the
+# verification step below is what decides whether the artifact is usable,
+# rather than a guess.
+#
+# libsecp256k1 is deliberately absent: BIP-340 is implemented in pure Haskell
+# (core/src/Krivostr/Schnorr.hs), so the only C in the build is the sqlite3
+# amalgamation that sqlite-simple compiles itself.
+#
+#   docker build -f docker/Dockerfile.static -t krivostr:static .
+#   docker build --platform linux/amd64 -f docker/Dockerfile.static .
+
+FROM haskell:9.10.3-slim-bookworm AS build
+
+RUN apt-get update && apt-get install --no-install-recommends -y \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY stack.yaml stack.yaml.lock ./
+COPY core/ core/
+COPY client/ client/
+
+# Dependencies first, in their own layer: they are the slow part, and they do
+# not change when only the link flags below are being adjusted.
+RUN stack build --only-dependencies
+
+# --copy-bins puts the executable at /out/krivostr.
+#
+#   -optl-static       links glibc statically, so the result needs nothing
+#                      installed to run.
+#   -optl-fuse-ld=bfd  Debian's gcc defaults to ld.gold, which cannot link a
+#                      static glibc: libc.a is built with TLS relocations that
+#                      gold rejects with "unsupported reloc ... in non-static
+#                      TLSLE mode". bfd handles them.
+RUN stack build --copy-bins --local-bin-path /out \
+      --ghc-options "-optl-static -optl-fuse-ld=bfd"
+
+# Fail the build here rather than in a user's hands: a binary that still has
+# shared-library dependencies is not the artifact this file promises.
+RUN ldd /out/krivostr 2>&1 | tee /tmp/ldd.txt; \
+    if grep -q "=>" /tmp/ldd.txt; then \
+      echo "::error::binary is not statically linked"; exit 1; \
+    fi; \
+    /out/krivostr --help > /dev/null
+
+FROM scratch AS artifact
+COPY --from=build /out/krivostr /krivostr

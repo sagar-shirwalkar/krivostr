@@ -35,7 +35,6 @@ import Data.Char (toLower)
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.List (dropWhileEnd)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -202,8 +201,20 @@ runCLI = do
   hSetEncoding stderr utf8
   execParser parserInfo >>= dispatch
 
+-- | Version reported by @--version@. Kept here rather than generated from
+-- client/package.yaml because hpack does not expose the package version to the
+-- source; the release workflow reads the tag, so the two are the same string.
+version :: String
+version = "0.2.0.0"
+
+-- | @--version@ answers without needing a subcommand, so `krivostr --version`
+-- works in a script that knows nothing about the command set.
+versionP :: Parser (a -> a)
+versionP = infoOption ("krivostr " <> version)
+  (long "version" <> help "Show the version and exit")
+
 parserInfo :: ParserInfo Opts
-parserInfo = info (helper <*> optsP) ( fullDesc
+parserInfo = info (helper <*> versionP <*> optsP) ( fullDesc
   <> progDesc "One binary: bridge, CLI, search and HTTP API over a local SQLite store"
   <> header "krivostr — the store outlives the browser, so everything in it is scriptable."
   <> footer "Run `krivostr <command> --help` for one command's options." )
@@ -458,8 +469,9 @@ dispatch (Opts g cmd) = do
   colour <- resolveColour g
   lg     <- newLogger level
   withStderrLog lg $ \lg' -> case cmd of
-      CmdServe o  -> withStore lg' db $ \st ->
-                       runBridge lg' (bridgeConfig o) st
+      CmdServe o  -> do
+                       cfg <- bridgeConfig o
+                       withStore lg' db $ \st -> runBridge lg' cfg st
       CmdFeed o   -> cmdFeed lg' db colour o
       CmdSearch o -> cmdSearch lg' db colour o
       CmdDm o     -> cmdDm lg' db o
@@ -476,11 +488,17 @@ dispatch (Opts g cmd) = do
                        TIO.putStrLn ("nsec: " <> exportNsec sk)
                        TIO.putStrLn ("npub: " <> exportNpub (derivePublicKey sk))
   where
-    bridgeConfig o = BridgeConfig
-      { bcPort = fromMaybe 8081 (soPort o)
-      , bcStaticDir = fromMaybe "./ui/dist" (soStatic o)
-      , bcUpstreams = soUpstream o
-      }
+    -- --port and --static each name an environment variable in their help text,
+    -- so both are read here; a container sets them once instead of passing a
+    -- command line to an image whose CMD it cannot see.
+    bridgeConfig o = do
+      port   <- maybe (envPort 8081 "KRIVOSTR_PORT")    pure (soPort o)
+      static <- maybe (envPath "./ui/dist" "KRIVOSTR_STATIC_DIR") pure (soStatic o)
+      pure BridgeConfig
+        { bcPort = port
+        , bcStaticDir = static
+        , bcUpstreams = soUpstream o
+        }
 
 resolveDb :: Global -> IO FilePath
 resolveDb g = case gDb g of
@@ -509,6 +527,25 @@ envText k = do
 
 -- | Colour when asked for, when stdout is a terminal, and not when @NO_COLOR@
 -- is set. Guessing the other way puts escape codes into a pipe.
+-- | A port from the environment, falling back to @def@ when unset or unparseable.
+envPort :: Int -> String -> IO Int
+envPort def name = do
+  m <- envText name
+  pure $ case m >>= readMaybeInt of
+    Just n | n > 0 && n < 65536 -> n
+    _ -> def
+
+-- | A path from the environment, falling back to @def@ when unset or empty.
+envPath :: FilePath -> String -> IO FilePath
+envPath def name = do
+  m <- envText name
+  pure (maybe def T.unpack m)
+
+readMaybeInt :: Text -> Maybe Int
+readMaybeInt t = case reads (T.unpack (T.strip t)) of
+  [(n, "")] -> Just n
+  _         -> Nothing
+
 resolveColour :: Global -> IO Bool
 resolveColour g = case gColor g of
   Just c  -> pure c

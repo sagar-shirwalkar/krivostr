@@ -1,0 +1,113 @@
+# Build and test everything on every push and pull request.
+#
+# The Haskell build is the slow part, so both the Stack work area and the
+# download cache are keyed on stack.yaml.lock: a change to any dependency
+# misses, a change to our own source hits.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (GHC 9.10.3, lts-24.61)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Stack downloads and build trees
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.stack
+            core/.stack-work
+            client/.stack-work
+          key: stack-${{ runner.os }}-${{ hashFiles('stack.yaml.lock') }}
+          restore-keys: stack-${{ runner.os }}-
+
+      - name: Install Stack
+        # No action for this: Stack's own installer pins the tool, and
+        # stack.yaml decides which GHC it then downloads.
+        run: |
+          curl -sSL https://get.haskellstack.org/ | sh
+          stack --version
+
+      - name: Test
+        run: stack test
+
+      - name: Build the release binary
+        # The published artifact is produced by the same command, so building it
+        # here means a broken artifact can never reach a tag.
+        run: stack build --copy-bins --local-bin-path dist
+
+      - name: Smoke-test the binary
+        run: |
+          ./dist/krivostr --version
+          ./dist/krivostr --help
+          KRIVOSTR_DB="$RUNNER_TEMP/smoke.db" ./dist/krivostr reindex
+
+  ui:
+    name: ui (Lit + TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        # corepack ships with Node, so this needs no third-party action and
+        # still honours the packageManager field in ui/package.json.
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('ui/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install
+        working-directory: ui
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck and build
+        working-directory: ui
+        run: pnpm build
+
+      - name: Test
+        working-directory: ui
+        run: |
+          pnpm test
+          pnpm test:browser
+
+  docker:
+    name: docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: docker build -f docker/Dockerfile -t krivostr:ci .
+
+      - name: Serve the bundled UI from the image
+        # The image is the "one binary plus the UI" story, so prove the CMD
+        # actually serves rather than trusting it.
+        run: |
+          docker run -d --name krivostr -p 8081:8081 krivostr:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8081/ > /dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS -o /dev/null -w 'GET / -> %{http_code}\n' http://127.0.0.1:8081/
+          docker logs krivostr
+          docker rm -f krivostr

@@ -1,7 +1,6 @@
 /**
- * Bridge transport. When `KRIVOSTR_BRIDGE` is set (or by default in
- * production), the UI talks to the local Haskell bridge at /ws instead
- * of connecting to upstream relays directly. This gives us:
+ * Bridge transport. The UI talks to the Haskell bridge at /ws instead of
+ * connecting to upstream relays directly. This gives us:
  *
  *   - a durable local cache the browser can't lose
  *   - one connection instead of N
@@ -15,11 +14,33 @@ import { parseEvent } from './event';
 import { toWire } from './filter';
 import { RelayHandle, RelayState, RelayHandlers } from './relay';
 
-export const BRIDGE_URL = (() => {
-  if (typeof window === 'undefined') return 'ws://localhost:8081/ws';
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/ws`;
-})();
+/**
+ * Work out where the bridge lives.
+ *
+ * A UI hosted on Cloudflare Pages is not being served by the bridge, so there
+ * is no same-origin /ws to fall back to: VITE_BRIDGE_URL names it at build
+ * time, e.g. wss://bridge.example.com/ws. Unset, the page and the bridge are
+ * assumed to be one origin, which is what `krivostr serve` gives you, and an
+ * empty string is treated as unset rather than as a broken address.
+ *
+ * Kept separate from the module-level constant because Vite inlines
+ * `import.meta.env` when it builds this file, which leaves nothing a test can
+ * stub; the decision itself is worth testing on its own.
+ */
+export const resolveBridgeUrl = (
+  configured: string | undefined,
+  origin: { protocol: string; host: string } | undefined,
+): string => {
+  if (configured !== undefined && configured !== '') return configured;
+  if (origin === undefined) return 'ws://localhost:8081/ws';
+  const proto = origin.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${origin.host}/ws`;
+};
+
+export const BRIDGE_URL = resolveBridgeUrl(
+  import.meta.env.VITE_BRIDGE_URL as string | undefined,
+  typeof window === 'undefined' ? undefined : window.location,
+);
 
 export const connectBridge = (h: RelayHandlers): RelayHandle => {
   let state: RelayState = 'connecting';

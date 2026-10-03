@@ -1,0 +1,277 @@
+# Publish a GitHub Release for every v* tag.
+#
+# What ships, and why:
+#   * one binary per platform, built from the same stack.yaml the tests ran on;
+#   * the compiled UI inside every archive, so a download is a working client
+#     rather than a binary that needs a separate pnpm build;
+#   * SHA256SUMS covering every archive, generated once from the exact files
+#     that are uploaded.
+#
+# The Linux binaries are built by docker/Dockerfile.static, which fails the
+# build if the executable is not statically linked. macOS and Windows binaries
+# are built by Stack directly and are dynamically linked against their
+# platform's system libraries, which is normal there: both targets ship the
+# runtime anyway.
+#
+# Tag and client/package.yaml version are kept in step by the version check
+# below, so a release cannot claim a version the code does not have.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to publish artifacts for (must already exist)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ─── The UI, built once and shared by every archive ───────────────
+  ui:
+    name: build ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('ui/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Build
+        working-directory: ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
+          retention-days: 1
+
+  # ─── Linux: static, one file, no shared libraries ────────────────
+  linux:
+    name: linux-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      # arm64 is built under emulation because GitHub's native arm runner is
+      # not available to every plan. On a public repository, replacing
+      # runs-on with ubuntu-24.04-arm builds it natively and much faster.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build the static binary
+        run: |
+          docker build \
+            --platform "${{ matrix.platform }}" \
+            --target build \
+            -f docker/Dockerfile.static \
+            -t krivostr:static \
+            .
+          cid=$(docker create krivostr:static)
+          docker cp "$cid":/out/krivostr "dist/krivostr"
+          docker rm "$cid"
+          chmod +x dist/krivostr
+          file dist/krivostr
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: dist/ui
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cp LICENSE README.md dist/
+          tar -C dist -czf "krivostr-$version-linux-${{ matrix.arch }}.tar.gz" \
+            krivostr ui LICENSE README.md
+          rm -rf dist
+          ls -l
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: krivostr-linux-${{ matrix.arch }}
+          path: krivostr-*.tar.gz
+          retention-days: 1
+
+  # ─── macOS: arm64 and x86_64 ─────────────────────────────────────
+  macos:
+    name: macos-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x86_64
+            runner: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Stack
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.stack
+            core/.stack-work
+            client/.stack-work
+          key: stack-macos-${{ runner.arch }}-${{ hashFiles('stack.yaml.lock') }}
+          restore-keys: stack-macos-${{ runner.arch }}-
+
+      - name: Install Stack
+        run: |
+          curl -sSL https://get.haskellstack.org/ | sh
+          stack --version
+
+      - name: Build
+        run: stack build --copy-bins --local-bin-path dist
+          ./dist/krivostr --version
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: dist/ui
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cp LICENSE README.md dist/
+          tar -C dist -czf "krivostr-$version-macos-${{ matrix.arch }}.tar.gz" \
+            krivostr ui LICENSE README.md
+          rm -rf dist
+          ls -l
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: krivostr-macos-${{ matrix.arch }}
+          path: krivostr-*.tar.gz
+          retention-days: 1
+
+  # ─── Windows ─────────────────────────────────────────────────────
+  windows:
+    name: windows-x86_64
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Stack
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.stack
+            core/.stack-work
+            client/.stack-work
+          key: stack-windows-${{ hashFiles('stack.yaml.lock') }}
+          restore-keys: stack-windows-
+
+      - name: Install Stack
+        run: |
+          curl -sSL https://get.haskellstack.org/ | sh
+          stack --version
+
+      - name: Build
+        run: stack build --copy-bins --local-bin-path dist
+          ./dist/krivostr.exe --version
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: dist/ui
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cp LICENSE README.md dist/
+          cd dist && 7z a "../krivostr-$version-windows-x86_64.zip" krivostr.exe ui LICENSE README.md
+          cd ..
+          rm -rf dist
+          ls -l
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: krivostr-windows-x86_64
+          path: krivostr-*.zip
+          retention-days: 1
+
+  # ─── Checksums and the release itself ────────────────────────────
+  publish:
+    name: publish release
+    needs: [linux, macos, windows, ui]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: source
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: krivostr-*
+          path: archives
+          merge-multiple: true
+
+      - name: Check the tag matches the package version
+        working-directory: source
+        run: |
+          # A Cabal version has a fourth component that a tag has no use for:
+          # client/package.yaml says 0.2.0.0, the tag is v0.2.0.
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg=$(grep -m1 '^version:' client/package.yaml | awk '{print $2}')
+          expected=$(printf '%s' "$pkg" | cut -d. -f1-3)
+          if [ "$tag_version" != "$expected" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match v$expected, the version in client/package.yaml ($pkg)"
+            exit 1
+          fi
+          echo "releasing $tag_version"
+
+      - name: Checksums
+        run: |
+          cd archives
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+          cat SHA256SUMS
+          ls -l
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          files="archives/*"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" $files --clobber
+          else
+            gh release create "$tag" $files \
+              --title "krivostr $version" \
+              --generate-notes
+          fi

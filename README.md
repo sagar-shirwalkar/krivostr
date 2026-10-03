@@ -9,7 +9,7 @@
 
 <p align="center"><code>K = Y (λM. λ⟨t,π,ρ⟩. t ρ @ π ▷ M)</code></p>
 
-Krivostr is a Nostr client for people who follow too many people to fit in a
+Krivostr is a Nostr client and bridge for people who follow too many people to fit in a
 browser tab. 
 
 It ships as a single static binary - a bridge daemon, CLI, watcher, and HTTP API in one file, plus a Lit-based web UI you can self-host. 

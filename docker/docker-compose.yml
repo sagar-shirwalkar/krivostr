@@ -1,3 +1,6 @@
+# The bridge serves the UI, the /ws endpoint and everything else on one port,
+# so only that port is published: 8080 was never listened on and asking Docker
+# to forward it produced a connection that refused.
 services:
   krivostr:
     build:
@@ -5,9 +8,15 @@ services:
       dockerfile: docker/Dockerfile
     image: krivostr:latest
     ports:
-      - "8080:8080"
       - "8081:8081"
     environment:
       KRIVOSTR_LOG_LEVEL: info
-      KRIVOSTR_STATIC_DIR: /app/static
+      # Without this the store would be written inside the container's
+      # writable layer and every `docker compose up` would start from empty.
+      KRIVOSTR_DB: /data/events.db
+    volumes:
+      - krivostr-data:/data
     restart: unless-stopped
+
+volumes:
+  krivostr-data:
