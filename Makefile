@@ -57,7 +57,7 @@ coverage: coverage-backend coverage-ui
 coverage-backend:
 	stack test --coverage
 	./scripts/check-coverage.sh
-	hpc report --all > coverage.txt
+	./scripts/hpc-coverage.py > coverage.txt
 	@echo "── Backend coverage written to coverage.txt"
 
 coverage-ui:

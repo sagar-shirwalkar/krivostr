@@ -1,83 +1,117 @@
 # krivostr
 
 [![Haskell](https://img.shields.io/badge/Haskell-9.10.3-5e5086?style=for-the-badge&label=Haskell&labelColor=gray&logo=haskell&logoColor=white)](https://haskell.org)
-[![Lit](https://img.shields.io/badge/Lit-3.3.3-324fff?style=for-the-badge&label=Lit&labelColor=gray&logo=lit&logoColor=white)](https://lit.dev)
+[![Lit](https://img.shields.io/badge/Lit-3.3.3-324fff?style=flat-square&label=Lit&labelColor=gray&logo=lit&logoColor=white)](https://lit.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?style=for-the-badge&label=TypeScript&labelColor=gray&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-[![MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL--3.0-violet?style=for-the-badge)](LICENSE)
 
 <p align="center"><picture><img src="assets/krivostr.svg" width="320" height="320" alt="krivostr"> </picture></p>
 
 <p align="center"><code>K = Y (λM. λ⟨t,π,ρ⟩. t ρ @ π ▷ M)</code></p>
 
-Krivostr is a Nostr client and bridge for people who follow too many people to fit in a
-browser tab. 
+A Nostr client and bridge for people who follow too many people to fit in a browser tab.
 
-It ships as a single static binary - a bridge daemon, CLI, watcher, and HTTP API in one file, plus a Lit-based web UI you can self-host. 
+Everything you read lands in a SQLite file you own, indexed for full-text search, and
+reachable from the command line. Relays forget; your store does not. The name is a
+portmanteau of **Nostr** and **Krivine**, the call-by-name abstract machine that evaluates
+lambda terms through a stack of closures.
 
-The name is a portmanteau of **Nostr** and **Krivine** - the call-by-name abstract machine
-that evaluates lambda terms through a stack of closures.  Here's what you get:
-
-- **One binary, six jobs**  : `serve`, `feed`, `search`, `dm`, `watch`, `api`.
-  No runtime dependencies. SQLite and FTS5 are linked in.
-- **A store that survives a browser wipe** :  a month of verified history in
-  SQLite, indexed for full-text search (NIP-50). Relays forget; you don't.
-- **A pool that scales to hundreds of relays** :  the outbox model (NIP-65)
-  in a background thread, deduplicated and signature-verified before it
-  reaches the UI.
-- **Search that actually searches** :  FTS5 over your cached feed, plus
-  relay-side `search` filters for the hosted UI. Same wire message, different
-  leverage.
-- **Signers at the boundary** :  local `nsec` (wrapped with PBKDF2 + AES-GCM),
-  NIP-07 extension, or NIP-46 bunker. Your key never enters the app if you
-  don't want it to.
-- **Pure core, effectful shell** : the Haskell core (`Event`, `Filter`,
-  `Wire`) is pure by construction; SQLite, WebSockets, and the HTTP bridge
-  live in `client`. The browser re-expresses the same algebra in TypeScript.
+- **One binary, nine subcommands** — `serve`, `feed`, `search`, `dm`, `export`, `watch`,
+  `api`, `reindex`, `keygen`. SQLite and FTS5 are linked in; no runtime to install.
+- **A store that outlives the browser** — events in SQLite with a 30-day retention
+  window, indexed on `pubkey`, `created_at`, and `kind`, plus an FTS5 index for search.
+- **A relay-shaped WebSocket bridge** — the browser speaks ordinary Nostr to `krivostr
+  serve`, which answers from the local store and can fan out to upstream relays.
+- **Three signers at the boundary** — a local `nsec`, a NIP-07 browser extension, or a
+  NIP-46 remote bunker.
+- **A pure core** — canonical serialization, signing, verification, and filter matching
+  are pure Haskell with no IO in `krivostr-core`; SQLite, WebSockets, and HTTP live in
+  `krivostr-client`.
 
 ---
 
-## Features
+## Contents
 
-- **Pure NIP-01 core** — canonical serialization, Schnorr signing, and
-  verification as pure functions, with QuickCheck properties.
-- **Filter algebra** — filters compile to `Rule<NostrEvent>` and compose with
-  `∧`, `∨`, `¬`. The same algebra is expressed in Haskell (`all`, `any`, `not`)
-  and TypeScript (`and`, `or`, `not`).
-- **SQLite store with retention** — 30 days for ephemeral events, forever for
-  DMs, follows, metadata, and relay lists. Indexed on `pubkey`, `created_at`,
-  `kind`.
-- **WebSocket bridge** — a relay-shaped endpoint the browser speaks to. Fans
-  out to upstream relays, serves from local cache, evicts hourly.
-- **NIP-65 outbox model** — relay hints from kind 10002 events determine read
-  and write sets. No more hard-coded `RELAYS`.
-- **Three signers** — local `nsec` (with `SubtleCrypto.wrapKey`-style
-  non-extractable AES-GCM storage), NIP-07 (extension), NIP-46 (remote
-  bunker).
-- **Bech32 native** — `npub`, `nsec`, `note`, `nprofile`, `nevent`, `naddr`.
-  Hand-rolled BIP-173. No external bech32 library.
+- [Quick start](#quick-start)
+- [Installation](#installation)
+- [Commands](#commands)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [Protocol support](#protocol-support)
+- [Testing and coverage](#testing-and-coverage)
+- [Project structure](#project-structure)
+- [Development](#development)
+- [Design decisions](#design-decisions)
+- [Known limitations](#known-limitations)
+- [Roadmap](#roadmap)
+- [License](#license)
 
 ---
 
 ## Quick start
 
-**Prerequisites:** GHC 9.10.3 (pinned by Stack via `lts-24.61`), Stack 3.11.1,
-Node 22+, pnpm 9+, Docker (optional).
+**Prerequisites:** GHC 9.10.3 (pinned by Stack through `lts-24.61`), Stack, Node 22+,
+pnpm 9+. Docker is optional.
 
 ```bash
-git clone https://github.com/yourhandle/krivostr
+git clone https://github.com/sagar-shirwalkar/krivostr
 cd krivostr
 make build
 ```
 
-Build the bridge (Haskell) and the UI (Lit):
+`make build` compiles the Haskell executable and the UI. Then start the bridge, which
+also serves the built UI from `./ui/dist`:
 
 ```bash
-stack exec krivostr serve &    # bridge on :8081, SQLite at .krivostr/events.db
-cd ui && pnpm dev              # Vite on :5173
+stack exec krivostr serve
 ```
 
-Open <http://localhost:5173>. The landing page explains the model; click
-**Open the client**, pick a signer, and post.
+```
+info  store: opened .krivostr/events.db
+info  bridge: 3 upstream relays
+info  bridge: listening on :8081
+info  connected: wss://relay.damus.io
+info  connected: wss://nos.lol
+info  connected: wss://relay.primal.net
+```
+
+Open <http://localhost:8081>. The landing page explains the model; open the client,
+choose a signer, and post.
+
+For UI development with hot reload, run Vite alongside the bridge. Vite does not proxy
+`/ws`, so point the UI at the bridge explicitly:
+
+```bash
+stack exec krivostr serve &                        # bridge on :8081
+cd ui && VITE_BRIDGE_URL=ws://localhost:8081/ws pnpm dev   # Vite on :5173
+```
+
+### Fill the store, then search it
+
+This is the part that makes the store worth having. Stream from a relay into SQLite,
+then query it:
+
+```bash
+krivostr feed --follow --ingest --relay wss://nos.lol -n 3
+```
+
+```
+now    #7368   4579cf15…4579cf152e756a938e169761baca157dd6cf9df983b4aedafa2a3537
+now    #20000  9bddfd32…9bddfd3281e8685684f0ff6dddca8b7b220cc34d10cb5cd6232c7542  {"messageId":"","fromPeerId":"10f8563a…
+```
+
+```bash
+krivostr search peerId -n 2
+```
+
+```
+2 match(es) for peerId
+now    #22668  00442745…004427456813179dfcfa8e14460977878a0af57e7f4daf520e804fdd  {"peerId":"u4Cp55I9uwnnXAw3ssRS"}
+now    #22870  a8a5efbd…a8a5efbdcb5e5d262523c8e9feac4c2915b56f27e33d9118c2b02d3f  {"peerId":"ICTHnCqgP7JUc8J1zdZ7"}
+```
+
+The first command talks to a relay and writes to SQLite; the second never touches the
+network. That is the whole idea.
 
 ---
 
@@ -86,24 +120,22 @@ Open <http://localhost:5173>. The landing page explains the model; click
 ### Backend
 
 ```bash
-git clone https://github.com/yourhandle/krivostr
-cd krivostr
 stack build --fast
 stack exec krivostr serve
 ```
 
-The bridge listens on `:8081` by default and serves the compiled UI from
-`./ui/dist` if present, so <http://localhost:8081> is a complete client.
-
 ### UI
+
+The UI is a static bundle. `krivostr serve` serves `./ui/dist` when it exists, so a
+built UI and the bridge are one process on one port.
 
 ```bash
 cd ui
 corepack enable
 corepack prepare pnpm@9 --activate
-pnpm install
+pnpm install --frozen-lockfile
 pnpm build              # output: ui/dist
-pnpm dev                # dev server: :5173
+pnpm dev                # dev server with hot reload on :5173
 ```
 
 ### Docker
@@ -113,8 +145,84 @@ make docker
 docker compose -f docker/docker-compose.yml up
 ```
 
-The container serves both the static UI and the bridge on `:8081`.
-Data is persisted in the `krivostr-data` volume.
+The image is `debian:bookworm-slim` with `libgmp10`, `zlib1g`, and `ca-certificates`, and
+it runs under `tini` so the bridge gets correct signal handling. The container serves the
+static UI and the bridge together, publishes `:8081`, and keeps the database at
+`/data/events.db` on the `krivostr-data` volume.
+
+The published Linux binary is built by `docker/Dockerfile.linux` and checked for a glibc
+floor of 2.33. It is **not** a fully static build: it links against glibc, `libgmp`, and
+`libz`, so it runs on any Linux with glibc 2.33 or newer.
+
+---
+
+## Commands
+
+Global flags come before the subcommand:
+
+| Flag | Environment | Default | Meaning |
+|---|---|---|---|
+| `--db PATH` | `KRIVOSTR_DB` | `.krivostr/events.db` | SQLite database |
+| `--log-level LEVEL` | `KRIVOSTR_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `--color` / `--no-color` | — | auto | Force or suppress ANSI colour |
+| `--version` | — | — | Print the version and exit |
+
+| Command | What it does |
+|---|---|
+| `serve` | Run the bridge: WebSocket plus static UI |
+| `feed` | Read the store; `--follow` streams live |
+| `search` | Full-text search over the local store |
+| `dm` | Send a NIP-04 DM, or `--inbox` to read yours |
+| `export` | Bulk export as `nostr` (ndjson), `array`, or `csv` |
+| `watch` | Notify on new events |
+| `api` | Run the JSON HTTP API on its own port |
+| `reindex` | Rebuild the full-text search index |
+| `keygen` | Generate an `nsec` / `npub` pair |
+
+### `feed`
+
+```bash
+krivostr feed                                  # recent events from the store
+krivostr feed -k note -n 20                    # kind 1 only
+krivostr feed -a npub1… -t e=<event-id>        # by author, or by tag
+krivostr feed --since 2h --json                # time window, one JSON event per line
+krivostr feed --follow --ingest                # stream from relays and store what arrives
+```
+
+Filter flags shared by `feed`, `search`, `export`, and `watch`: `-k/--kind` (`note`, `dm`,
+`like`, `repost`, `delete`, `metadata`, `follow`, `relays`, or a number), `-a/--author`
+(`npub` or hex), `-t/--tag NAME=VALUE`, `--since`, `--until`, `-n/--limit`.
+
+### `search`
+
+```bash
+krivostr search "gm" --any -n 20               # any word, not all
+krivostr search nostr -k note --since 7d
+```
+
+### `dm`
+
+Needs a secret key in `KRIVOSTR_NSEC`; `krivostr keygen` prints a fresh pair.
+
+```bash
+export KRIVOSTR_NSEC=nsec1…
+krivostr dm npub1… "the message"
+krivostr dm --inbox                           # decrypt kind 4 events addressed to you
+```
+
+DMs are NIP-04 (AES-256-CBC under an ECDH shared secret). NIP-04 is deprecated in favour
+of NIP-44; see [Known limitations](#known-limitations).
+
+### `export`, `watch`, `api`, `reindex`, `keygen`
+
+```bash
+krivostr export -k note --since 30d --format csv --out notes.csv
+krivostr watch -a npub1… --exec 'notify-send "{content}"'   # {json} {content} {author} {kind}
+krivostr watch --print-unit > ~/.config/systemd/user/krivostr-watch.service
+krivostr api --port 8090                      # GET /health /stats /events /events/:id /search
+krivostr reindex                              # rebuild FTS5 after an import
+krivostr keygen
+```
 
 ---
 
@@ -122,74 +230,108 @@ Data is persisted in the `krivostr-data` volume.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KRIVOSTR_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `KRIVOSTR_PORT` | `8081` | Bridge port |
-| `KRIVOSTR_STATIC_DIR` | `./ui/dist` | Static asset directory |
 | `KRIVOSTR_DB` | `.krivostr/events.db` | SQLite path |
+| `KRIVOSTR_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `KRIVOSTR_PORT` | `8081` | Bridge port (`serve`) |
+| `KRIVOSTR_STATIC_DIR` | `./ui/dist` | Static asset directory |
+| `KRIVOSTR_API_HOST` | `127.0.0.1` | Interface for `api` |
+| `KRIVOSTR_NSEC` | — | Secret key for `dm` |
 
-UI environment (via Vite):
+UI variables are read by Vite at build time, so they must be set before `pnpm build`:
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `VITE_BRIDGE_URL` | same origin | Where the browser opens its WebSocket, e.g. `ws://localhost:8081` |
 | `VITE_KRIVOSTR_TRANSPORT` | `relay` | `bridge` or `relay` |
 
-You can also force the bridge transport at runtime with `?transport=bridge`
-in the URL.
-
----
-
-## Testing and coverage
-
-Backend:
-
-```bash
-stack test --coverage
-hpc report --all
-```
-
-The HPC report includes all `core` and `client` modules. Coverage of the
-pure core is above 90%; the `Store` module is above 85%.
-
-UI:
-
-```bash
-cd ui
-pnpm test           # unit tests (jsdom)
-pnpm test:browser   # component tests (real Chromium)
-pnpm coverage       # v8 coverage, thresholds: 80/80/80/80
-```
-
-Component tests run in a real browser via `@vitest/browser` + Playwright.
-They exercise the Lit elements end-to-end: rendering, event emission,
-attribute reflection, and lifecycle.
+`?transport=bridge` in the URL sets the same choice at runtime. The transport switch is
+honoured by the relay-status element, which owns the browser's Nostr socket; the rest of
+the UI reads from that element.
 
 ---
 
 ## Architecture
 
-```
-┌────────────────┐      ┌────────────────┐      ┌────────────────┐
-│   relays       │◄────►│  krivostr-     │◄────►│  krivostr-     │
-│  (external)    │      │    client      │      │    core        │
-└────────────────┘      │  (bridge)      │      │  (pure)        │
-                        └───────┬────────┘      └────────────────┘
-                                │
-                          wss://host/ws
-                                │
-                        ┌───────▼────────┐
-                        │  krivostr-ui   │
-                        │  (browser)     │
-                        └────────────────┘
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "lineColor": "#94a3b8"}}}%%
+flowchart LR
+    subgraph RELAYS["🌐 Nostr relays"]
+        direction TB
+        R1["relay.damus.io"]
+        R2["nos.lol"]
+        R3["relay.primal.net"]
+    end
+
+    subgraph CLIENT["🖥️ krivostr-client — effectful Haskell"]
+        direction TB
+        POOL["Pool<br/>relay multiplexer<br/>one drain thread per relay"]
+        STORE[("Store<br/>SQLite + FTS5<br/>30-day retention")]
+        BRIDGE["Bridge<br/>WebSocket + static files<br/>hourly GC thread"]
+        CLI["Cli<br/>nine subcommands"]
+        API["Cli.Api<br/>JSON on :8090"]
+    end
+
+    subgraph CORE["λ krivostr-core — pure Haskell, no IO"]
+        direction TB
+        WIRE["Wire<br/>NIP-01 encode / decode"]
+        EVENT["Event<br/>canonical form, id, sig"]
+        SCHNORR["Schnorr + Key<br/>BIP-340, bech32"]
+        FILTER["Filter<br/>matches predicate"]
+    end
+
+    subgraph BROWSER["🌍 Browser — Lit 3 UI"]
+        direction TB
+        SHELL["app-shell<br/>composer, feed, signer picker"]
+        STATUS["nostr-relay-status<br/>owns the socket"]
+        SIGNER["signer<br/>local nsec · NIP-07 · NIP-46"]
+        IDB[("IndexedDB cache<br/>30-day retention")]
+    end
+
+    R1 & R2 & R3 <-->|"REQ / EVENT / EOSE"| POOL
+    POOL <--> STORE
+    CLI <--> STORE
+    API <--> STORE
+    STORE <--> BRIDGE
+
+    POOL -.->|"pure calls"| WIRE
+    BRIDGE -.->|"pure calls"| WIRE
+    CLI -.->|"pure calls"| WIRE
+    WIRE --> EVENT
+    WIRE --> FILTER
+    EVENT --> SCHNORR
+
+    BRIDGE <==>|"wss://host/ws<br/>relay-shaped"| STATUS
+    STATUS --> SHELL
+    SHELL <--> IDB
+    SHELL --> SIGNER
+    SIGNER -->|"publish"| STATUS
+    SIGNER -.->|"NIP-46 bunker"| RELAYS
+
+    classDef relay fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0c4a6e
+    classDef client fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#4c1d95
+    classDef core fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
+    classDef ui fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f
+    classDef data fill:#f1f5f9,stroke:#475569,stroke-width:2px,color:#0f172a
+
+    class R1,R2,R3 relay
+    class POOL,BRIDGE,CLI,API client
+    class WIRE,EVENT,SCHNORR,FILTER core
+    class SHELL,STATUS,SIGNER ui
+    class STORE,IDB data
 ```
 
-- **`core/`** — pure Haskell. NIP-01 serialization and signing, NIP-65 relay
-  hints, filter predicates, wire ADTs, `Writer`-based logging.
-- **`client/`** — effectful Haskell. Relay pool, SQLite store, WebSocket
-  bridge. Never imports UI.
-- **`ui/`** — browser. Lit 3.3, hand-rolled `Maybe` / `Result` / `IO` /
-  `Rule`, IndexedDB cache, signer plug-ins.
+The Haskell and TypeScript sides deliberately mirror each other: filters are `Rule`s,
+fallible operations are `Result`s, effects are `IO`s, and optionality is `Maybe`. Same
+shape on both sides, no cross-language FFI.
 
-See [docs/architecture.md](docs/architecture.md) for the full picture.
+- **`core/`** — pure Haskell: NIP-01 serialization and signing, NIP-65 relay hints,
+  filter predicates, wire ADTs, `Writer`-based logging.
+- **`client/`** — effectful Haskell: relay pool, SQLite store, WebSocket bridge, CLI.
+  Never imports the UI.
+- **`ui/`** — browser: Lit 3, hand-rolled `Maybe` / `Result` / `IO` / `Rule`, IndexedDB
+  cache, signer plug-ins.
+
+See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ---
 
@@ -197,15 +339,65 @@ See [docs/architecture.md](docs/architecture.md) for the full picture.
 
 | NIP | Title | Status |
 |---|---|---|
-| 01 | Basic protocol | ✅ full |
-| 02 | Follow list | 📋 parse-only |
+| 01 | Basic protocol | ✅ full — variadic `REQ` filters, `EVENT`, `EOSE`, `OK`, `NOTICE`, `CLOSED` |
+| 02 | Follow list | ❌ not implemented |
+| 04 | Encrypted direct messages | ✅ implemented, deprecated in favour of NIP-44 |
 | 07 | `window.nostr` | ✅ full |
-| 19 | bech32 entities | ✅ `npub`, `nsec`, `note`, `nprofile` |
-| 44 | Versioned encryption | 📋 planned |
-| 46 | Remote signer | ✅ NIP-04 transport |
-| 50 | Search | 📋 planned |
-| 59 | Gift wrap | 📋 planned |
-| 65 | Relay list metadata | ✅ full |
+| 19 | bech32 entities | ✅ Haskell `npub` / `nsec` (plus `nprofile` import); the UI encodes all six |
+| 44 | Versioned encryption | ❌ not implemented |
+| 46 | Remote signer | ✅ over the NIP-04 transport |
+| 50 | Search | ◐ local FTS5 only — there is no `search` filter in the wire `Filter` |
+| 59 | Gift wrap | ❌ not implemented |
+| 65 | Relay list metadata | ◐ kind 10002 drives the CLI's read relays; `writeRelays` is unused |
+
+---
+
+## Testing and coverage
+
+```bash
+make test          # backend (stack test) + UI unit + UI browser
+make test-backend  # 142 hspec examples across core and client
+make test-ui       # 126 unit tests (jsdom) + 15 browser tests (real Chromium)
+```
+
+Browser tests run through `@vitest/browser` and Playwright against real Chromium. They
+exercise the Lit elements end to end: rendering, event emission, attribute reflection,
+and lifecycle. On a fresh clone, `make test-ui` installs the Playwright browser first;
+without that step the browser project fails with `Executable doesn't exist at …`.
+
+Coverage:
+
+```bash
+make coverage          # backend and UI
+cd ui && pnpm coverage # v8, thresholds 80/80/80/80
+```
+
+Backend coverage is reported by `scripts/hpc-coverage.py`, which reads the HTML index
+that `stack test --coverage` writes:
+
+```
+coverage index: .stack-work/install/…/9.10.3/hpc/combined/all/hpc_index.html
+module                  covered / total
+Krivostr.Schnorr             16 / 16     100.0%
+Krivostr.Nip.Nip01            4 / 4      100.0%
+Krivostr.Store               29 / 38      76.3%
+Krivostr.Key                 22 / 30      73.3%
+Krivostr.Filter              16 / 27      59.3%
+…
+TOTAL                      164 / 460     35.7%
+```
+
+That is the honest number, and it is lower than you would like. The cryptography and the
+NIP-01 layer are fully covered; the IO layers — the relay pool, the bridge, the CLI, and
+the HTTP API — are not yet, and they dominate the total. `.hpc-threshold` sets the target
+at 80%, so `make coverage` fails today by design: the gap is visible rather than hidden.
+
+UI coverage is a different story, because the vitest config measures the pure logic
+(`src/fp` and `src/nostr`, excluding the bridge transport):
+
+```
+All files    |   95.73 |    93.27 |   89.13 |   95.73 |
+```
 
 ---
 
@@ -213,32 +405,47 @@ See [docs/architecture.md](docs/architecture.md) for the full picture.
 
 ```
 krivostr/
-├── core/                     Pure Haskell library
+├── core/                          Pure Haskell library
 │   ├── src/Krivostr/
-│   │   ├── Event.hs          Event ADT
-│   │   ├── Filter.hs         Predicate over events
-│   │   ├── Key.hs            Schnorr, bech32
-│   │   ├── Logging.hs        Writer + STM loggers
-│   │   ├── Wire.hs           Wire message ADTs
+│   │   ├── Event.hs               Event ADT and accessors
+│   │   ├── Filter.hs              onlyKinds / byAuthors / tagEq / matches
+│   │   ├── Key.hs                 x-only keys, NIP-19 npub + nsec
+│   │   ├── Logging.hs             Writer logger
+│   │   ├── Schnorr.hs             BIP-340 in pure Haskell
+│   │   ├── Wire.hs                NIP-01 message ADTs, encodeClient / decodeRelay
 │   │   └── Nip/
-│   │       ├── Nip01.hs      Canonical id, signing
-│   │       └── Nip65.hs      Relay hints
-│   └── test/Spec.hs          hspec + QuickCheck
-├── client/                   Effectful Haskell
-│   ├── src/Krivostr/
-│   │   ├── Bridge.hs         WAI WebSocket + static
-│   │   ├── Main.hs           Executable entry point
-│   │   ├── Pool.hs           Relay multiplexer
-│   │   ├── Relay.hs          Single relay connection
-│   │   └── Store.hs          SQLite persistence
+│   │       ├── Nip01.hs           Canonical bytes, event id, signing, verification
+│   │       └── Nip65.hs           Relay hints
+│   └── test/
+│       ├── Spec.hs                hspec
+│       └── Bip340.hs              BIP-340 test vectors
+├── client/                        Effectful Haskell executable
+│   ├── src/
+│   │   ├── Main.hs                Entry point
+│   │   └── Krivostr/
+│   │       ├── Bridge.hs          WebSocket bridge + static files
+│   │       ├── Cli.hs             optparse-applicative command surface
+│   │       ├── Cli/
+│   │       │   ├── Api.hs         JSON HTTP API
+│   │       │   ├── Nostr.hs       Network commands: dm, publish, relay defaults
+│   │       │   └── Render.hs      Terminal rendering
+│   │       ├── Pool.hs            Relay multiplexer
+│   │       ├── Relay.hs           One relay connection
+│   │       └── Store.hs           SQLite, FTS5, retention
 │   └── test/Spec.hs
-├── ui/                       Lit 3.3 + TypeScript
-│   ├── src/fp/               Hand-rolled FP
-│   ├── src/nostr/            Protocol + storage + signers
-│   ├── src/components/       Lit elements
-│   └── src/__tests__/        Vitest (unit + browser)
-├── docs/                     Architecture, security, protocol
-├── docker/                   Dockerfile + compose
+├── ui/                            Lit 3 + TypeScript
+│   ├── public/_headers            Cloudflare Pages CSP and cache rules
+│   ├── src/
+│   │   ├── fp/                    Hand-rolled Maybe / Result / IO / Rule
+│   │   ├── nostr/                 Protocol, cache, bech32, signers
+│   │   └── components/            Lit elements
+│   └── src/__tests__/             Vitest unit + browser projects
+├── scripts/
+│   ├── check-coverage.sh          Enforces .hpc-threshold
+│   └── hpc-coverage.py            Coverage report from the HPC HTML index
+├── docs/                          Architecture, protocol, security, storage
+├── docker/                        Dockerfile, Dockerfile.linux, compose
+├── .github/workflows/             ci.yml, ui.yml, release.yml
 ├── Makefile
 └── stack.yaml
 ```
@@ -248,32 +455,59 @@ krivostr/
 ## Development
 
 ```bash
-make build        # build backend + UI
-make test         # all tests (backend, unit, browser)
-make coverage     # both coverage reports
-make typecheck    # UI type check only
-make docker       # build the runtime image
-make clean        # remove build artifacts
+make build             # backend + UI
+make build-backend     # stack build --fast
+make build-ui          # pnpm install + pnpm build
+make test              # backend + UI unit + UI browser
+make test-backend      # stack test
+make test-ui           # unit + browser
+make test-ui-browser   # browser tests only
+make coverage          # backend + UI coverage reports
+make docker            # build the runtime image
+make clean             # remove build artifacts
 ```
 
-See [docs/development.md](docs/development.md) for details.
+`stack.yaml` resolves everything from `lts-24.61` with no extra dependencies, so
+`stack build` is reproducible from that file alone. See
+[docs/development.md](docs/development.md) for the longer version.
 
 ---
 
 ## Design decisions
 
-- **The core is pure.** Signing, hashing, filter matching, and wire encoding
-  are pure functions. Everything that isn't lives in `client`.
-- **Two loggers.** A `Writer` logger in the core for functions that need to
-  explain a reduction. An `STM` logger in the client for IO.
-- **The bridge is a personal relay.** Same wire protocol as a relay, backed
-  by SQLite, single-user, on your machine.
-- **Retention is a policy, not a default.** Public events expire after 30
-  days. Persistent kinds never do. The policy lives in `Store.hs` and
-  `cache.ts` and is applied identically on both sides.
-- **The UI re-expresses the algebra.** Filters are `Rule`s, fallible operations
-  are `Result`s, effects are `IO`s. Same shape as the Haskell code, no
-  cross-language FFI needed.
+- **The core is pure.** Signing, hashing, filter matching, and wire encoding are pure
+  functions. Everything that performs IO lives in `client`.
+- **The bridge is a personal relay.** Same wire protocol as a relay, backed by SQLite,
+  single-user, on your machine.
+- **Retention is a policy, not a default.** Ordinary events expire after 30 days;
+  persistent kinds — DMs, follows, metadata, and relay lists — never do. The policy
+  lives in `Store.hs` and `cache.ts` and is applied identically on both sides.
+- **Ingest is idempotent.** Events are inserted with `INSERT OR IGNORE` on the event id,
+  so re-streaming the same relay changes nothing.
+- **The UI re-expresses the algebra.** Filters are `Rule`s, fallible operations are
+  `Result`s, effects are `IO`s.
+
+---
+
+## Known limitations
+
+Worth stating plainly, because the rest of this README is otherwise optimistic.
+
+- **Ingest does not verify signatures.** `Krivostr.Schnorr` verifies, and the BIP-340
+  vectors in `core/test/Bip340.hs` test it, but the store's ingest path does not call it.
+  Events are trusted on the way in.
+- **Backend test coverage is 35.7%**, against an 80% target. The cryptography is well
+  covered; the relay pool, bridge, CLI, and HTTP API are not.
+- **The local signer keeps the secret in memory for the session only.** There is no
+  at-rest encryption and nothing is written to disk, but there is also no keyring
+  integration.
+- **The Linux binary is not static.** It needs glibc 2.33+, `libgmp`, and `libz`.
+- **NIP-50 search is local only.** `Filter` has no `search` field, so relays are never
+  asked to search; `krivostr search` queries FTS5 instead.
+- **`_headers` applies to Cloudflare Pages only.** `krivostr serve` serves the same files
+  without the CSP.
+- **`export --filter` takes positional flags**, and `dm @alice` is not accepted; pass an
+  `npub` or hex key.
 
 ---
 
@@ -281,29 +515,26 @@ See [docs/development.md](docs/development.md) for details.
 
 ### Near-term
 
+- Verify signatures on ingest.
+- Tests for the IO layers, to move backend coverage off the floor.
 - **NIP-44** — replace NIP-04 in the NIP-46 transport.
-- **NIP-50** — full-text search on the bridge's SQLite store.
-- **NIP-59** — gift-wrap DMs so relays can't correlate sender and recipient.
-- **NIP-02 follow list** — parse and honour kind 3 events for the outbox
-  model.
+- **NIP-50** — a `search` field on the wire `Filter`.
+- **NIP-02** — parse and honour kind 3 follow lists.
+- **NIP-59** — gift-wrap DMs so relays cannot correlate sender and recipient.
 
 ### Medium-term
 
-- **WASM secp256k1** — move local signing out of `@noble/curves` and into a
-  shared WASM module compiled from the Haskell core.
-- **WASM event validation** — validate inbound events in the browser without
-  a JS re-implementation.
-- **Multiple accounts** — switch signers and identity without reloading.
+- **WASM secp256k1** — move local signing out of `@noble/curves` into a module compiled
+  from the Haskell core.
+- **Multiple accounts** — switch signers without reloading.
 
 ### Future
 
 - **Full relay** — turn the bridge into a publishable relay with NIP-42 auth.
-- **Mobile** — Capacitor shell over the same UI.
-- **Native Haskell UI** — `monomer` or `reflex-dom` for a fully-native
-  experience.
+- **Mobile** — a Capacitor shell over the same UI.
 
 ---
 
 ## License
 
-[MIT](LICENSE)
+[GNU AGPL v3](LICENSE)

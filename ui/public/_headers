@@ -1,0 +1,37 @@
+# Cloudflare Pages response headers.
+#
+# Authored in ui/public/ so Vite copies it into dist/; Pages parses the file at
+# deploy time and never serves it as an asset. It applies to the Pages
+# deployment only: `krivostr serve` serves the same dist/ over plain Warp and
+# does not read this file.
+#
+# Each directive below is the app's actual resource use and no more:
+#
+#   script    the hashed bundles under /assets
+#   style     the same, plus two inline style="" attributes (krivostr-landing.ts
+#             and nostr-feed.ts) and the Google Fonts stylesheet index.html pulls
+#   font      fonts.gstatic.com, which serves the woff2 files
+#   img       favicon.svg. Event content is rendered as text and no remote image
+#             is ever inserted, so no image CDN has to be reachable
+#   connect   the bridge, and for a NIP-46 remote signer whatever relay the user
+#             names -- a scheme source, because the host is not knowable here
+#
+# connect-src needs 'wss:' rather than just 'self' on purpose: 'self' does not
+# resolve to WebSocket schemes in every browser (w3c/webappsec-csp#7), and the
+# bridge is routinely on a different origin from the page. 'ws:' is left out
+# deliberately -- on an https deployment a ws:// connection is blocked as mixed
+# content anyway, so allowing it would widen the policy for nothing.
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data:; connect-src 'self' wss:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+
+# Vite fingerprints these filenames, so a cached copy can never be stale.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The HTML names the fingerprinted bundles, so it has to be revalidated: a
+# cached copy would keep pointing at assets a later deploy has replaced.
+/*.html
+  Cache-Control: public, max-age=0, must-revalidate

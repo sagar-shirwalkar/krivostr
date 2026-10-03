@@ -69,23 +69,26 @@ jobs:
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4
-        id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('ui/pnpm-lock.yaml') }}
           restore-keys: |
             ${{ runner.os }}-playwright-
 
-      - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+      - name: Install dependencies
         working-directory: ui
-        run: pnpm exec playwright install --with-deps chromium chromium-headless-shell
-  
-      - name: Install Playwright system deps (cache hit)
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: sudo npx --yes playwright install-deps chromium chromium-headless-shell
+        run: pnpm install --frozen-lockfile
 
-      - name: Install, test and build
+      - name: Install Chromium for the browser tests
+        working-directory: ui
+        # After `pnpm install`, not before: `pnpm exec` resolves out of
+        # node_modules, so installing the browser first fails with
+        # ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL "Command playwright not found".
+        # pnpm install fetches the driver, not the browser, hence this step;
+        # the cache above keeps it cheap.
+        run: pnpm exec playwright install --with-deps chromium chromium-headless-shell
+
+      - name: Typecheck, test and build
         working-directory: ui
         env:
           # Unset is a valid deployment: the UI then looks for the bridge on
@@ -97,6 +100,10 @@ jobs:
           pnpm test
           pnpm test:browser
           pnpm build
+          # Pages parses this file out of dist/ rather than serving it. If the
+          # build stops copying public/, the deployment would go out with no
+          # CSP and no cache headers and nothing else here would notice.
+          test -f dist/_headers
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3

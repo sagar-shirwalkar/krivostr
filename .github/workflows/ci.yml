@@ -84,7 +84,11 @@ jobs:
 
       - name: Typecheck and build
         working-directory: ui
-        run: pnpm build
+        run: |
+          pnpm build
+          # Cloudflare Pages reads this out of dist/, so a build that stopped
+          # copying public/ would ship a site with no CSP at all, silently.
+          test -f dist/_headers
 
       - name: Install Chromium for the browser tests
         working-directory: ui

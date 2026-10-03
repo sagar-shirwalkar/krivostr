@@ -7,6 +7,12 @@ dist-newstyle/
 .hpc/
 coverage.txt
 
+# Local store: KRIVOSTR_DB defaults here, and a live ingest fills it fast
+.krivostr/
+*.db
+*.db-wal
+*.db-shm
+
 # Node / UI
 node_modules/
 ui/dist/
@@ -29,3 +35,4 @@ docker/.env
 # AI
 .agents/
 .handoffs/
+AGENTS.md
