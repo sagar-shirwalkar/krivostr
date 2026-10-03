@@ -7,9 +7,9 @@
 #   * SHA256SUMS covering every archive, generated once from the exact files
 #     that are uploaded.
 #
-# The Linux binaries are built by docker/Dockerfile.linux, on the oldest glibc
-# supported (2.36) and with the compiler support libraries linked statically, so
-# the result needs glibc and nothing else. It is not a fully static binary and
+# The Linux binaries are built by docker/Dockerfile.linux and need glibc >= 2.33
+# (what GHC 9.10.3 links against), libgmp and zlib; the compiler support
+# libraries are linked statically. It is not a fully static binary and
 # cannot be: GHC 9.10 ships ghc-bignum, ghc-prim and ghc-internal as shared
 # objects only. macOS and Windows binaries are built by Stack directly and link
 # their platform's system libraries, which is normal there: both ship the
@@ -18,6 +18,11 @@
 # Tag and client/package.yaml version are kept in step by the version check
 # below, so a release cannot claim a version the code does not have.
 name: release
+
+env:
+  # A tag push carries the version in the ref; workflow_dispatch takes it as an
+  # input. Resolving it once here keeps every job from re-deriving it wrong.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 on:
   push:
@@ -110,7 +115,7 @@ jobs:
 
       - name: Package
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           cp LICENSE README.md dist/
           tar -C dist -czf "krivostr-$version-linux-${{ matrix.arch }}.tar.gz" \
             krivostr ui LICENSE README.md
@@ -168,7 +173,7 @@ jobs:
 
       - name: Package
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           cp LICENSE README.md dist/
           tar -C dist -czf "krivostr-$version-macos-${{ matrix.arch }}.tar.gz" \
             krivostr ui LICENSE README.md
@@ -221,7 +226,7 @@ jobs:
 
       - name: Package
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           cp LICENSE README.md dist/
           cd dist && 7z a "../krivostr-$version-windows-x86_64.zip" krivostr.exe ui LICENSE README.md
           cd ..
@@ -255,11 +260,11 @@ jobs:
         run: |
           # A Cabal version has a fourth component that a tag has no use for:
           # client/package.yaml says 0.2.0.0, the tag is v0.2.0.
-          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${RELEASE_TAG#v}"
           pkg=$(grep -m1 '^version:' client/package.yaml | awk '{print $2}')
           expected=$(printf '%s' "$pkg" | cut -d. -f1-3)
           if [ "$tag_version" != "$expected" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match v$expected, the version in client/package.yaml ($pkg)"
+            echo "::error::tag $RELEASE_TAG does not match v$expected, the version in client/package.yaml ($pkg)"
             exit 1
           fi
           echo "releasing $tag_version"
@@ -275,7 +280,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="$GITHUB_REF_NAME"
+          tag="$RELEASE_TAG"
           version="${tag#v}"
           files="archives/*"
           if gh release view "$tag" > /dev/null 2>&1; then

@@ -5,13 +5,16 @@
 #
 #   1. Workers & Pages -> Create -> Pages -> Upload assets (drag-and-drop
 #      deploys are fine to discard; this creates the project).
-#   2. Project -> Settings -> Builds & deployments -> Environment variables:
+#   2. Repository -> Settings -> Secrets and variables -> Actions -> New
+#      repository variable:
 #        VITE_BRIDGE_URL  = wss://your-bridge-host/ws
 #      A Pages deployment is static, so it cannot reach a bridge on your
-#      laptop, and this variable is how the page learns where the bridge is. It
-#      is read at build time (Vite inlines it), so it has to be set on the
-#      environment this workflow deploys from. Left unset, the UI assumes the
-#      bridge shares its own origin, which is what `krivostr serve` gives you.
+#      laptop, and this variable is how the page learns where the bridge is.
+#      Vite inlines it at build time and this workflow builds the assets here
+#      before uploading them, so it has to be a repository variable -- setting
+#      it on the Pages project would only affect a Pages-side build, which this
+#      workflow never does. Left unset, the UI assumes the bridge shares its own
+#      origin, which is what `krivostr serve` gives you.
 #   3. Repository -> Settings -> Secrets -> Actions -> New repository secret:
 #        CLOUDFLARE_API_TOKEN  (Edit Cloudflare Workers, template)
 #        CLOUDFLARE_ACCOUNT_ID (from the dashboard sidebar)
@@ -84,6 +87,10 @@ jobs:
 
       - name: Install, test and build
         working-directory: ui
+        env:
+          # Unset is a valid deployment: the UI then looks for the bridge on
+          # its own origin.
+          VITE_BRIDGE_URL: ${{ vars.VITE_BRIDGE_URL }}
         run: |
           pnpm install --frozen-lockfile
           pnpm typecheck

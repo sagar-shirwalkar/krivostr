@@ -12,18 +12,23 @@
 #
 # Alpine/musl would sidestep this (musl has no NSS problem and no split of
 # GHC's libraries into .so-only pieces), but Docker Hub publishes no Alpine
-# image for GHC 9.10 and lts-24.61 pins 9.10.3. So: build on the oldest glibc
-# we support and link the compiler support libraries statically, which leaves
-# glibc itself as the only runtime requirement.
+# image for GHC 9.10 and lts-24.61 pins 9.10.3. So: build on glibc and link the
+# compiler support libraries statically, which leaves glibc, libgmp and zlib as
+# the runtime requirements.
+#
+# The floor is glibc 2.33, not the 2.36 of the build image: that is the highest
+# versioned symbol GHC 9.10.3 links against, and it was measured rather than
+# assumed -- the resulting binary runs on bookworm but fails on bullseye
+# (2.31) with "version `GLIBC_2.33' not found". Building on bookworm is still
+# the right choice, being the oldest image that can build at all.
 #
 # The verification step below is what holds this file to its promise: it lists
 # the shared libraries the result needs, and fails if anything beyond the
-# expected glibc set shows up.
+# expected set shows up.
 
 FROM haskell:9.10.3-slim-bookworm AS build
 
-# Debian 12 (bookworm) ships glibc 2.36, which is the floor this binary
-# supports. libsecp256k1 is deliberately absent: BIP-340 is implemented in pure
+# libsecp256k1 is deliberately absent: BIP-340 is implemented in pure
 # Haskell (core/src/Krivostr/Schnorr.hs), so the only C in the build is the
 # sqlite3 amalgamation that sqlite-simple compiles itself.
 RUN apt-get update && apt-get install --no-install-recommends -y \
@@ -73,6 +78,21 @@ RUN set -eu; \
     fi; \
     /out/krivostr --version; \
     /out/krivostr --help > /dev/null
+
+# Enforce the documented glibc floor, so a dependency bump cannot quietly raise
+# it. ldd above cannot see this: it names files, not symbol versions, and it is
+# the versioned symbols that decide whether the binary runs on bullseye. The
+# highest GLIBC_x.y the executable requires has to stay at or below 2.33.
+RUN set -eu; \
+    objdump -p /out/krivostr \
+      | grep -oE "GLIBC_[0-9]+(\.[0-9]+)*" | sort -uV > /tmp/glibc-reqs.txt; \
+    echo "highest glibc symbol version required:"; tail -1 /tmp/glibc-reqs.txt; \
+    highest=$(tail -1 /tmp/glibc-reqs.txt); \
+    if [ -n "$highest" ] \
+       && [ "$(printf '%s\nGLIBC_2.33\n' "$highest" | sort -V | tail -1)" != "GLIBC_2.33" ]; then \
+      echo "::error::binary requires $highest, above the documented floor of GLIBC_2.33. Build on an older base image, or update the release notes and the supported-distro list together."; \
+      exit 1; \
+    fi
 
 FROM scratch AS artifact
 COPY --from=build /out/krivostr /krivostr
