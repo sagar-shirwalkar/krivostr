@@ -29,10 +29,11 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tini
 
 WORKDIR /app
-COPY --from=backend /out/krivostr-client /app/krivostr-client
+COPY --from=backend /out/krivostr /app/krivostr
 COPY --from=ui /ui/dist /app/static
 
-EXPOSE 8080 8081
+EXPOSE 8081
 
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["/app/krivostr-client"]
+# The bridge serves the UI, the /ws endpoint and everything else on one port.
+CMD ["/app/krivostr", "serve", "--port", "8081", "--static", "/app/static"]

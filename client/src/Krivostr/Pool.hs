@@ -10,8 +10,10 @@ module Krivostr.Pool
 
 import Control.Concurrent.STM
 import Control.Concurrent.Async
+import Control.Exception (SomeException, try)
 import Control.Monad (forM_, forever)
 import Data.Text (Text)
+import qualified Data.Text as T
 import qualified Data.Map.Strict as M
 import Krivostr.Event
 import Krivostr.Logging
@@ -43,16 +45,31 @@ newPool :: Logger -> (Event -> IO ()) -> IO Pool
 newPool lg h = Pool <$> newTVarIO M.empty <*> pure lg <*> pure h
 
 -- | Connect to a relay unless it is already connected.
+--
+-- A relay that refuses the WebSocket handshake -- a captive portal, a rate
+-- limiter answering 503, a relay that is simply down -- makes 'connect' throw.
+-- That used to escape and take the whole process down with it, losing the
+-- relays that had already connected; a relay that cannot be reached is now
+-- reported and left out of the pool, so a later call can retry it.
 addRelay :: Pool -> Text -> IO ()
 addRelay p url = do
   connected <- readTVarIO (plRelays p)
   case M.lookup url connected of
     Just _ -> emit (plLogger p) Debug ("already connected: " <> url)
     Nothing -> do
-      rh <- connect (plLogger p) url
-      dr <- async (drain p rh)
-      atomically $ modifyTVar' (plRelays p) (M.insert url (PoolEntry rh dr))
-      emit (plLogger p) Info ("connected: " <> url)
+      attempt <- try (connect (plLogger p) url) :: IO (Either SomeException RelayHandle)
+      case attempt of
+        Left e -> emit (plLogger p) Warn
+          ("relay unavailable: " <> url <> ": " <> oneLine (show e))
+        Right rh -> do
+          dr <- async (drain p rh)
+          atomically $ modifyTVar' (plRelays p) (M.insert url (PoolEntry rh dr))
+          emit (plLogger p) Info ("connected: " <> url)
+
+-- | First line of a multi-line exception message, which is all that fits in a
+-- log line and all that says anything useful.
+oneLine :: String -> Text
+oneLine = T.strip . T.takeWhile (/= '\n') . T.pack
 
 -- | Disconnect a relay and stop draining it. False if it was not connected.
 removeRelay :: Pool -> Text -> IO Bool

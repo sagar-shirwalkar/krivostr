@@ -188,7 +188,7 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates sqlite-libs libsecp256k1 tini
 
 WORKDIR /app
-COPY --from=backend /out/krivostr-client /app/krivostr-client
+COPY --from=backend /out/krivostr /app/krivostr
 COPY --from=ui /ui/dist /app/static
 
 ENV KRIVOSTR_STATIC_DIR=/app/static
@@ -197,7 +197,7 @@ VOLUME ["/data"]
 
 EXPOSE 8081
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["/app/krivostr-client"]
+CMD ["/app/krivostr"]
 ```
 
 ## docker/docker-compose.yml

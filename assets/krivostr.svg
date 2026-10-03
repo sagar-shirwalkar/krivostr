@@ -1,26 +1,30 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-220 -220 440 440">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-220 -220 440 440" role="img"
+     aria-label="A Krivine machine: a control term above an environment stack of closures, with the push and apply steps of the reduction cycle drawn between them.">
+  <title>krivostr — a Krivine machine</title>
+  <desc>Call-by-name reduction as a control term c and an environment stack rho.
+The control term is substituted into the stack (push), and the head of the stack
+is applied to rebuild the next control term (apply).</desc>
+
   <defs>
-    <linearGradient id="coolF" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#4a8fe5"/><stop offset="100%" stop-color="#122a4a"/>
-    </linearGradient>
-    <linearGradient id="coolT" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#6aaff5"/><stop offset="100%" stop-color="#2a5a8c"/>
-    </linearGradient>
-    <linearGradient id="heatF" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#ffcc00"/><stop offset="100%" stop-color="#c66a10"/>
-    </linearGradient>
-    <linearGradient id="heatT" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#ffee66"/><stop offset="100%" stop-color="#f39c12"/>
-    </linearGradient>
-    <linearGradient id="hotF" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#ff4400"/><stop offset="100%" stop-color="#7a0800"/>
-    </linearGradient>
-    <linearGradient id="hotT" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#ff6600"/><stop offset="100%" stop-color="#cc2200"/>
-    </linearGradient>
     <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#080810"/><stop offset="100%" stop-color="#141428"/>
     </linearGradient>
+
+    <!-- cool plate: the dormant part of the environment -->
+    <linearGradient id="plateFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1b3a63"/><stop offset="100%" stop-color="#0d1c33"/>
+    </linearGradient>
+
+    <!-- warm capsule: the term that is currently being reduced -->
+    <linearGradient id="ctrlFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffcc00"/><stop offset="100%" stop-color="#c66a10"/>
+    </linearGradient>
+
+    <!-- the head of the stack is lit: it is the next closure to be applied -->
+    <linearGradient id="headFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8a5a10"/><stop offset="100%" stop-color="#40280a"/>
+    </linearGradient>
+
     <filter id="glowBig"><feGaussianBlur stdDeviation="15"/></filter>
     <filter id="glowSmall">
       <feGaussianBlur stdDeviation="4" result="b"/>
@@ -30,179 +34,116 @@
       <feGaussianBlur stdDeviation="1.5" result="b"/>
       <feComposite in="SourceGraphic" in2="b" operator="over"/>
     </filter>
+    <marker id="arrowCool" viewBox="0 0 10 10" refX="5" refY="8"
+            markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,8 L0,10 z" fill="#88ccff"/>
+    </marker>
+    <marker id="arrowHot" viewBox="0 0 10 10" refX="5" refY="8"
+            markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,8 L0,10 z" fill="#ffcc00"/>
+    </marker>
   </defs>
 
   <rect x="-220" y="-220" width="440" height="440" fill="url(#bgGrad)"/>
-  <ellipse cx="-60" cy="-20" rx="150" ry="110" fill="#4a8fe5" opacity="0.035" filter="url(#glowBig)"/>
-  <ellipse cx="50" cy="30" rx="140" ry="100" fill="#ff4400" opacity="0.045" filter="url(#glowBig)"/>
 
-  <g transform="translate(10, 8) scale(0.92)">
+  <!-- ambient light: cool above (the waiting stack), warm below (the term) -->
+  <ellipse cx="-70" cy="-120" rx="150" ry="110" fill="#4a8fe5" opacity="0.05" filter="url(#glowBig)"/>
+  <ellipse cx="60" cy="60" rx="140" ry="100" fill="#ff4400" opacity="0.05" filter="url(#glowBig)"/>
 
-    <!-- ═══════════════ STEM (COOL) ═══════════════ -->
+  <!-- a cropped lambda in the corner, as texture rather than as diagram -->
+  <text x="-218" y="-92" font-size="132" fill="#ffffff" opacity="0.035"
+        font-family="Georgia, 'Times New Roman', serif" font-style="italic">&#955;</text>
 
-    <!-- Stem side face: the vertical "spine" seen between the arms -->
-    <polygon points="-85,-117 -85,63 -45,83 -45,-97"
-             fill="#0d2040" stroke="#2a5a8c" stroke-width="0.5" opacity="0.85"/>
+  <!-- ═══════════════ CONTROL TERM c ═══════════════ -->
 
-    <!-- Stem top face -->
-    <polygon points="-140,-90 -85,-117 -45,-97 -100,-70"
-             fill="url(#coolT)" stroke="#5a9be5" stroke-width="0.5"/>
+  <text x="0" y="-186" text-anchor="middle" fill="#ffdd88" font-size="13"
+        font-family="ui-monospace, 'JetBrains Mono', monospace"
+        letter-spacing="2" opacity="0.8">control  c</text>
 
-    <!-- Stem front face -->
-    <polygon points="-140,-90 -85,-117 -85,63 -140,90"
-             fill="url(#coolF)" stroke="#5a9be5" stroke-width="0.5"/>
+  <rect x="-125" y="-172" width="250" height="64" rx="14"
+        fill="#ffcc00" opacity="0.18" filter="url(#glowSmall)"/>
+  <rect x="-125" y="-172" width="250" height="64" rx="14"
+        fill="url(#ctrlFill)" stroke="#ffd873" stroke-width="1"/>
+  <text x="0" y="-131" text-anchor="middle" fill="#3a2400" font-size="23"
+        font-family="ui-monospace, 'JetBrains Mono', monospace"
+        font-weight="bold">(&#955;x. x y) z</text>
 
-    <!-- Thin cooling-rib lines on the stem front (like a heatsink, but cold) -->
-    <g stroke="#88ccff" stroke-width="0.4" opacity="0.18">
-      <line x1="-130" y1="-72" x2="-130" y2="72"/>
-      <line x1="-120" y1="-67" x2="-120" y2="77"/>
-      <line x1="-110" y1="-62" x2="-110" y2="82"/>
-      <line x1="-100" y1="-57" x2="-100" y2="87"/>
-    </g>
+  <!-- ═══════════════ THE REDUCTION CYCLE ═══════════════ -->
 
-    <!-- ═══════════════ UPPER ARM (WARM) ═══════════════ -->
+  <!-- push: substitute the control term into the environment -->
+  <path d="M -50,-100 C -92,-64 -92,-22 -74,0" fill="none" stroke="#88ccff"
+        stroke-width="1.6" opacity="0.75" marker-end="url(#arrowCool)"/>
+  <text x="-122" y="-52" text-anchor="middle" fill="#88ccff" font-size="13"
+        font-family="ui-monospace, 'JetBrains Mono', monospace"
+        letter-spacing="2" opacity="0.85">push</text>
 
-    <!-- Upper arm top face -->
-    <polygon points="-85,-85 70,-163 110,-143 -45,-65"
-             fill="url(#heatT)" stroke="#f39c12" stroke-width="0.5"/>
+  <!-- apply: pop the head of the stack into the next control term -->
+  <path d="M 74,0 C 92,-22 92,-64 50,-100" fill="none" stroke="#ffcc00"
+        stroke-width="1.6" opacity="0.8" marker-end="url(#arrowHot)"/>
+  <text x="122" y="-52" text-anchor="middle" fill="#ffcc00" font-size="13"
+        font-family="ui-monospace, 'JetBrains Mono', monospace"
+        letter-spacing="2" opacity="0.85">apply</text>
 
-    <!-- Upper arm end cap (the tip face, in shadow) -->
-    <polygon points="70,-163 70,-123 110,-103 110,-143"
-             fill="#8a4400" stroke="#cc6600" stroke-width="0.5" opacity="0.92"/>
+  <!-- ═══════════════ ENVIRONMENT STACK rho ═══════════════ -->
 
-    <!-- Upper arm front face -->
-    <polygon points="-85,-85 70,-163 70,-123 -85,-45"
-             fill="url(#heatF)" stroke="#e67e22" stroke-width="0.5"/>
+  <g font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="15"
+     text-anchor="middle">
 
-    <!-- ═══════════════ LOWER LEG (HOT) ═══════════════ -->
-
-    <!-- Lower leg top face -->
-    <polygon points="-85,20 80,103 120,123 -45,40"
-             fill="url(#hotT)" stroke="#ff6600" stroke-width="0.5"/>
-
-    <!-- Lower leg end cap -->
-    <polygon points="80,103 80,143 120,163 120,123"
-             fill="#660800" stroke="#aa1100" stroke-width="0.5" opacity="0.92"/>
-
-    <!-- Lower leg front face -->
-    <polygon points="-85,20 80,103 80,143 -85,60"
-             fill="url(#hotF)" stroke="#ff4400" stroke-width="0.5"/>
-
-    <!-- ═══════════════ RADIATOR CORE GLOW ═══════════════ -->
-
-    <ellipse cx="-42" cy="-25" rx="55" ry="38"
-             fill="#ffcc00" opacity="0.10" filter="url(#glowSmall)"/>
-    <ellipse cx="-42" cy="-25" rx="26" ry="16"
-             fill="#ffee66" opacity="0.16" filter="url(#glowSmall)"/>
-    <ellipse cx="-42" cy="-25" rx="10" ry="6"
-             fill="#ffffff" opacity="0.35" filter="url(#glowTiny)"/>
-
-    <!-- Heat fins (vertical micro-lines through the junction) -->
-    <g stroke="#ffcc00" stroke-width="0.5" opacity="0.22">
-      <line x1="-72" y1="-30" x2="-72" y2="-5"/>
-      <line x1="-60" y1="-35" x2="-60" y2="-10"/>
-      <line x1="-48" y1="-40" x2="-48" y2="-15"/>
-      <line x1="-36" y1="-45" x2="-36" y2="-20"/>
-      <line x1="-24" y1="-40" x2="-24" y2="-15"/>
-      <line x1="-12" y1="-35" x2="-12" y2="-10"/>
-      <line x1="0"   y1="-30" x2="0"   y2="-5"/>
-    </g>
-
-    <!-- ═══════════════ COOL INTAKE STREAMLINES ═══════════════ -->
-
-    <g stroke="#88ccff" stroke-width="0.8" fill="none" opacity="0.28">
-      <path d="M-185,-58 Q-168,-63 -145,-56"/>
-      <path d="M-182,-36 Q-165,-41 -142,-34"/>
-      <path d="M-180,-14 Q-163,-19 -140,-12"/>
-      <path d="M-182,8 Q-165,3 -142,10"/>
-      <path d="M-185,30 Q-168,25 -145,32"/>
-    </g>
-
-    <!-- ═══════════════ HOT EXHAUST TRAILS ═══════════════ -->
-
-    <g stroke="#ff4400" stroke-width="0.8" fill="none" opacity="0.32">
-      <path d="M100,-130 Q132,-125 168,-140"/>
-      <path d="M108,-100 Q142,-95 178,-110"/>
-      <path d="M112,118 Q146,128 180,113"/>
-      <path d="M106,145 Q140,155 175,140"/>
-    </g>
-
-    <!-- Scattered exhaust sparks -->
-    <g fill="#ff6600" opacity="0.28">
-      <circle cx="132" cy="-115" r="1.5"/>
-      <circle cx="152" cy="-127" r="1.0"/>
-      <circle cx="168" cy="-118" r="0.8"/>
-      <circle cx="140" cy="135"  r="1.2"/>
-      <circle cx="162" cy="125"  r="0.8"/>
-      <circle cx="176" cy="136"  r="1.0"/>
-    </g>
-
-    <!-- ═══════════════ ENERGY TRANSFER DIAMONDS ═══════════════ -->
-    <!-- Placed along the cool→hot transition path -->
-
-    <g fill="#ffee66" opacity="0.4">
-      <polygon points="-104,-56 -98,-51 -104,-46 -110,-51"/>
-      <polygon points="-92,-61 -86,-56 -92,-51 -98,-56"/>
-      <polygon points="-80,-66 -74,-61 -80,-56 -86,-61"/>
-      <polygon points="-68,-71 -62,-66 -68,-61 -74,-66"/>
-    </g>
-
-    <!-- Subtle corner highlights on the prisms (edge catches light) -->
-    <g stroke="#a8d4ff" stroke-width="0.6" opacity="0.35" fill="none">
-      <path d="M-140,-90 L-85,-117"/>
-    </g>
-    <g stroke="#ffdd88" stroke-width="0.6" opacity="0.4" fill="none">
-      <path d="M-85,-85 L70,-163"/>
-    </g>
-    <g stroke="#ffaa77" stroke-width="0.6" opacity="0.4" fill="none">
-      <path d="M-85,20 L80,103"/>
-    </g>
-
-    <!-- ═══════════════ ANIMATED PARTICLES ═══════════════ -->
-
-    <!-- Cool particles entering the stem -->
-    <circle cx="-142" cy="-30" r="1.6" fill="#88ccff" opacity="0.6">
-      <animate attributeName="cx" values="-142;-80" dur="2.8s" repeatCount="indefinite"/>
-      <animate attributeName="opacity" values="0.6;0" dur="2.8s" repeatCount="indefinite"/>
+    <!-- a closure on its way down onto the stack -->
+    <circle r="3" fill="#ffee66" filter="url(#glowTiny)">
+      <animateMotion dur="3.2s" repeatCount="indefinite"
+        path="M 0,-100 C -40,-70 -62,-24 -74,0"/>
+      <animate attributeName="opacity" values="0;0.95;0.95;0" dur="3.2s"
+        repeatCount="indefinite"/>
     </circle>
-    <circle cx="-138" cy="0" r="1.4" fill="#88ccff" opacity="0.5">
-      <animate attributeName="cx" values="-138;-76" dur="3.4s" repeatCount="indefinite"/>
-      <animate attributeName="opacity" values="0.5;0" dur="3.4s" repeatCount="indefinite"/>
-    </circle>
-    <circle cx="-145" cy="35" r="1.3" fill="#88ccff" opacity="0.5">
-      <animate attributeName="cx" values="-145;-83" dur="3.1s" repeatCount="indefinite"/>
-      <animate attributeName="opacity" values="0.5;0" dur="3.1s" repeatCount="indefinite"/>
+    <!-- and the head travelling back up as the new control term -->
+    <circle r="3" fill="#88ccff" filter="url(#glowTiny)">
+      <animateMotion dur="3.2s" begin="1.6s" repeatCount="indefinite"
+        path="M -74,0 C -62,-24 -40,-70 0,-100"/>
+      <animate attributeName="opacity" values="0;0.9;0.9;0" dur="3.2s"
+        begin="1.6s" repeatCount="indefinite"/>
     </circle>
 
-    <!-- Hot particles exiting the arms -->
-    <circle cx="40" cy="-105" r="2.0" fill="#ff8800" opacity="0.55">
-      <animate attributeName="cx" values="40;138" dur="2.2s" repeatCount="indefinite"/>
-      <animate attributeName="opacity" values="0.55;0" dur="2.2s" repeatCount="indefinite"/>
-    </circle>
-    <circle cx="30" cy="-90" r="1.6" fill="#ffcc00" opacity="0.5">
-      <animate attributeName="cx" values="30;120" dur="2.6s" repeatCount="indefinite"/>
-      <animate attributeName="opacity" values="0.5;0" dur="2.6s" repeatCount="indefinite"/>
-    </circle>
-    <circle cx="52" cy="75" r="1.8" fill="#ff4400" opacity="0.55">
-      <animate attributeName="cx" values="52;145" dur="2.5s" repeatCount="indefinite"/>
-      <animate attributeName="opacity" values="0.55;0" dur="2.5s" repeatCount="indefinite"/>
-    </circle>
-    <circle cx="40" cy="95" r="1.5" fill="#ff6600" opacity="0.5">
-      <animate attributeName="cx" values="40;135" dur="2.9s" repeatCount="indefinite"/>
-      <animate attributeName="opacity" values="0.5;0" dur="2.9s" repeatCount="indefinite"/>
-    </circle>
+    <!-- the slot a pushed closure is heading for -->
+    <rect x="-125" y="132" width="250" height="26" rx="9" fill="none"
+          stroke="#4a8fe5" stroke-width="0.8" stroke-dasharray="3 4" opacity="0">
+      <animate attributeName="opacity" values="0;0.5;0" dur="3.2s"
+        repeatCount="indefinite"/>
+    </rect>
 
-    <!-- Single particle travelling through the core -->
-    <circle cx="-85" cy="-25" r="1.2" fill="#ffee66" opacity="0.7">
-      <animate attributeName="cx" values="-120;-40" dur="2.4s" repeatCount="indefinite"/>
-      <animate attributeName="r" values="0.8;1.8;0.8" dur="2.4s" repeatCount="indefinite"/>
-      <animate attributeName="opacity" values="0.7;0.2;0.7" dur="2.4s" repeatCount="indefinite"/>
-    </circle>
+    <!-- plate 1: the head, lit -->
+    <rect x="-125" y="4" width="250" height="26" rx="9" fill="none"
+          stroke="#ffcc00" stroke-width="3" opacity="0.4" filter="url(#glowSmall)"/>
+    <rect x="-125" y="4" width="250" height="26" rx="9"
+          fill="url(#headFill)" stroke="#ffcc00" stroke-width="1"/>
+    <text x="0" y="22" fill="#ffee66">&#10216;&#955;y. y, &#961;&#10217;</text>
 
+    <!-- plates below: dormant closures -->
+    <rect x="-125" y="36" width="250" height="26" rx="9"
+          fill="url(#plateFill)" stroke="#5a9be5" stroke-width="0.8"/>
+    <text x="0" y="54" fill="#cfe8ff">x &#8614; &#10216;&#955;*. y, &#961;&#10217;</text>
+
+    <rect x="-125" y="68" width="250" height="26" rx="9"
+          fill="url(#plateFill)" stroke="#5a9be5" stroke-width="0.8" opacity="0.85"/>
+    <text x="0" y="86" fill="#cfe8ff" opacity="0.85">&#10216;&#955;z. z x, &#961;&#10217;</text>
+
+    <rect x="-125" y="100" width="250" height="26" rx="9"
+          fill="url(#plateFill)" stroke="#5a9be5" stroke-width="0.8" opacity="0.6"/>
+    <text x="0" y="118" fill="#cfe8ff" opacity="0.6">&#961;&#8320;</text>
   </g>
 
+  <!-- a marker on the left naming the head of the stack -->
+  <polygon points="-138,17 -130,10 -130,24" fill="#ffcc00" opacity="0.9">
+    <animate attributeName="opacity" values="0.35;0.95;0.35" dur="3.2s"
+      repeatCount="indefinite"/>
+  </polygon>
+
+  <text x="0" y="182" text-anchor="middle" fill="#88ccff" font-size="13"
+        font-family="ui-monospace, 'JetBrains Mono', monospace"
+        letter-spacing="2" opacity="0.8">environment  &#961;</text>
+
   <!-- ═══════════════ WORDMARK ═══════════════ -->
-  <text x="0" y="200" text-anchor="middle"
+  <text x="0" y="204" text-anchor="middle"
         fill="#ff8800" font-size="14"
         font-family="ui-monospace, 'JetBrains Mono', monospace"
         font-weight="bold" opacity="0.35" letter-spacing="10">K R I V O S T R</text>

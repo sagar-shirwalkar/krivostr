@@ -21,6 +21,9 @@ dependencies:
   - monad-logger
   - warp
   - wai
+  # warp re-exports the HostPreference type but not its constructors, which
+  # live in streaming-commons.
+  - streaming-commons
   - wai-websockets
   - wai-app-static
   - http-types
@@ -30,9 +33,14 @@ dependencies:
   - filepath
   - directory
   - mtl
+  - optparse-applicative
+  - crypton
+  - base64-bytestring
+  - base16-bytestring
+  - process
 
 executables:
-  krivostr-client:
+  krivostr:
     main: Main.hs
     source-dirs: src
     ghc-options:

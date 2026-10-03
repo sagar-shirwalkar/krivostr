@@ -26,7 +26,7 @@ import Data.Aeson.Types (Parser, parseMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Map.Strict as M
-import Network.HTTP.Types (status400)
+import Network.HTTP.Types (hContentType, status200, status400, status404)
 import Network.Wai
 import Network.Wai.Handler.Warp
   ( defaultSettings
@@ -35,6 +35,7 @@ import Network.Wai.Handler.Warp
   , setPort
   )
 import Network.Wai.Application.Static (defaultWebAppSettings, staticApp)
+import System.FilePath ((</>))
 import Network.Wai.Handler.WebSockets (websocketsOr)
 import Network.WebSockets
 import Krivostr.Event (Event, evId)
@@ -84,6 +85,13 @@ runBridge lg cfg store = do
     threadDelay (60 * 60 * 1000000)
     void $ evictExpired store
 
+  -- Background reconnect thread: 'addRelay' skips relays that are already
+  -- connected, so re-offering the upstream set every half minute brings back
+  -- any that were unreachable at startup or have since dropped.
+  _ <- async $ forever $ do
+    threadDelay (30 * 1000000)
+    forM_ (bcUpstreams cfg) (addRelay pool)
+
   let settings =
         setPort (bcPort cfg)
           $ setBeforeMainLoop
@@ -103,6 +111,16 @@ runBridge lg cfg store = do
     fallback cfg' req respond
       | pathInfo req == ["ws"] =
           respond (responseLBS status400 [] "expected a websocket upgrade")
+      -- A browser asks for a bare "/" first, and wai-app-static answers that
+      -- with a 404: it only looks for files, and the UI has no client-side
+      -- routing, so the root is the one path that needs naming by hand. wai
+      -- drops the leading slash, so "/" arrives here as an empty segment list.
+      | null (pathInfo req) = do
+          let index = bcStaticDir cfg' </> "index.html"
+          loaded <- try (BL.readFile index) :: IO (Either SomeException BL.ByteString)
+          respond $ case loaded of
+            Left _    -> responseLBS status404 [] "index.html not found"
+            Right html -> responseLBS status200 [(hContentType, "text/html; charset=utf-8")] html
       | otherwise =
           staticApp (defaultWebAppSettings (bcStaticDir cfg')) req respond
 

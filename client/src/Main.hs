@@ -1,46 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main (main) where
 
-import Data.Text (Text)
-import qualified Data.Text as T
-import Krivostr.Bridge
-import Krivostr.Logging
-import Krivostr.Store
-import System.Environment (lookupEnv)
-import System.Directory (createDirectoryIfMissing)
-import System.FilePath (takeDirectory)
-
-defaultUpstreams :: [Text]
-defaultUpstreams =
-  [ "wss://relay.damus.io"
-  , "wss://nos.lol"
-  , "wss://relay.primal.net"
-  ]
+-- | The binary is called @krivostr@; the subcommand parser lives in
+-- "Krivostr.Cli" so that it can be exercised by the test suite.
+--
+-- @krivostr serve@ is what this program used to be when it was only a bridge.
+import Krivostr.Cli (runCLI)
 
 main :: IO ()
-main = do
-  lvlStr <- lookupEnv "KRIVOSTR_LOG_LEVEL"
-  let lvl = case lvlStr of
-              Just "debug" -> Debug
-              Just "warn"  -> Warn
-              Just "error" -> Error
-              _            -> Info
-  lg <- newLogger lvl
-
-  -- Config via env, with sensible defaults.
-  portStr  <- lookupEnv "KRIVOSTR_PORT"
-  staticD  <- lookupEnv "KRIVOSTR_STATIC_DIR"
-  dbPath   <- lookupEnv "KRIVOSTR_DB"
-  let port    = maybe 8081 read portStr
-      staticD' = maybe "./ui/dist" id staticD
-      dbPath'  = maybe ".krivostr/events.db" id dbPath
-
-  createDirectoryIfMissing True (takeDirectory dbPath')
-  emit lg Info ("krivostr-client starting, db=" <> T.pack dbPath'
-                <> " port=" <> T.pack (show port))
-  store <- openStore lg dbPath'
-  runBridge lg BridgeConfig
-    { bcPort = port
-    , bcStaticDir = staticD'
-    , bcUpstreams = defaultUpstreams
-    } store
+main = runCLI

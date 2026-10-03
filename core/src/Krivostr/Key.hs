@@ -17,6 +17,7 @@ module Krivostr.Key
   , derivePublicKey
   , signSchnorr
   , verifySchnorr
+  , sharedSecret
   , importHex
   , exportHex
   , pubKeyHex
@@ -107,6 +108,18 @@ signSchnorr sk msg =
 
 verifySchnorr :: PublicKey -> BS.ByteString -> BS.ByteString -> Bool
 verifySchnorr (PublicKey x) msg sig = verifyBip340 x msg sig
+
+-- | NIP-04 ECDH: the shared secret is the x coordinate of @d * Q@, as 32
+-- big-endian bytes.
+--
+-- Lives here rather than in the CLI because the 'PrivateKey' and 'PublicKey'
+-- constructors are deliberately not exported; a caller outside this module can
+-- only reach the group through these functions.
+sharedSecret :: PrivateKey -> PublicKey -> Maybe BS.ByteString
+sharedSecret (PrivateKey d) (PublicKey qx) = do
+  q <- liftX qx
+  (x, _) <- pointMul q d
+  pure (bytes32 x)
 
 privateScalar :: PrivateKey -> Integer
 privateScalar (PrivateKey d) = d

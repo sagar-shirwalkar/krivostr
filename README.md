@@ -5,33 +5,34 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?style=for-the-badge&label=TypeScript&labelColor=gray&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
 
-<p align="center">
-  <picture>
-    <img src="assets/krivostr.svg" width="320" height="320" alt="krivostr">
-  </picture>
-</p>
+<p align="center"><picture><img src="assets/krivostr.svg" width="320" height="320" alt="krivostr"> </picture></p>
 
-<p align="center"><em>reduce(relay) → feed</em></p>
+<p align="center"><code>K = Y (λM. λ⟨t,π,ρ⟩. t ρ @ π ▷ M)</code></p>
 
-krivostr is a Nostr client built like a **Krivine machine**. The name is a
-portmanteau of **Nostr** and **Krivine** — the call-by-name abstract machine
-that evaluates lambda terms through a stack of closures. The core here is
-built the same way: a small closed term language (`Event`, `Filter`, `Wire`),
-evaluated by pure reduction, with effects quarantined at the boundary.
+Krivostr is a Nostr client for people who follow too many people to fit in a
+browser tab. 
 
-- **Pure core** — Haskell library with no `IO` outside of cryptography and
-  entropy. Events are values. Filters are predicates.
-- **Typed effect boundary** — the `client` package owns WebSockets, SQLite,
-  and the HTTP bridge. Nothing else touches the world.
-- **Hand-rolled FP in the browser** — `Maybe`, `Result`, `IO`, `Rule`,
-  `Monoid`. No `fp-ts`. The event algebra and the filter algebra are the same
-  shape in Haskell and TypeScript.
-- **Personal relay** — a Haskell bridge caches a month of history on your
-  machine and serves it to the browser. Relays forget; you don't have to.
-- **NIP-07 / NIP-46 signers** — extension-based and remote-bunker signing at
-  the publish boundary. Your key never touches the app if you don't want it to.
-- **NIP-65 outbox** — reads follow your follows' relay hints. No hard-coded
-  relay lists.
+It ships as a single static binary - a bridge daemon, CLI, watcher, and HTTP API in one file, plus a Lit-based web UI you can self-host. 
+
+The name is a portmanteau of **Nostr** and **Krivine** - the call-by-name abstract machine
+that evaluates lambda terms through a stack of closures.  Here's what you get:
+
+- **One binary, six jobs**  : `serve`, `feed`, `search`, `dm`, `watch`, `api`.
+  No runtime dependencies. SQLite and FTS5 are linked in.
+- **A store that survives a browser wipe** :  a month of verified history in
+  SQLite, indexed for full-text search (NIP-50). Relays forget; you don't.
+- **A pool that scales to hundreds of relays** :  the outbox model (NIP-65)
+  in a background thread, deduplicated and signature-verified before it
+  reaches the UI.
+- **Search that actually searches** :  FTS5 over your cached feed, plus
+  relay-side `search` filters for the hosted UI. Same wire message, different
+  leverage.
+- **Signers at the boundary** :  local `nsec` (wrapped with PBKDF2 + AES-GCM),
+  NIP-07 extension, or NIP-46 bunker. Your key never enters the app if you
+  don't want it to.
+- **Pure core, effectful shell** : the Haskell core (`Event`, `Filter`,
+  `Wire`) is pure by construction; SQLite, WebSockets, and the HTTP bridge
+  live in `client`. The browser re-expresses the same algebra in TypeScript.
 
 ---
 
@@ -54,11 +55,6 @@ evaluated by pure reduction, with effects quarantined at the boundary.
   bunker).
 - **Bech32 native** — `npub`, `nsec`, `note`, `nprofile`, `nevent`, `naddr`.
   Hand-rolled BIP-173. No external bech32 library.
-- **Browser tests** — Lit components tested in real Chromium via
-  `@vitest/browser`. 80% coverage enforced on the pure modules.
-- **`Writer` logging in the core** — pure functions explain themselves without
-  side effects. IO logging in the client uses an `STM` queue drained by a
-  background thread.
 
 ---
 
@@ -76,7 +72,7 @@ make build
 Build the bridge (Haskell) and the UI (Lit):
 
 ```bash
-stack exec krivostr-client &   # bridge on :8081, SQLite at .krivostr/events.db
+stack exec krivostr serve &    # bridge on :8081, SQLite at .krivostr/events.db
 cd ui && pnpm dev              # Vite on :5173
 ```
 
@@ -93,11 +89,11 @@ Open <http://localhost:5173>. The landing page explains the model; click
 git clone https://github.com/yourhandle/krivostr
 cd krivostr
 stack build --fast
-stack exec krivostr-client
+stack exec krivostr serve
 ```
 
 The bridge listens on `:8081` by default and serves the compiled UI from
-`./ui/dist` if present.
+`./ui/dist` if present, so <http://localhost:8081> is a complete client.
 
 ### UI
 

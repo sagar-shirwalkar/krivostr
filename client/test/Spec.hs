@@ -4,13 +4,29 @@ module Main (main) where
 
 import Test.Hspec
 import Test.QuickCheck
+import qualified Data.ByteString as BS
 import Control.Concurrent.STM
 import Control.Monad (forM_, replicateM)
 import Data.Either (isLeft, isRight)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
+import qualified Database.SQLite3 as SQLite
 import System.IO.Temp (withSystemTempDirectory)
+import Krivostr.Cli
+  ( FilterOpts (..)
+  , csvField
+  , isHex64
+  , parseKind
+  , parseTag
+  , parseWhen
+  , renderCsv
+  , resolveAuthor
+  , resolveTime
+  , substitute
+  , TimeSpec (..)
+  )
+import Krivostr.Cli.Nostr (decryptNip04, encryptNip04)
 import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Key
@@ -191,3 +207,313 @@ main = hspec $ do
       importHex (exportHex sk) `shouldBe` Right sk
     it "rejects garbage" $
       importHex "0xDEADBEEF" `shouldSatisfy` isLeft
+
+  describe "Store search (FTS5)" $ do
+    it "indexes what is inserted and finds it" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "the quick brown fox"
+      insertEvent st e
+      hits <- searchEvents st "brown" False Nothing Nothing 10
+      map evContent hits `shouldBe` ["the quick brown fox"]
+      closeStore st
+
+    it "finds nothing for a word that is not there" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      insertEvent st (mkSigned sk 1 "the quick brown fox")
+      hits <- searchEvents st "aardvark" False Nothing Nothing 10
+      hits `shouldBe` []
+      closeStore st
+
+    it "requires every word by default and accepts any word with --any" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      insertEvent st (mkSigned sk 1 "hello world")
+      both <- searchEvents st "hello world" False Nothing Nothing 10
+      one <- searchEvents st "hello world" True Nothing Nothing 10
+      neither <- searchEvents st "hello goodbye" False Nothing Nothing 10
+      map evContent both `shouldBe` ["hello world"]
+      map evContent one `shouldBe` ["hello world"]
+      neither `shouldBe` []
+      closeStore st
+
+    -- The bug this covers: `case kinds of` had no Nothing branch, so every
+    -- search without --kind threw a pattern-match failure at runtime.
+    it "searches with no kind filter at all" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      forM_ [1, 7] $ \k -> insertEvent st (mkSigned sk k "shared word")
+      noFilter <- searchEvents st "shared" False Nothing Nothing 10
+      kinds <- searchEvents st "shared" False (Just [1, 7]) Nothing 10
+      onlyOne <- searchEvents st "shared" False (Just [1]) Nothing 10
+      emptyKinds <- searchEvents st "shared" False (Just []) Nothing 10
+      length noFilter `shouldBe` 2
+      length kinds `shouldBe` 2
+      map evKind onlyOne `shouldBe` [1]
+      length emptyKinds `shouldBe` 2
+      closeStore st
+
+    it "filters search by author" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk1 <- generatePrivateKey
+      sk2 <- generatePrivateKey
+      insertEvent st (mkSigned sk1 1 "shared word")
+      insertEvent st (mkSigned sk2 1 "shared word")
+      let mine = pubKeyHex (derivePublicKey sk1)
+      hits <- searchEvents st "shared" False Nothing (Just mine) 10
+      map evPubkey hits `shouldBe` [mine]
+      closeStore st
+
+    it "respects the search limit" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      forM_ [1 .. 5] $ \i -> insertEvent st (mkSigned sk 1 (T.pack ("hit " <> show i)))
+      hits <- searchEvents st "hit" False Nothing Nothing 2
+      length hits `shouldBe` 2
+      closeStore st
+
+    it "drops deleted events from the index" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "temporary word"
+      insertEvent st e
+      before <- searchEvents st "temporary" False Nothing Nothing 10
+      length before `shouldBe` 1
+      deleteEvent st (evId e)
+      after <- searchEvents st "temporary" False Nothing Nothing 10
+      after `shouldBe` []
+      closeStore st
+
+    it "rebuilds the index from the events table" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      insertEvent st (mkSigned sk 1 "rebuilt word")
+      n <- reindexEvents st
+      n `shouldBe` 1
+      hits <- searchEvents st "rebuilt" False Nothing Nothing 10
+      length hits `shouldBe` 1
+      closeStore st
+
+    -- A store created before this feature has events but no index; the search
+    -- command must notice and rebuild rather than reporting zero results.
+    it "rebuilds when the index is behind the events table" $
+      withSystemTempDirectory "krivostr" $ \dir -> do
+        lg <- newLogger Error
+        sk <- generatePrivateKey
+        let path = dir <> "/events.db"
+        st1 <- openStore lg path
+        insertEvent st1 (mkSigned sk 1 "stale word")
+        closeStore st1
+        st2 <- openStore lg path
+        _ <- reindexEvents st2
+        -- Simulate the index losing rows the way an old store would.
+        wipeIndex path
+        available <- searchAvailable st2
+        rebuilt <- reindexIfStale st2
+        available `shouldBe` True
+        rebuilt `shouldBe` True
+        hits <- searchEvents st2 "stale" False Nothing Nothing 10
+        length hits `shouldBe` 1
+        closeStore st2
+
+    it "quotes user input so punctuation cannot reach FTS5 as syntax" $ do
+      searchQuery False "c++"  `shouldBe` Just "\"c++\""
+      searchQuery False "foo bar" `shouldBe` Just "\"foo\" AND \"bar\""
+      searchQuery True  "foo bar" `shouldBe` Just "\"foo\" OR \"bar\""
+      searchQuery False "NOT AND OR" `shouldBe` Just "\"NOT\" AND \"AND\" AND \"OR\""
+      -- Nothing searchable: no MATCH expression to run.
+      searchQuery False "..." `shouldBe` Nothing
+      searchQuery False ""    `shouldBe` Nothing
+      -- A quote cannot be smuggled in to break out of the phrase.
+      searchQuery False "a\"b" `shouldBe` Just "\"a b\""
+
+  describe "Key.sharedSecret" $ do
+    it "agrees in both directions" $ do
+      sk1 <- generatePrivateKey
+      sk2 <- generatePrivateKey
+      let p1 = derivePublicKey sk1
+          p2 = derivePublicKey sk2
+      sharedSecret sk1 p2 `shouldBe` sharedSecret sk2 p1
+
+    -- The key constructors are not exported, so the "not on the curve" branch
+    -- of sharedSecret is only reachable through this parser.
+    it "rejects a public key that is not a curve point" $ do
+      publicKeyFromBytes (BS.replicate 32 0xff) `shouldBe` Nothing
+      publicKeyFromBytes (BS.replicate 31 0x02) `shouldBe` Nothing
+      publicKeyFromBytes BS.empty `shouldBe` Nothing
+
+    it "is a 32-byte secret and is stable" $ do
+      sk1 <- generatePrivateKey
+      sk2 <- generatePrivateKey
+      let ss1 = sharedSecret sk1 (derivePublicKey sk2)
+          ss2 = sharedSecret sk1 (derivePublicKey sk2)
+      ss1 `shouldBe` ss2
+      fmap BS.length ss1 `shouldBe` Just 32
+
+    it "differs per peer" $ do
+      sk1 <- generatePrivateKey
+      sk2 <- generatePrivateKey
+      sk3 <- generatePrivateKey
+      let p2 = derivePublicKey sk2
+          p3 = derivePublicKey sk3
+      sharedSecret sk1 p2 `shouldNotBe` sharedSecret sk1 p3
+
+  describe "NIP-04" $ do
+    it "round-trips a message between two keys" $ do
+      sk1 <- generatePrivateKey
+      sk2 <- generatePrivateKey
+      let pk1 = derivePublicKey sk1
+          pk2 = derivePublicKey sk2
+      enc <- encryptNip04 sk1 pk2 "meet at 8"
+      case enc of
+        Left e   -> expectationFailure ("encrypt: " <> e)
+        Right ct -> do
+          dec <- decryptNip04 sk2 pk1 ct
+          dec `shouldBe` Right "meet at 8"
+
+    it "cannot be read by a third party" $ do
+      sk1 <- generatePrivateKey
+      sk2 <- generatePrivateKey
+      sk3 <- generatePrivateKey
+      enc <- encryptNip04 sk1 (derivePublicKey sk2) "secret"
+      case enc of
+        Left e   -> expectationFailure ("encrypt: " <> e)
+        Right ct -> do
+          dec <- decryptNip04 sk3 (derivePublicKey sk1) ct
+          dec `shouldSatisfy` isLeft
+
+    it "round-trips text that is not ascii, and an empty message" $ do
+      sk1 <- generatePrivateKey
+      let pk1 = derivePublicKey sk1
+      forM_ ["", "grüße, 日本語 \n newline"] $ \msg -> do
+        enc <- encryptNip04 sk1 pk1 msg
+        case enc of
+          Left e   -> expectationFailure ("encrypt: " <> e)
+          Right ct -> do
+            dec <- decryptNip04 sk1 pk1 ct
+            dec `shouldBe` Right msg
+
+    it "refuses a payload with no iv" $ do
+      sk1 <- generatePrivateKey
+      let pk1 = derivePublicKey sk1
+      r <- decryptNip04 sk1 pk1 "notbase64?nothing"
+      r `shouldSatisfy` isLeft
+
+    it "refuses a payload whose iv is not base64" $ do
+      sk1 <- generatePrivateKey
+      let pk1 = derivePublicKey sk1
+      r <- decryptNip04 sk1 pk1 "AAAA?iv=!!!"
+      r `shouldSatisfy` isLeft
+
+  describe "Cli helpers" $ do
+    it "parses relative times" $ do
+      agoSeconds "90s" `shouldBe` Just 90
+      agoSeconds "30m" `shouldBe` Just 1800
+      agoSeconds "2h"  `shouldBe` Just 7200
+      agoSeconds "7d"  `shouldBe` Just 604800
+      agoSeconds "1w"  `shouldBe` Just 604800
+      agoSeconds "6mo" `shouldBe` Just (6 * 2592000)
+      agoSeconds "1y"  `shouldBe` Just 31536000
+
+    it "parses a date and a unix timestamp as absolute" $ do
+      case parseWhen "2024-01-02" of
+        Right (At t) -> t `shouldBe` 1704153600
+        _            -> expectationFailure "2024-01-02 did not parse as a date"
+      case parseWhen "1704153600" of
+        Right (At t) -> t `shouldBe` 1704153600
+        _            -> expectationFailure "1704153600 did not parse as a timestamp"
+      parseWhen "not a time" `shouldSatisfy` isLeft
+      parseWhen "12q"         `shouldSatisfy` isLeft
+
+    it "resolves a relative time into the past" $ do
+      before <- getPOSIXTime
+      t      <- resolveTime =<< orFail (parseWhen "1h")
+      after  <- getPOSIXTime
+      (after - 3590) `shouldSatisfy` (>= t)
+      t `shouldSatisfy` (<= before - 3590)
+
+    it "names kinds" $ do
+      parseKind "note"     `shouldBe` Right 1
+      parseKind "dm"       `shouldBe` Right 4
+      parseKind "metadata" `shouldBe` Right 0
+      parseKind "relays"   `shouldBe` Right 10002
+      parseKind "42"       `shouldBe` Right 42
+      parseKind "-1"       `shouldSatisfy` isLeft
+      parseKind "99999999999999" `shouldSatisfy` isLeft
+
+    it "splits tag filters" $ do
+      parseTag "e=abc" `shouldBe` Right ("e", "abc")
+      parseTag "t="    `shouldBe` Right ("t", "")
+      parseTag "noequals" `shouldSatisfy` isLeft
+
+    it "recognises hex pubkeys" $ do
+      isHex64 (T.replicate 64 "a") `shouldBe` True
+      isHex64 "abc"                 `shouldBe` False
+      isHex64 (T.replicate 63 "a")  `shouldBe` False
+
+    it "escapes csv only when it has to" $ do
+      csvField "plain"      `shouldBe` "plain"
+      csvField "a,b"        `shouldBe` "\"a,b\""
+      csvField "say \"hi\"" `shouldBe` "\"say \"\"hi\"\"\""
+      csvField "two\nlines" `shouldBe` "\"two\nlines\""
+
+    it "renders csv with a header and one row per event" $ do
+      sk <- generatePrivateKey
+      let e = (mkSigned sk 1 "hello, world") { evTags = [["t", "bitcoin"], ["e", "abc", "wss://x"]] }
+      case lines (renderCsv [e]) of
+        [header, row] -> do
+          header `shouldBe` "id,pubkey,created_at,kind,tags,content,sig"
+          row `shouldContain` "\"hello, world\""
+          row `shouldContain` "t=bitcoin e=abc|wss://x"
+        other -> expectationFailure ("expected 2 csv lines, got " <> show (length other))
+
+    it "substitutes the documented placeholders" $ do
+      sk <- generatePrivateKey
+      let e = (mkSigned sk 7 "body text") { evTags = [["t", "x"]] }
+      substitute "kind={kind} author={author} content={content}" e
+        `shouldBe` "kind=7 author=" <> evPubkey e <> " content=body text"
+      T.unpack (substitute "{json}" e) `shouldContain` T.unpack (evId e)
+
+  describe "resolveAuthor" $ do
+    it "accepts a hex pubkey unchanged" $ do
+      sk <- generatePrivateKey
+      let hex = pubKeyHex (derivePublicKey sk)
+      resolveAuthor (T.unpack hex) `shouldBe` Right hex
+
+    it "accepts an npub" $ do
+      sk <- generatePrivateKey
+      let hex = pubKeyHex (derivePublicKey sk)
+      resolveAuthor (T.unpack (exportNpub (derivePublicKey sk))) `shouldBe` Right hex
+
+    it "rejects anything else" $ do
+      resolveAuthor "alice" `shouldSatisfy` isLeft
+      resolveAuthor "" `shouldSatisfy` isLeft
+
+
+-- | Seconds for a relative spec; Nothing if it is absolute or unreadable.
+agoSeconds :: String -> Maybe Integer
+agoSeconds s = case parseWhen s of
+  Right (Ago n) -> Just n
+  _            -> Nothing
+
+-- | 'orDie' for a pure Either.
+orFail :: Either String a -> IO a
+orFail (Right a) = pure a
+orFail (Left e)  = expectationFailure e >> error "unreachable"
+
+-- | Empty the FTS table behind the store's back, which is what a database
+-- written before this feature looks like.
+wipeIndex :: FilePath -> IO ()
+wipeIndex path = do
+  conn <- SQLite.open (T.pack path)
+  _ <- SQLite.exec conn "DELETE FROM events_fts"
+  SQLite.close conn

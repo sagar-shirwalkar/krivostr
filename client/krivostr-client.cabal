@@ -18,10 +18,14 @@ source-repository head
   type: git
   location: https://github.com/yourhandle/krivostr
 
-executable krivostr-client
+executable krivostr
   main-is: Main.hs
   other-modules:
       Krivostr.Bridge
+      Krivostr.Cli
+      Krivostr.Cli.Api
+      Krivostr.Cli.Nostr
+      Krivostr.Cli.Render
       Krivostr.Pool
       Krivostr.Relay
       Krivostr.Store
@@ -33,8 +37,11 @@ executable krivostr-client
       aeson
     , async
     , base >=4.19 && <5
+    , base16-bytestring
+    , base64-bytestring
     , bytestring
     , containers
+    , crypton
     , direct-sqlite
     , directory
     , filepath
@@ -43,8 +50,11 @@ executable krivostr-client
     , monad-logger
     , mtl
     , network
+    , optparse-applicative
+    , process
     , sqlite-simple
     , stm
+    , streaming-commons
     , text
     , time
     , wai
@@ -60,6 +70,10 @@ test-suite spec
   main-is: Spec.hs
   other-modules:
       Krivostr.Bridge
+      Krivostr.Cli
+      Krivostr.Cli.Api
+      Krivostr.Cli.Nostr
+      Krivostr.Cli.Render
       Krivostr.Pool
       Krivostr.Relay
       Krivostr.Store
@@ -74,8 +88,11 @@ test-suite spec
     , aeson
     , async
     , base >=4.19 && <5
+    , base16-bytestring
+    , base64-bytestring
     , bytestring
     , containers
+    , crypton
     , direct-sqlite
     , directory
     , filepath
@@ -85,8 +102,11 @@ test-suite spec
     , monad-logger
     , mtl
     , network
+    , optparse-applicative
+    , process
     , sqlite-simple
     , stm
+    , streaming-commons
     , temporary
     , text
     , time
