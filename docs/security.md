@@ -5,25 +5,21 @@ inventory of what is actually true — including the parts that are not
 implemented, which is where the previous version of this document was
 optimistic.
 
-## The two real gaps
+## The two real gaps (now fixed)
 
-**Ingest does not verify signatures.** `Krivostr.Schnorr.verifyEvent` exists and
-is tested, but nothing calls it on the way in. The bridge stores events on the
-`pubkey` they carry; the UI's `parseEvent` checks that fields are present and
-correctly typed, not that `id` hashes the content or that `sig` verifies. A
-malicious relay can serve events attributed to anyone. Nothing downstream
-notices.
+**Ingest did not verify signatures.** `Krivostr.Schnorr.verifyEvent` existed but
+was not called on the way in. The bridge now verifies signatures on all events
+received from clients (via WebSocket) and from upstream relays before storing or
+forwarding them. The CLI's `feed --ingest` path also verifies signatures before
+storing. A malicious relay can no longer inject events with invalid signatures.
 
-**`krivostr serve` binds every interface.** [`Bridge.hs`](../client/src/Krivostr/Bridge.hs)
-calls `setPort` with no `setHost`, so Warp's default applies and the bridge
-listens on all interfaces, not just loopback — even though the startup log
-prints `listening on :8081` with no host. Anything on the local network can
-connect, read the store, and publish events as you.
+**`krivostr serve` bound every interface.** [`Bridge.hs`](../client/src/Krivostr/Bridge.hs)
+called `setPort` with no `setHost`, so Warp's default applied and the bridge
+listened on all interfaces. Fixed by adding a `--host` option (defaulting to
+`127.0.0.1`, env `KRIVOSTR_BRIDGE_HOST`) to the `serve` command, mirroring the
+API's `--host` option.
 
-This is worth fixing, and it is a small fix: mirror the API's `--host` option
-(defaulting to `127.0.0.1`) in `serveP`, and set `setHost` in `Bridge.hs`.
-
-The JSON API does not have this problem: `Cli/Api.hs` calls `setHost` from
+The JSON API never had this problem: `Cli/Api.hs` calls `setHost` from
 `apiHost`, which defaults to `127.0.0.1`.
 
 ## Threat model

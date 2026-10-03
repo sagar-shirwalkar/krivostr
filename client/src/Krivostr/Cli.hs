@@ -35,6 +35,7 @@ import Data.Char (toLower)
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.List (dropWhileEnd)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -50,6 +51,7 @@ import Krivostr.Filter
 import Krivostr.Key
 -- `info` is a log level here and a parser combinator in optparse-applicative.
 import Krivostr.Logging hiding (info)
+import Krivostr.Nip.Nip01 (verifyEvent)
 import Krivostr.Nip.Nip65 (RelayHint (..), RelayMode (..), parseRelayList)
 import Krivostr.Pool
 import Krivostr.Store
@@ -134,6 +136,7 @@ data Command
 
 data ServeOpts = ServeOpts
   { soPort     :: Maybe Int
+  , soHost     :: Maybe Text
   , soStatic   :: Maybe FilePath
   , soUpstream :: [Text]
   }
@@ -250,6 +253,9 @@ serveP :: Parser ServeOpts
 serveP = ServeOpts
   <$> optional (option auto (long "port" <> metavar "N"
         <> help "Bridge port (env: KRIVOSTR_PORT, default 8081)"))
+  <*> optional (T.pack <$> strOption (long "host" <> metavar "ADDR"
+        <> value "127.0.0.1" <> showDefault
+        <> help "Interface to bind (env: KRIVOSTR_BRIDGE_HOST)"))
   <*> optional (strOption (long "static" <> metavar "DIR"
         <> help "Static UI directory (env: KRIVOSTR_STATIC_DIR, default ./ui/dist)"))
   <*> (withDefaults defaultRelays <$> many (urlOption "upstream" "Upstream relay"))
@@ -493,9 +499,13 @@ dispatch (Opts g cmd) = do
     -- command line to an image whose CMD it cannot see.
     bridgeConfig o = do
       port   <- maybe (envPort 8081 "KRIVOSTR_PORT")    pure (soPort o)
+      host   <- case soHost o of
+                  Just h  -> pure h
+                  Nothing -> fromMaybe "127.0.0.1" <$> envText "KRIVOSTR_BRIDGE_HOST"
       static <- maybe (envPath "./ui/dist" "KRIVOSTR_STATIC_DIR") pure (soStatic o)
       pure BridgeConfig
         { bcPort = port
+        , bcHost = host
         , bcStaticDir = static
         , bcUpstreams = soUpstream o
         }
@@ -600,8 +610,12 @@ cmdFeed lg db colour o
             case store of
               Nothing -> pure ()
               Just st -> do
-                fresh <- insertEvent st e
-                unless fresh $ emit lg Debug ("duplicate: " <> evId e)
+                if verifyEvent e
+                  then do
+                    fresh <- insertEvent st e
+                    unless fresh $ emit lg Debug ("duplicate: " <> evId e)
+                  else
+                    emit lg Warn ("cli: rejected event " <> evId e <> " (invalid signature)")
       emit lg Info ("streaming from " <> T.intercalate ", " relays)
       pool <- newPool lg onEvent
       forM_ relays (addRelay pool)

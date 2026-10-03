@@ -33,8 +33,10 @@ import Network.Wai.Handler.Warp
   ( defaultSettings
   , runSettings
   , setBeforeMainLoop
+  , setHost
   , setPort
   )
+import Data.Streaming.Network.Internal (HostPreference (Host))
 import Network.Wai.Application.Static (defaultWebAppSettings, staticApp)
 import System.FilePath ((</>))
 import Network.Wai.Handler.WebSockets (websocketsOr)
@@ -42,12 +44,14 @@ import Network.WebSockets
 import Krivostr.Event (Event, evId)
 import qualified Krivostr.Filter as Filter
 import Krivostr.Logging
+import Krivostr.Nip.Nip01 (verifyEvent)
 import Krivostr.Pool
 import Krivostr.Store
 import Krivostr.Wire
 
 data BridgeConfig = BridgeConfig
   { bcPort      :: !Int
+  , bcHost      :: !Text
   , bcStaticDir :: !FilePath
   , bcUpstreams :: ![Text]
   }
@@ -99,8 +103,9 @@ runBridge lg cfg store = do
 
   let settings =
         setPort (bcPort cfg)
+          $ setHost (Host (T.unpack (bcHost cfg)))
           $ setBeforeMainLoop
-              (emit lg Info ("bridge: listening on :" <> T.pack (show (bcPort cfg))))
+              (emit lg Info ("bridge: listening on http://" <> bcHost cfg <> ":" <> T.pack (show (bcPort cfg))))
           $ defaultSettings
 
   runSettings settings (app bst cfg)
@@ -206,11 +211,17 @@ handleClientMsg bst cs v = case parseMaybe parseClient v of
     broadcast (bsPool bst) (CReq sid filters)
 
   Just (CEvent e) -> do
-    _ <- insertEvent (bsStore bst) e
-    broadcast (bsPool bst) (CEvent e)
-    -- Other local clients watching the same kinds should see this too.
-    deliverEvent bst e
-    enqueue (csOutbox cs) (okMsg (evId e) True "")
+    let lg = bsLogger bst
+    if verifyEvent e
+      then do
+        _ <- insertEvent (bsStore bst) e
+        broadcast (bsPool bst) (CEvent e)
+        -- Other local clients watching the same kinds should see this too.
+        deliverEvent bst e
+        enqueue (csOutbox cs) (okMsg (evId e) True "")
+      else do
+        emit lg Warn ("bridge: rejected event " <> evId e <> " (invalid signature)")
+        enqueue (csOutbox cs) (okMsg (evId e) False "invalid signature")
 
   Just (CClose sid) -> do
     atomically $ modifyTVar' (csSubs cs) (M.delete sid)
@@ -231,15 +242,19 @@ deliverEvent bst e = do
 -- it to the local clients that asked for it.
 onUpstreamEvent :: Logger -> TVar (M.Map Int ClientState) -> Store -> Event -> IO ()
 onUpstreamEvent lg clientsVar store e = do
-  inserted <- insertEvent store e
-  when inserted $ do
-    emit lg Debug ("bridge: cached " <> evId e)
-    clients <- readTVarIO clientsVar
-    forM_ (M.elems clients) $ \cs -> do
-      subs <- readTVarIO (csSubs cs)
-      forM_ (M.toList subs) $ \(sid, filters) ->
-        when (any (\f -> Filter.matches f e) filters) $
-          enqueue (csOutbox cs) (eventMsg sid e)
+  if verifyEvent e
+    then do
+      inserted <- insertEvent store e
+      when inserted $ do
+        emit lg Debug ("bridge: cached " <> evId e)
+        clients <- readTVarIO clientsVar
+        forM_ (M.elems clients) $ \cs -> do
+          subs <- readTVarIO (csSubs cs)
+          forM_ (M.toList subs) $ \(sid, filters) ->
+            when (any (\f -> Filter.matches f e) filters) $
+              enqueue (csOutbox cs) (eventMsg sid e)
+    else
+      emit lg Warn ("bridge: rejected upstream event " <> evId e <> " (invalid signature)")
 
 -- | Distinct events by id, keeping first-seen order. A REQ with overlapping
 -- filters can return the same row more than once.

@@ -37,3 +37,8 @@ docker/.env
 .agents/
 .handoffs/
 AGENTS.md
+.kilocode/
+
+# Scripts
+scripts/check-coverage.sh
+scripts/hpc-coverage.py
