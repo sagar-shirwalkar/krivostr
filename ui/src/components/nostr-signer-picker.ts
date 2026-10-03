@@ -30,6 +30,11 @@ export class KrivostrSignerPicker extends LitElement {
     }
     .opt:hover { border-color: var(--amber); }
     .opt[aria-pressed='true'] { border-color: var(--amber); background: var(--graphite-2); }
+    .opt:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      border-color: var(--border-dim);
+    }
     input {
       width: 100%;
       background: var(--ink-2);
@@ -51,12 +56,20 @@ export class KrivostrSignerPicker extends LitElement {
       cursor: pointer;
     }
     .err { color: var(--coral); font-size: var(--step--1); margin-top: var(--s-2); }
+    .hint { font-size: var(--step--2); color: var(--text-dim); margin-top: var(--s-2); }
+    .hint a { color: var(--amber); }
   `;
 
   @state() private choice: SignerType = 'local';
   @state() private nsecInput = '';
   @state() private bunkerInput = '';
   @state() private error = '';
+  @state() private nip07Available = false;
+
+  override connectedCallback() {
+    super.connectedCallback();
+    this.nip07Available = isNip07Available();
+  }
 
   private confirm() {
     this.error = '';
@@ -71,7 +84,7 @@ export class KrivostrSignerPicker extends LitElement {
         return;
       }
     } else if (this.choice === 'nip07') {
-      if (!isNip07Available()) {
+      if (!this.nip07Available) {
         this.error = 'no NIP-07 extension detected';
         return;
       }
@@ -100,7 +113,8 @@ export class KrivostrSignerPicker extends LitElement {
             local nsec
           </button>
           <button class="opt" aria-pressed=${this.choice === 'nip07'}
-                  @click=${() => (this.choice = 'nip07')}>
+                  @click=${() => { if (this.nip07Available) this.choice = 'nip07'; }}
+                  ?disabled=${!this.nip07Available}>
             extension (NIP-07)
           </button>
           <button class="opt" aria-pressed=${this.choice === 'nip46'}
@@ -108,6 +122,11 @@ export class KrivostrSignerPicker extends LitElement {
             bunker (NIP-46)
           </button>
         </div>
+        ${!this.nip07Available
+          ? html`<div class="hint">
+              NIP-07 requires a browser extension (e.g. <a href="https://getalby.com/" target="_blank" rel="noopener">Alby</a>, <a href="https://nos2x.org/" target="_blank" rel="noopener">nos2x</a>, <a href="https://flamingo.nostr.rocks/" target="_blank" rel="noopener">Flamingo</a>). Install one to enable this option.
+            </div>`
+          : ''}
         ${this.choice === 'local'
           ? html`<input placeholder="nsec1..." .value=${this.nsecInput}
                          @input=${(e: Event) => (this.nsecInput = (e.target as HTMLInputElement).value)} />`
