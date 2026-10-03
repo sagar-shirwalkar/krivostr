@@ -171,13 +171,6 @@ export class KrivostrLanding extends LitElement {
         <div><span class="prompt">λ></span> subscribe { kinds: [1], limit: 50 }</div>
         <div><span class="ok">←</span> 50 events reduced <span class="cursor"></span></div>
       </div>
-      <div class="revere">
-        <div class="quote">
-          <mark>"Let the warning ride forth once more: tyranny is at our door."</mark>
-        </div>
-        <div class="cite">— Paul Revere, adapted</div>
-        <span class="hint">hover to reveal the signal</span>
-      </div>
       <section class="features">
         <article class="feature">
           <span class="num">01 / core</span>
@@ -201,6 +194,13 @@ export class KrivostrLanding extends LitElement {
           <p>Relays forget. krivostr caches a month of public events in IndexedDB, and keeps DMs, follows, and relay lists forever — on your device.</p>
         </article>
       </section>
+      <div class="revere">
+        <div class="quote">
+          <mark>"Let the warning ride forth once more: tyranny is at our door."</mark>
+        </div>
+        <div class="cite">— Paul Revere,</div>
+        <span class="hint">hover to reveal the signal</span>
+      </div>
       <footer>
         <span>AGPL-3.0 · built in the open</span>
         <span>λ (λx.x) (λx.x)</span>
