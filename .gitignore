@@ -4,6 +4,7 @@ dist-newstyle/
 *.hi
 *.o
 *.hpc
+*.tix
 .hpc/
 coverage.txt
 

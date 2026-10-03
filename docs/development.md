@@ -1,225 +1,132 @@
 # Development
 
-See the [README](../README.md) for setup. This file covers day-to-day
-workflow.
+Day-to-day workflow. Setup is in the [README](../README.md); this file covers
+building, testing, and releasing.
+
+The files this document used to quote in full — the Makefile, the workflows,
+the Dockerfiles — are now linked rather than copied. A pasted copy of a file
+that also exists in the repo is a copy that goes stale.
 
 ## Backend
 
 ```bash
-stack build --fast          # build
-stack test                  # test
-stack test --coverage       # coverage (HPC enforces 80%)
-stack ghci core             # REPL
+stack build --fast     # build
+stack test             # 142 examples: 87 core, 55 client
+stack ghci krivostr-core   # REPL against the pure layer
 ```
+
+The resolver is `lts-24.61` (GHC 9.10.3) with no `extra-deps`. To change a
+dependency, edit `stack.yaml` — never the `.cabal` files, which hpack
+regenerates from `package.yaml`.
 
 ## UI
 
 ```bash
 cd ui
-pnpm install
-pnpm dev                    # Vite dev server on :5173
-pnpm test                   # unit tests (jsdom)
-pnpm test:browser           # component tests (real Chromium)
-pnpm coverage               # coverage (v8, 80% enforced)
+pnpm install --frozen-lockfile
+pnpm dev              # Vite dev server
+pnpm typecheck        # tsc --noEmit
+pnpm test             # 126 unit tests (jsdom)
+pnpm test:browser     # 15 browser tests (real Chromium)
+pnpm coverage         # v8, thresholds at 80
 ```
 
-## Full build
+`pnpm test` alone skips the browser project. The browser tests drive real
+WebSocket behaviour, so they are not optional — but they need Chromium
+installed separately, because `pnpm install` fetches the Playwright driver and
+not the browser:
 
 ```bash
-make build      # stack + pnpm
-make test       # both suites
-make coverage   # both coverage reports
+pnpm exec playwright install chromium
 ```
+
+On CI you also need `--with-deps`; `make test-ui` handles the local case.
+
+Running `pnpm dev` needs `VITE_BRIDGE_URL` pointing at a running bridge, or
+`?transport=bridge` on the URL — the Vite dev server does not proxy `/ws`.
+
+## Make targets
+
+| Target | Does |
+|---|---|
+| `make build` | Backend and UI. |
+| `make test` | `test-backend` + `test-ui` (unit **and** browser). |
+| `make coverage` | Backend report plus the UI v8 report. |
+| `make linux-binary` | Release binary via Docker — needs Docker. |
+| `make verify-version TAG=v0.2.0` | Fails if the tag disagrees with `client/package.yaml`. |
+| `make docker` / `make docker-down` | Image build, compose teardown. |
+| `make clean` | Build trees, `dist`, `ui/dist`, coverage output. |
+
+See the [Makefile](../Makefile) for the exact recipes.
+
+## Coverage
+
+The two sides behave differently, and the difference is worth understanding.
+
+**UI coverage is a working gate.** `pnpm coverage` enforces v8 thresholds of 80
+across the board and passes.
+
+**Backend coverage is a gate that currently fails.** `.hpc-threshold` requires
+80%; the measured total is **35.7%** (164 of 460), so `make coverage-backend`
+exits non-zero. That is intentional and unchanged — the threshold is the goal,
+not the current state. The report is written to `coverage.txt` *before* the gate
+runs, so a red run still leaves you numbers to read.
+
+The cryptography and NIP-01 layers are well covered; the IO layers (Store,
+Pool, Relay, Bridge, Cli) are not. CI does not run coverage at all, so this
+gate is local-only for now.
+
+Two notes on the tooling, both learned the hard way: `hpc report` cannot run
+here at all (Stack leaves no `.mix` files, and `hpc 0.7` has no `--all` or
+`--coverage` flags), so [`scripts/hpc-coverage.py`](../scripts/hpc-coverage.py)
+parses the combined HTML index that `stack test --coverage` does write.
+
+Do not lower `.hpc-threshold` to make the build green without discussing it.
+Ratcheting it up as coverage improves is the point.
+
+## CI
+
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) has three jobs that
+gate a merge:
+
+| Job | Checks |
+|---|---|
+| `backend` | GHC 9.10.3 / lts-24.61, `stack test`, builds the release binary, smoke-tests it. |
+| `ui` | Install, typecheck, build, unit tests, then Chromium install and browser tests. |
+| `docker image` | Builds [`docker/Dockerfile`](../docker/Dockerfile) and serves the bundled UI from it. |
+
+No coverage job. No Dockerfile linting.
 
 ## Releasing
 
-1. Bump the version in core/package.yaml, client/package.yaml,
-ui/package.json, and stack.yaml.
-2. Update CHANGELOG.md.
-3. Tag and push.
-4. CI builds the Docker image and pushes to the registry.
+krivostr ships **binaries, not a container image.** `docker build` appears in
+the release workflow only as a way to produce a Linux binary on a known base —
+nothing is pushed to a registry, and there is no `CHANGELOG.md` to update.
 
----
+1. Bump `version` in [`client/package.yaml`](../client/package.yaml). It is the
+   single source of truth: a Cabal version carries a fourth component, so
+   `0.2.0.0` in the package file is released as the tag `v0.2.0`.
+2. Check the tag before pushing it: `make verify-version TAG=v0.2.0`.
+3. Tag and push. The tag is what triggers the release.
 
-##  `.github/workflows/ci.yml`
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on a
+`v*` tag or by hand with an existing tag, re-checks the version against
+`client/package.yaml`, and uploads tarballs for Linux (built in
+[`docker/Dockerfile.linux`](../docker/Dockerfile.linux)), macOS, and Windows.
 
-```yaml
-name: ci
+**The UI deploys separately.** [`.github/workflows/ui.yml`](../.github/workflows/ui.yml)
+publishes `ui/dist` to Cloudflare Pages on every push to `main`. The Pages
+deployment needs `VITE_BRIDGE_URL` set in the Pages environment, or the built
+UI has no bridge to talk to.
 
-on:
-  push:
-    branches: [main]
-  pull_request:
+## Docker
 
-jobs:
-  backend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: haskell-actions/setup@v2
-        with:
-          ghc-version: '9.14.1'
-          cabal-version: '3.18.1.0'
-      - uses: freckle/stack-action@v5
-      - run: stack build --fast
-      - run: stack test --coverage
-      - run: hpc report --all
+[`docker/Dockerfile`](../docker/Dockerfile) is a three-stage build (Haskell
+builder, Node builder, Debian runtime) producing an image that serves the UI
+and the bridge on port 8081 with `/data` as a volume.
+[`docker/Dockerfile.linux`](../docker/Dockerfile.linux) builds the release
+binary and enforces the glibc floor.
 
-  ui:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: ui/pnpm-lock.yaml
-      - working-directory: ui
-        run: pnpm install --frozen-lockfile
-      - working-directory: ui
-        run: pnpm typecheck
-      - working-directory: ui
-        run: pnpm test
-      - working-directory: ui
-        run: pnpm exec playwright install --with-deps chromium
-      - working-directory: ui
-        run: pnpm test:browser
-      - working-directory: ui
-        run: pnpm coverage
-
-  docker:
-    runs-on: ubuntu-latest
-    needs: [backend, ui]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - run: docker build -f docker/Dockerfile -t krivostr:ci .
-```
-
-## Makefile
-
-```makefile
-.PHONY: all build build-backend build-ui test test-backend test-ui test-browser \
-        coverage coverage-backend coverage-ui typecheck docker docker-down clean
-
-all: build
-
-# ─── Build ────────────────────────────────────────────────────
-build: build-backend build-ui
-
-build-backend:
-	stack build --fast
-
-build-ui:
-	cd ui && pnpm install --frozen-lockfile && pnpm build
-
-# ─── Test ─────────────────────────────────────────────────────
-test: test-backend test-ui test-browser
-
-test-backend:
-	stack test
-
-test-ui:
-	cd ui && pnpm test
-
-test-browser:
-	cd ui && pnpm test:browser
-
-# ─── Coverage ─────────────────────────────────────────────────
-coverage: coverage-backend coverage-ui
-
-coverage-backend:
-	stack test --coverage
-	hpc report --all > coverage.txt
-	@echo "── Backend coverage written to coverage.txt"
-
-coverage-ui:
-	cd ui && pnpm coverage
-
-# ─── Typecheck ────────────────────────────────────────────────
-typecheck:
-	cd ui && pnpm typecheck
-
-# ─── Docker ───────────────────────────────────────────────────
-docker:
-	docker build -f docker/Dockerfile -t krivostr:latest .
-
-docker-down:
-	docker compose -f docker/docker-compose.yml down
-
-# ─── Clean ────────────────────────────────────────────────────
-clean:
-	stack clean
-	rm -rf ui/dist ui/node_modules ui/coverage coverage.txt
-```
-
-## docker/Dockerfile (updated for bridge + static)
-
-```
-# ─── Stage 1: Haskell backend ─────────────────────────────────
-FROM haskell:9.14.1-slim AS backend
-
-WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      libsecp256k1-dev libsqlite3-dev pkg-config ca-certificates zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY stack.yaml ./
-COPY core/ core/
-COPY client/ client/
-RUN stack build --copy-bins --local-bin-path /out
-
-# ─── Stage 2: UI ──────────────────────────────────────────────
-FROM node:22-alpine AS ui
-
-WORKDIR /ui
-RUN corepack enable && corepack prepare pnpm@9 --activate
-COPY ui/package.json ui/pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile || pnpm install
-COPY ui/ .
-RUN pnpm build
-
-# ─── Stage 3: Runtime ─────────────────────────────────────────
-FROM alpine:3.20
-
-RUN apk add --no-cache ca-certificates sqlite-libs libsecp256k1 tini
-
-WORKDIR /app
-COPY --from=backend /out/krivostr /app/krivostr
-COPY --from=ui /ui/dist /app/static
-
-ENV KRIVOSTR_STATIC_DIR=/app/static
-ENV KRIVOSTR_DB=/data/events.db
-VOLUME ["/data"]
-
-EXPOSE 8081
-ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["/app/krivostr"]
-```
-
-## docker/docker-compose.yml
-
-```yaml
-services:
-  krivostr:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    image: krivostr:latest
-    ports:
-      - "8081:8081"
-    environment:
-      KRIVOSTR_LOG_LEVEL: info
-      KRIVOSTR_PORT: 8081
-      KRIVOSTR_STATIC_DIR: /app/static
-      KRIVOSTR_DB: /data/events.db
-    volumes:
-      - krivostr-data:/data
-    restart: unless-stopped
-
-volumes:
-  krivostr-data:
-```
+Validate Docker and release changes **through CI**. Do not run Docker locally
+in this repo; `make linux-binary` in particular produces a release artifact and
+belongs on a release runner.

@@ -1,4 +1,4 @@
-cabal-version: 1.12
+cabal-version: 2.2
 
 -- This file has been generated from package.yaml by hpack version 0.39.6.
 --
@@ -7,16 +7,16 @@ cabal-version: 1.12
 name:           krivostr-core
 version:        0.2.0.0
 category:       Network
-homepage:       https://github.com/yourhandle/krivostr#readme
-bug-reports:    https://github.com/yourhandle/krivostr/issues
+homepage:       https://github.com/sagar-shirwalkar/krivostr#readme
+bug-reports:    https://github.com/sagar-shirwalkar/krivostr/issues
 author:         you
 maintainer:     you@example.com
-license:        MIT
+license:        AGPL-3.0-only
 build-type:     Simple
 
 source-repository head
   type: git
-  location: https://github.com/yourhandle/krivostr
+  location: https://github.com/sagar-shirwalkar/krivostr
 
 library
   exposed-modules:
@@ -29,6 +29,8 @@ library
       Krivostr.Schnorr
       Krivostr.Wire
   other-modules:
+      Paths_krivostr_core
+  autogen-modules:
       Paths_krivostr_core
   hs-source-dirs:
       src
@@ -55,6 +57,8 @@ test-suite spec
   main-is: Spec.hs
   other-modules:
       Bip340
+      Paths_krivostr_core
+  autogen-modules:
       Paths_krivostr_core
   hs-source-dirs:
       test

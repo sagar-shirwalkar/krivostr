@@ -1,4 +1,4 @@
-cabal-version: 1.12
+cabal-version: 2.2
 
 -- This file has been generated from package.yaml by hpack version 0.39.6.
 --
@@ -7,16 +7,16 @@ cabal-version: 1.12
 name:           krivostr-client
 version:        0.2.0.0
 category:       Network
-homepage:       https://github.com/yourhandle/krivostr#readme
-bug-reports:    https://github.com/yourhandle/krivostr/issues
+homepage:       https://github.com/sagar-shirwalkar/krivostr#readme
+bug-reports:    https://github.com/sagar-shirwalkar/krivostr/issues
 author:         you
 maintainer:     you@example.com
-license:        MIT
+license:        AGPL-3.0-only
 build-type:     Simple
 
 source-repository head
   type: git
-  location: https://github.com/yourhandle/krivostr
+  location: https://github.com/sagar-shirwalkar/krivostr
 
 executable krivostr
   main-is: Main.hs
@@ -30,7 +30,10 @@ executable krivostr
       Krivostr.Relay
       Krivostr.Store
       Paths_krivostr_client
+  autogen-modules:
+      Paths_krivostr_client
   hs-source-dirs:
+      app
       src
   ghc-options: -threaded -rtsopts -with-rtsopts=-N -Wall
   build-depends:
@@ -77,7 +80,8 @@ test-suite spec
       Krivostr.Pool
       Krivostr.Relay
       Krivostr.Store
-      Main
+      Paths_krivostr_client
+  autogen-modules:
       Paths_krivostr_client
   hs-source-dirs:
       test

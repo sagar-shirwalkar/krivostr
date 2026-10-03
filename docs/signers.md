@@ -1,49 +1,87 @@
 # Signers
 
-krivostr supports three signer backends. All three implement the `Signer`
-interface in `ui/src/nostr/signer.ts`.
+The `Signer` interface lives in
+[`ui/src/nostr/signer.ts`](../ui/src/nostr/signer.ts): a public key, and a way
+to sign an unsigned event.
+
+Three implementations exist in that file. **Two are reachable from the UI.**
+
+`nostr-signer-picker.ts` imports `localSigner`, `nip07Signer` and
+`isNip07Available` — and nothing else. `nip46Signer` is implemented and
+unit-tested but never constructed by the app.
 
 ## Local nsec
 
-The user pastes an `nsec1...` string. We decode it, wrap it in a
-non-extractable `CryptoKey` with AES-GCM-256 keyed by a PBKDF2-derived key
-from a passphrase, and store the ciphertext in IndexedDB.
+`localSigner(seckeyHex)` takes a **32-byte hex** secret key and returns a signer
+that closes over it.
 
-**Pros:** works everywhere, no extension needed.
-**Cons:** the key lives in JS memory while the tab is open. See
-[security.md](security.md).
+What the picker does with an `nsec1…`:
+
+1. Bech32-decodes it to 32 bytes.
+2. Converts to hex.
+3. Hands the hex to `localSigner`, which keeps it in a closure for the lifetime
+   of the tab.
+
+**The key is never written to disk.** There is no AES-GCM wrapping, no PBKDF2,
+no passphrase prompt, and no `keys/primary` record in IndexedDB — none of that
+code exists anywhere in the UI. The earlier version of this document described
+all of it; none of it was real.
+
+That makes the threat model simple and unforgiving: the secret is in JavaScript
+memory from sign-in until the tab closes or reloads. Anything that can run
+script on the origin can read it. NIP-07 removes that exposure by keeping the
+key out of the page entirely.
+
+| | |
+|---|---|
+| **Pros** | No extension, no bunker, works anywhere. |
+| **Cons** | The key is in page memory; no at-rest protection of any kind. |
+
+`localSigner` does not verify that the secret is in range before use, and does
+not check the key's public half against anything. A malformed paste fails at
+sign time with an error from `@noble/curves`, not at entry.
 
 ## NIP-07 (browser extension)
 
-We call `window.nostr.getPublicKey()` and `window.nostr.signEvent(event)`.
-The extension holds the key.
+`nip07Signer()` calls `window.nostr.getPublicKey()` and
+`window.nostr.signEvent()`. krivostr never sees the private key. Availability is
+checked with `isNip07Available()` before the option is offered.
 
-Supported extensions: Alby, nos2x, Nostore, Flamingo.
-
-**Pros:** key never enters our page. Works across all sites.
-**Cons:** requires an extension.
+| | |
+|---|---|
+| **Pros** | The key never enters the page. The recommended path. |
+| **Cons** | Requires an extension the user trusts. |
 
 ## NIP-46 (remote bunker)
 
-The user pastes a `bunker://<remote-pubkey>?relay=wss://...&secret=...` URL.
-We connect to the relay, subscribe to kind 24133 events tagged with our
-pubkey, and send encrypted requests.
+Implemented in `nip46Signer` and covered by tests, but **not reachable from the
+UI**. Two things stand in the way:
 
-Requests:
+1. The picker does not import it.
+2. It takes its NIP-04 implementation as an **injected parameter**
+   (`{encrypt, decrypt}`) and imports no crypto for it. The test supplies a
+   fake. A real caller must pass a real NIP-04 implementation.
 
-- `get_public_key` → returns hex pubkey
-- `sign_event` → returns JSON-serialized signed event
+Given a bunker, it parses `bunker://<remote-pubkey>?relay=…&secret=…`,
+subscribes to kind 24133 events from the remote pubkey, and speaks
+`get_public_key` and `sign_event`. Requests are signed with the local key so the
+bunker can authenticate the caller. Transport is NIP-04.
 
-Transport is NIP-04 encrypted DMs. NIP-44 is planned.
+## Generating a key
 
-**Pros:** key is on a separate device. Best for high-value keys.
-**Cons:** needs a bunker service (e.g., nsec.app).
+`krivostr keygen` prints an `nsec`/`npub` pair.
+`Krivostr.Key.generatePrivateKey` reads 32 bytes from **`/dev/urandom`**, which
+is POSIX-only: `keygen` will not work on Windows, and there is no fallback
+entropy source. On a malformed draw it retries.
 
 ## Choosing a signer
 
-| Use case | Recommended signer |
+| Use case | Use |
 |---|---|
-| Casual browser use | NIP-07 (Alby) |
-| Mobile, no extension | Local nsec (with strong passphrase) |
-| High-value key | NIP-46 (bunker) |
-| Development | Local nsec (test key only) |
+| Daily browsing | NIP-07, if you have an extension. |
+| No extension available | Local nsec, accepting the memory exposure. |
+| Key you care about | A NIP-46 bunker — after wiring up the picker. |
+| Development | Local nsec with a throwaway key. |
+
+Note what is *not* on this list: "local nsec with a strong passphrase." There is
+no passphrase.

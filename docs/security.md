@@ -1,121 +1,134 @@
 # Security
 
-krivostr treats key material as the single most sensitive thing in the system.
-This document describes what we do, what we don't do, and what's on the
-roadmap.
+Key material is the most sensitive thing in the system, and what follows is an
+inventory of what is actually true — including the parts that are not
+implemented, which is where the previous version of this document was
+optimistic.
+
+## The two real gaps
+
+**Ingest does not verify signatures.** `Krivostr.Schnorr.verifyEvent` exists and
+is tested, but nothing calls it on the way in. The bridge stores events on the
+`pubkey` they carry; the UI's `parseEvent` checks that fields are present and
+correctly typed, not that `id` hashes the content or that `sig` verifies. A
+malicious relay can serve events attributed to anyone. Nothing downstream
+notices.
+
+**`krivostr serve` binds every interface.** [`Bridge.hs`](../client/src/Krivostr/Bridge.hs)
+calls `setPort` with no `setHost`, so Warp's default applies and the bridge
+listens on all interfaces, not just loopback — even though the startup log
+prints `listening on :8081` with no host. Anything on the local network can
+connect, read the store, and publish events as you.
+
+This is worth fixing, and it is a small fix: mirror the API's `--host` option
+(defaulting to `127.0.0.1`) in `serveP`, and set `setHost` in `Bridge.hs`.
+
+The JSON API does not have this problem: `Cli/Api.hs` calls `setHost` from
+`apiHost`, which defaults to `127.0.0.1`.
 
 ## Threat model
 
 We assume:
 
-- The browser is hostile. Any XSS on the origin is total compromise of the
-  in-memory key. We mitigate by minimizing attack surface, CSP, and never
-  rendering user content as HTML.
-- The relays are hostile. Any relay can log every event you publish or
-  subscribe to. We mitigate by supporting the outbox model (NIP-65) and
-  gift-wrapping (NIP-59) so that the relay cannot correlate reader and
-  writer.
-- The bridge is trusted only as far as it runs on the same machine as the
-  browser. It stores event metadata, not keys.
-- The user's disk is partially trusted. We assume it can be read by another
-  process on the same machine. We never store keys unencrypted at rest.
+- **The browser origin is hostile.** Any script execution on the origin is
+  total compromise of an in-memory key. Mitigations: no `unsafeHTML` on remote
+  data anywhere in `ui/src`, and a CSP on the Cloudflare Pages deployment.
+- **Relays are hostile.** Any relay can log everything you publish and
+  subscribe to, and can lie about who sent what, because of the signature gap
+  above. There is no mitigation for the second half: NIP-59 gift wrap is not
+  implemented, so a relay can correlate your reads with your writes.
+- **The bridge is trusted as far as the machine it runs on.** It holds event
+  metadata, never keys.
+- **The local disk is partially trusted.** No key is ever written to it. That
+  is not a design achievement so much as a consequence of keys living in memory
+  only.
 
-We do **not** assume:
+We do not assume the RNG is sound: `generatePrivateKey` reads
+`/dev/urandom` directly, and there is no fallback source.
 
-- That the browser's random number generator is broken. If `crypto.getRandomValues`
-  is compromised, all bets are off.
-- That the user has chosen a strong passphrase. We rate-limit unlock attempts
-  in the UI, but a weak passphrase is a weak passphrase.
-
-## Key storage
+## Key handling
 
 ### Local signer
 
-The `nsec` is:
+The `nsec1…` is bech32-decoded in the picker, converted to hex, and passed to
+`localSigner`, which holds it in a closure for the lifetime of the tab. It is
+never persisted, never sent to the bridge, and never logged.
 
-1. Received from the user in the signer picker as `nsec1...` bech32.
-2. Decoded to 32 raw bytes.
-3. **Immediately wrapped** in a non-extractable `CryptoKey`
-4.  The ciphertext, salt, and IV are stored in IndexedDB under `keys/primary`.
-5. The plaintext 32 bytes are held only in a `Uint8Array` inside the
-`localSigner` closure. They are never written to disk, never sent to
-the bridge, never logged.
+There is **no passphrase, no key wrapping, and no unlock step.** No PBKDF2, no
+AES-GCM, no `keys/primary` record — none of that exists in the codebase, though
+a previous version of this document described it in detail. The consequence is
+simpler than a wrapping design would be, and worse in one respect: the key is
+readable by anything running on the origin for as long as the tab is open.
 
-The consequence is important: **after the passphrase is entered, the key
-lives in JS memory for the lifetime of the tab**. An XSS or a browser
-extension with content-script access can read it. This is inherent to
-NIP-07-less local signing. To mitigate, we recommend NIP-07 (extension) or
-NIP-46 (bunker) for users with a meaningful threat model.
+Use NIP-07, or a bunker, if that matters.
 
 ### NIP-07
 
-We do not touch the key at all. `window.nostr.signEvent` is called per event.
-The extension holds the key. This is the recommended production path.
+krivostr never touches the key. `window.nostr.signEvent` is called per event
+and the extension holds the private half. This is the recommended path.
 
 ### NIP-46
 
-The bunker holds the key. We send an encrypted request, the bunker returns
-a signature. The signing key never enters the browser. NIP-46 currently uses
-NIP-04 for transport because that is what bunkers speak in practice; NIP-44
-is a drop-in swap at the `nip04` boundary in `signer.ts`.
+The bunker holds the key and returns signatures over NIP-04-encrypted kind
+24133 DMs. Note that the UI cannot reach this path today: the signer picker
+does not construct `nip46Signer`. See [signers.md](signers.md).
 
-### Cache
+## Cached events
 
-The IndexedDB cache stores:
+The IndexedDB cache and the SQLite store both hold events unencrypted at rest.
+That matches Nostr's design — events are public — with one caveat: a kind 4 DM
+is stored exactly as it arrived, encrypted, and **krivostr cannot decrypt it**,
+so it is opaque rather than protected. The cache is readable by anything with
+access to the origin's storage.
 
-- Public events (kind 1, 6, 7, ...) for 30 days.
-- Persistent kinds (0, 3, 4, 1059, 10002) forever.
-- Nothing else.
+Neither store holds a key, a passphrase, or a relay credential.
 
-The cache is not encrypted. Events on Nostr are public by design, with two
-exceptions:
+## Network
 
-- Kind 4 (NIP-04 encrypted DM) is stored encrypted on the wire and in the
-    cache. Reading it requires the recipient's private key.
-- Kind 1059 (NIP-59 gift wrap) is stored encrypted, with the inner event
-    sealed inside.
+Relay connections are `wss://` as configured. The UI derives the bridge's
+scheme from the page's own protocol in
+[`bridge.ts`](../ui/src/nostr/bridge.ts) — an `https:` page connects over
+`wss:`, an `http:` page over `ws:`. There is no check restricting `ws://` to
+localhost; it follows from serving the page over plain HTTP, so do not serve
+krivostr that way on a shared network.
 
-We do not cache the private key. We do not cache the passphrase. We do not
-cache the decrypted plaintext of DMs beyond the lifetime of the tab.
+## Headers
 
-### Network
+The Content-Security-Policy lives in
+[`ui/public/_headers`](../ui/public/_headers) and applies to the **Cloudflare
+Pages deployment only**. `krivostr serve` serves the same `dist/` over plain
+Warp and never reads that file, so a self-hosted bridge sends **no CSP, no
+`X-Frame-Options`, and no `X-Content-Type-Options`**.
 
-All relay connections use `wss:// ` (TLS). `ws:// ` is accepted only for
-`localhost` and `127.0.0.1`, and only when the app is served from `localhost`.
-
-The bridge listens on `127.0.0.1 ` only, never `0.0.0.0`, by default. The
-Dockerfile binds `0.0.0.0 ` inside the container, which is intended to be
-fronted by a reverse proxy.
-
-### What we don't do
-
-- We do not ship telemetry.
-- We do not phone home to any krivostr server.
-- We do not store or transmit `nsec` beyond the local encryption boundary.
-- We do not render user content as HTML. Lit's `html` template escapes by
-  default; we never use `unsafeHTML` on remote data.
-- We do not import remote scripts. CSP is strict.
-
-### CSP
-
-The production HTML header sets:
+The policy is:
 
 ```text
-Content-Security-Policy:
-  default-src 'self';
-  script-src 'self';
-  style-src 'self' 'unsafe-inline';
-  img-src 'self' data:;
-  connect-src 'self' wss:;
-  font-src 'self' https://fonts.gstatic.com;
-  object-src 'none';
-  base-uri 'none';
-  frame-ancestors 'none';
+default-src 'none'; script-src 'self';
+style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+font-src 'self' https://fonts.gstatic.com data:;
+img-src 'self' data:; connect-src 'self' wss:;
+base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'
 ```
 
-The `unsafe-inline` for styles is required by Lit's shadow DOM. If you
-disable it, use adopted stylesheets.
+`'unsafe-inline'` for styles is required by Lit's shadow DOM.
+`connect-src` needs `wss:` rather than `'self'` because `'self'` does not
+resolve to WebSocket schemes in every browser, and the bridge is often on a
+different origin. Serving those same headers from `krivostr serve` is a small
+addition — a Warp middleware over `setBeforeMainLoop` — and worth doing if you
+self-host.
 
-### Reporting
+## What we don't do
 
-Report security issues to `security@example.invalid`.
+- No telemetry, no analytics, no beacon. The UI makes no `fetch`, `XHR` or
+  `sendBeacon` call to any origin.
+- No phone home. The only outbound connections are the relays you configure and
+  the bridge or bunker you name.
+- No remote script imports; Vite emits local bundles.
+- No `unsafeHTML` on remote data.
+
+## Reporting
+
+No security contact is configured. Before publishing, put a real address here —
+a reachable one, in `README.md` and this file — rather than a placeholder like
+`security@example.invalid`, which is worse than nothing because it looks
+handled.

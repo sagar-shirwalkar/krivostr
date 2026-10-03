@@ -1,39 +1,73 @@
 # Storage
 
-## Browser (IndexedDB)
-
-Database: `krivostr`, version 1, object store `events` (keyPath `id`).
-Indexes: `created_at`, `kind`.
-
-Retention:
-
-- Public events (anything not in the persistent set): 30 days.
-- Persistent kinds (`0`, `3`, `4`, `1059`, `10002`): forever.
-
-Eviction is scheduled from the UI on a one-hour timer and runs on demand
-when the app starts.
+Two independent stores, one per side of the bridge, with the same retention
+rule. Nothing synchronizes them.
 
 ## Bridge (SQLite)
 
-Database: `.krivostr/events.db`, table `events`.
+The store is [`client/src/Krivostr/Store.hs`](../client/src/Krivostr/Store.hs).
+The path comes from `KRIVOSTR_DB` and defaults to `.krivostr/events.db`.
 
-Same retention policy as the browser cache. Eviction runs hourly from a
-background thread in the bridge.
+| Object | Definition |
+|---|---|
+| `events` | `id` primary key, plus `pubkey`, `created_at`, `kind`, `tags`, `content`, `sig`. |
+| `events_fts` | FTS5 virtual table over `(event_id, body)`, where `body` is `content`. |
+| `idx_pubkey` | On `events(pubkey)`. |
+| `idx_created_at` | On `events(created_at)`. |
+| `idx_kind` | On `events(kind)`. |
+| `events_fts_ai` | Trigger keeping `events_fts` in step on insert. |
+| `events_fts_ad` | Trigger keeping `events_fts` in step on delete. |
 
-Indexes: `pubkey`, `created_at`, `kind`. Full-text search is not yet
-implemented; NIP-50 support would add it.
+Full-text search is implemented: `krivostr search <query>` and the bridge's
+`/search` endpoint match `events_fts` and rank with `bm25`, falling back to a
+lexical query when FTS5 is missing at build time. `krivostr reindex` rebuilds
+the index from `events`.
+
+**Both `INSERT` and retention are per-id.** There is no replaceable-event logic:
+a newer kind 0 or kind 3 from the same author does not displace the older one,
+and neither does a read pick "the newest per pubkey". The store keeps every
+event it is given, keyed by id. Deduplication happens only in the sense that
+re-delivering the same id replaces the same row.
+
+## Browser (IndexedDB)
+
+[`ui/src/nostr/cache.ts`](../ui/src/nostr/cache.ts). Database `krivostr`,
+version 1, object store `events` keyed on `id`, with **one** index:
+`created_at`, used to read newest-first.
+
+Retention matches the bridge: 30 days for everything except the persistent
+kinds, which are `0`, `3`, `4`, `1059` and `10002`. The Haskell side spells the
+same set in `persistentKinds` and the UI in `PERSISTENT_KINDS`; changing one
+means changing both.
+
+`evictExpired` exists and is unit-tested, but **nothing in the app calls it** —
+no timer, no startup sweep. The browser cache grows until the user clears it.
+Wiring it into an hourly timer is a one-line change if you want the documented
+behaviour.
 
 ## What is not stored
 
-- Private keys (only their wrapped ciphertext, in the browser).
-- Passphrases.
-- Decrypted DM plaintext (beyond the lifetime of the tab).
-- Relay connection state.
+- **Private keys.** No store holds a key. The local signer keeps the secret in a
+  JavaScript closure for the lifetime of the tab, and never writes it. See
+  [signers.md](signers.md).
+- Passphrases: there are none. No key-wrapping code exists.
+- Relay connection state, in either store.
+
+Kind 4 events are stored **encrypted**, because that is how they arrive over the
+wire — the relay or sender already encrypted them. krivostr does not decrypt
+them, and the cache is not encrypted at rest. Events on Nostr are public by
+design; a cached DM is as readable as the file it sits in.
 
 ## Cache invalidation
 
-The browser cache and the bridge cache are independent. When the bridge
-detects an event it has not seen, it stores and forwards. The browser
-stores on receipt. Neither invalidates the other. Replaceable events (kind
-0, 3, 10002, etc.) overwrite by pubkey in the browser and by id in the
-bridge (the newest by `created_at` wins on read).
+There is none, in either direction.
+
+The bridge stores whatever it receives and answers `REQ` from its own store; the
+UI caches whatever it receives. Neither store invalidates the other, and
+neither coalesces replaceable events. Both are keyed by event id, so the same
+event arriving twice is idempotent and a *changed* event (new `created_at`,
+same kind and author) is simply a second row.
+
+The practical consequence: after you publish a new profile, both stores hold the
+old and new metadata, and nothing in krivostr will pick between them. Deduplicating
+replaceable events is not implemented.

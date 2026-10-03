@@ -1,48 +1,72 @@
 # Relays
 
-## The outbox model
-
-Instead of reading everyone's events from a single relay, we do this:
-
-- **Read** from the relays *you* and *the people you follow* advertise in
-  their NIP-65 lists.
-- **Write** to *your own* write relays only.
-
-This is the NIP-65 outbox model. It minimises the number of relays that can
-observe your traffic, and it scales because each user's relay set is small.
-
 ## Defaults
 
-Until we learn your NIP-65 list, we use:
+krivostr connects to three public relays, hard-coded in
+[`client/src/Krivostr/Cli/Nostr.hs:42`](../client/src/Krivostr/Cli/Nostr.hs):
 
-- wss://relay.damus.io
-- wss://nos.lol
-- wss://relay.primal.net
-- wss://nostr.wine
+- `wss://relay.damus.io`
+- `wss://nos.lol`
+- `wss://relay.primal.net`
 
-Once we receive your kind 10002 event, we replace the default set with your
-read relays. Your write relays are used for publishing.
+**There is no environment variable or config file for this list.** No
+`KRIVOSTR_UPSTREAMS` exists — the previous version of this document claimed
+otherwise. The list is a source constant in `Cli/Nostr.hs`.
 
-## The bridge as a "personal relay"
+The one supported override is a repeatable flag on `serve`:
 
-The Haskell bridge is not a public relay. It is a personal, single-user
-relay that runs on your machine. It:
+```bash
+krivostr serve --upstream wss://relay.example.com --upstream wss://nos.lol
+```
 
-- Caches events from upstream relays.
-- Serves them from SQLite on request.
-- Forwards your publishes to your write relays.
-- Enforces a retention policy (30 days for ephemeral, forever for
-  persistent kinds).
+Passing at least one `--upstream` replaces the defaults entirely; passing none
+keeps all three. There is no equivalent flag on the other subcommands, and no
+environment variable anywhere.
 
-This means your browser can scroll back a month even if upstream relays
-have pruned everything. It also means your browser doesn't need to maintain
-a dozen WebSocket connections.
+## NIP-65 relay hints
 
-## Adding a relay
+`Krivostr.Nip.Nip65` parses kind 10002 into `readRelays` and `writeRelays`.
+`krivostr relay-hints <npub>` looks up a pubkey's most recent kind 10002 in the
+local store and prints the read relays. The UI has a matching reader in
+[`ui/src/nostr/nip65.ts`](../ui/src/nostr/nip65.ts).
 
-Relays are configured in `client/src/Krivostr/Main.hs` under
-`defaultUpstreams`. Override with `KRIVOSTR_UPSTREAMS` (comma-separated) in the environment.
+Three limits worth knowing:
 
-## Removing a relay
+- **krivostr never publishes kind 10002.** It can read your relay list; it will
+  not write one for you.
+- **`writeRelays` is parsed and then ignored.** Publishing does not consult it.
+- **Publishing uses `dmRelays`, or the default set if there are none** — see
+  `Cli.Nostr`. The outbox model this NIP describes is *not* what happens, and
+  the "personal relay" framing below should be read with that in mind.
 
-Edit the same list, or use the environment variable.
+## The bridge
+
+The bridge is a single-user cache and fan-out point, not a public relay. On
+`serve` it holds one pool over the three default relays and one SQLite store.
+
+What it actually does:
+
+- Replays matching events from SQLite for a `REQ`, sends `EOSE`, then keeps the
+  subscription open upstream. A client sees history and then live events.
+- Stores every event it receives.
+- Forwards a client's `EVENT` to the upstream pool and to other connected
+  clients, then replies `OK`.
+- Evicts expired rows hourly from a background thread.
+
+What it does not do: verify signatures, enforce any limit, restrict who may
+connect, or answer `INFO`. The `RelayMessage` type has no `INFO` constructor, so
+a client asking for relay metadata gets nothing.
+
+## Choosing relays
+
+Because the list is a source constant, the honest options are:
+
+1. Pass `--upstream` to `krivostr serve`.
+2. Edit `defaultRelays` in `Cli/Nostr.hs` so the change applies to every
+   subcommand.
+3. Use a NIP-46 bunker, whose relay *is* configurable per signer — the only
+   place a user can name an arbitrary relay without a flag.
+
+If relay configuration becomes a real requirement, the change is small and
+belongs in `Cli/Nostr`: read a `KRIVOSTR_UPSTREAMS` value, fall back to the
+defaults, and document it in `.env.example`.

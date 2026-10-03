@@ -106,10 +106,21 @@ jobs:
           test -f dist/_headers
 
       - name: Deploy
-        uses: cloudflare/wrangler-action@v3
-        with:
-          # Deploying by project name needs no wrangler config file, and the
-          # token stays in the repository secret rather than in the checkout.
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=krivostr-ui --branch=main
+        # wrangler is a devDependency, so `pnpm install --frozen-lockfile` above
+        # already put it on disk and this invokes that exact version.
+        #
+        # cloudflare/wrangler-action was installing wrangler at deploy time,
+        # which fails here: with pnpm present the action's install step inherits
+        # CI's frozen-lockfile default and cannot add a package the lockfile
+        # does not mention (cloudflare/wrangler-action#338, #181), and its
+        # package-manager detection breaks outside the repo root (#198). Calling
+        # the local binary removes the guesswork and pins the version.
+        #
+        # `dist` is correct here only because working-directory is `ui`; wrangler
+        # resolves it against the cwd, and from the repo root the build output is
+        # `ui/dist`.
+        working-directory: ui
+        run: pnpm exec wrangler pages deploy dist --project-name=krivostr-ui --branch=main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

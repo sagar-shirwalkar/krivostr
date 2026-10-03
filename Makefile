@@ -56,9 +56,11 @@ coverage: coverage-backend coverage-ui
 
 coverage-backend:
 	stack test --coverage
-	./scripts/check-coverage.sh
+	@# Report first, gate second: the threshold is above the measured number
+	@# today, and a failing gate should still leave the report on disk to read.
 	./scripts/hpc-coverage.py > coverage.txt
 	@echo "── Backend coverage written to coverage.txt"
+	./scripts/check-coverage.sh
 
 coverage-ui:
 	cd ui && pnpm coverage

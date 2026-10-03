@@ -1,7 +1,7 @@
 name: krivostr-client
 version: 0.2.0.0
-github: yourhandle/krivostr
-license: MIT
+github: sagar-shirwalkar/krivostr
+license: AGPL-3.0-only
 author: you
 maintainer: you@example.com
 category: Network
@@ -42,7 +42,11 @@ dependencies:
 executables:
   krivostr:
     main: Main.hs
-    source-dirs: src
+    # app/ holds the entry point, src/ the modules. The test suite below
+    # compiles src/ directly (there is no library component), and test/Spec.hs
+    # is also module Main -- so an entry point inside src/ would put two `Main`
+    # modules on the test suite's search path.
+    source-dirs: [app, src]
     ghc-options:
       - -threaded
       - -rtsopts

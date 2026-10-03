@@ -1,9 +1,10 @@
 # krivostr
 
-[![Haskell](https://img.shields.io/badge/Haskell-9.10.3-5e5086?style=for-the-badge&label=Haskell&labelColor=gray&logo=haskell&logoColor=white)](https://haskell.org)
-[![Lit](https://img.shields.io/badge/Lit-3.3.3-324fff?style=flat-square&label=Lit&labelColor=gray&logo=lit&logoColor=white)](https://lit.dev)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?style=for-the-badge&label=TypeScript&labelColor=gray&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-[![License](https://img.shields.io/badge/License-AGPL--3.0-violet?style=for-the-badge)](LICENSE)
+[![Haskell](https://img.shields.io/badge/Haskell-5D4F85?style=for-the-badge&logo=haskell&logoColor=white)](https://haskell.org)
+[![Lit](https://img.shields.io/badge/lit-324FFF?style=for-the-badge&logo=lit&logoColor=white)](https://lit.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![Tailwind](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
+[![License](https://img.shields.io/badge/AGPL--3.0-red?style=for-the-badge)](LICENSE)
 
 <p align="center"><picture><img src="assets/krivostr.svg" width="320" height="320" alt="krivostr"> </picture></p>
 
@@ -22,8 +23,8 @@ lambda terms through a stack of closures.
   window, indexed on `pubkey`, `created_at`, and `kind`, plus an FTS5 index for search.
 - **A relay-shaped WebSocket bridge** — the browser speaks ordinary Nostr to `krivostr
   serve`, which answers from the local store and can fan out to upstream relays.
-- **Three signers at the boundary** — a local `nsec`, a NIP-07 browser extension, or a
-  NIP-46 remote bunker.
+- **Signers at the boundary** — a local `nsec` or a NIP-07 browser extension. A NIP-46
+  bunker is implemented and tested but not yet wired into the signer picker.
 - **A pure core** — canonical serialization, signing, verification, and filter matching
   are pure Haskell with no IO in `krivostr-core`; SQLite, WebSockets, and HTTP live in
   `krivostr-client`.
@@ -274,8 +275,8 @@ flowchart LR
     subgraph CORE["λ krivostr-core — pure Haskell, no IO"]
         direction TB
         WIRE["Wire<br/>NIP-01 encode / decode"]
-        EVENT["Event<br/>canonical form, id, sig"]
-        SCHNORR["Schnorr + Key<br/>BIP-340, bech32"]
+        EVENT["Event<br/>event ADT, accessors"]
+        SCHNORR["Nip01 + Schnorr + Key<br/>id, sign, verify, bech32"]
         FILTER["Filter<br/>matches predicate"]
     end
 
@@ -283,7 +284,7 @@ flowchart LR
         direction TB
         SHELL["app-shell<br/>composer, feed, signer picker"]
         STATUS["nostr-relay-status<br/>owns the socket"]
-        SIGNER["signer<br/>local nsec · NIP-07 · NIP-46"]
+        SIGNER["signer<br/>local nsec · NIP-07<br/>(NIP-46 not wired)"]
         IDB[("IndexedDB cache<br/>30-day retention")]
     end
 
@@ -320,9 +321,10 @@ flowchart LR
     class STORE,IDB data
 ```
 
-The Haskell and TypeScript sides deliberately mirror each other: filters are `Rule`s,
-fallible operations are `Result`s, effects are `IO`s, and optionality is `Maybe`. Same
-shape on both sides, no cross-language FFI.
+The Haskell and TypeScript sides deliberately mirror each other: fallible operations are
+`Result`s, effects are `IO`s, and optionality is `Maybe`. Same shape on both sides,
+no cross-language FFI. (Filter *matching* is a hand-rolled predicate on both sides rather
+than the `Rule` algebra — see [docs/architecture.md](docs/architecture.md).)
 
 - **`core/`** — pure Haskell: NIP-01 serialization and signing, NIP-65 relay hints,
   filter predicates, wire ADTs, `Writer`-based logging.
@@ -341,11 +343,11 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 |---|---|---|
 | 01 | Basic protocol | ✅ full — variadic `REQ` filters, `EVENT`, `EOSE`, `OK`, `NOTICE`, `CLOSED` |
 | 02 | Follow list | ❌ not implemented |
-| 04 | Encrypted direct messages | ✅ implemented, deprecated in favour of NIP-44 |
+| 04 | Encrypted direct messages | ◐ the CLI can send them; the UI cannot read them |
 | 07 | `window.nostr` | ✅ full |
-| 19 | bech32 entities | ✅ Haskell `npub` / `nsec` (plus `nprofile` import); the UI encodes all six |
+| 19 | bech32 entities | ◐ Haskell does `npub` / `nsec` only; the UI encodes all six |
 | 44 | Versioned encryption | ❌ not implemented |
-| 46 | Remote signer | ✅ over the NIP-04 transport |
+| 46 | Remote signer | ◐ implemented over NIP-04, not reachable from the UI |
 | 50 | Search | ◐ local FTS5 only — there is no `search` filter in the wire `Filter` |
 | 59 | Gift wrap | ❌ not implemented |
 | 65 | Relay list metadata | ◐ kind 10002 drives the CLI's read relays; `writeRelays` is unused |
@@ -420,8 +422,9 @@ krivostr/
 │       ├── Spec.hs                hspec
 │       └── Bip340.hs              BIP-340 test vectors
 ├── client/                        Effectful Haskell executable
+│   ├── app/
+│   │   └── Main.hs                Entry point (app/, not src/: see below)
 │   ├── src/
-│   │   ├── Main.hs                Entry point
 │   │   └── Krivostr/
 │   │       ├── Bridge.hs          WebSocket bridge + static files
 │   │       ├── Cli.hs             optparse-applicative command surface
@@ -484,8 +487,9 @@ make clean             # remove build artifacts
   lives in `Store.hs` and `cache.ts` and is applied identically on both sides.
 - **Ingest is idempotent.** Events are inserted with `INSERT OR IGNORE` on the event id,
   so re-streaming the same relay changes nothing.
-- **The UI re-expresses the algebra.** Filters are `Rule`s, fallible operations are
-  `Result`s, effects are `IO`s.
+- **The UI re-expresses the algebra.** Fallible operations are `Result`s and effects are
+  `IO`s. The `Rule`/`Predicate` combinators in `fp/algebra.ts` exist but nothing in the
+  app uses them yet; only the algebra's own test imports that module.
 
 ---
 
@@ -537,4 +541,11 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
 
 ## License
 
-[GNU AGPL v3](LICENSE)
+[GNU Affero General Public License v3.0](LICENSE) — SPDX `AGPL-3.0-only`.
+
+The AGPL covers the Haskell backend and the TypeScript UI together; both are
+released under these terms.
+
+Section 13 asks that users interacting with the software over a network be
+offered its source. `krivostr serve` is exactly such a service, so this
+repository is that offer: <https://github.com/sagar-shirwalkar/krivostr>
