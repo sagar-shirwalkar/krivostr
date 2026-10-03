@@ -97,11 +97,11 @@ export class KrivostrLanding extends LitElement {
       </header>
       <section class="hero">
         <span class="eyebrow">a pure nostr client</span>
-        <h2>
+        <h1>
           A closed term language<br />
           for the open social web.<br />
           <em>reduce(relay) → feed</em>
-        </h2>
+        </h1>
         <p class="lede">
           krivostr is a Nostr client built like a Krivine machine: a small set of
           immutable terms, a rewriting relation, and nothing else. Events are
