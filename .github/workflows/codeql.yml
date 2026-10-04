@@ -1,0 +1,66 @@
+# ─── CodeQL ────────────────────────────────────────────────────────────
+#
+# Analyzes the TypeScript in ui/ and the workflows in .github/workflows/.
+#
+# The `actions` language is the reason this file is worth keeping rather
+# than delegating to GitHub's default setup: it audits the release pipeline
+# itself, which carries contents: write and fires on tag push. The query
+# pack looks for script injection, untrusted checkout, and overly broad
+# token permissions — the same class of finding OSSF Scorecard surfaces
+# weekly, but caught on the pull request that introduces it.
+#
+# Haskell is not analyzed. There is no CodeQL extractor for Haskell and no
+# realistic prospect of one. See docs/security/scanning.md for the gap and
+# the compensating controls.
+#
+# The `python` entry that GitHub's language detection may add is not
+# present: there is no Python in this repository. If a script appears
+# later that is worth analyzing, add it back deliberately.
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # GitHub randomizes a default weekly slot to spread load. Keep it unless
+    # there is a reason to coordinate with another job.
+    - cron: "38 17 * * 3"
+
+permissions:
+  security-events: write
+  packages: read
+  actions: read
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@87ef0dc97def48aa960fbf026a2563ee9dbdb470  # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # security-extended adds the queries that matter for a client
+          # handling a private key: insecure randomness, weak crypto,
+          # unsafe deserialisation. The default pack is narrower.
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@87ef0dc97def48aa960fbf026a2563ee9dbdb470  # v3
+        with:
+          category: "/language:${{ matrix.language }}"

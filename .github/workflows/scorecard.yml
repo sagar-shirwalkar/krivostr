@@ -1,0 +1,80 @@
+# ─── OpenSSF Scorecard ─────────────────────────────────────────────────
+#
+# Evaluates the repository's security posture against eighteen checks:
+# branch protection, code review, pinned dependencies, CI tests, security
+# policy, token permissions, dangerous workflow patterns, and others. It is
+# not a vulnerability scanner — it audits how the project is run, not what
+# the code does.
+#
+# For a public repository, results publish to the OpenSSF API and a badge
+# can be added to the README. Three checks are worth calling out for this
+# project:
+#
+#   Dangerous-Workflow    looks for script injection and untrusted
+#                         checkout patterns in .github/workflows/, which is
+#                         directly relevant given the release pipeline
+#                         carries contents: write
+#
+#   Token-Permissions     flags workflows that request more than they need
+#
+#   Branch-Protection     verifies that main is protected, which matters
+#                         because a tag push triggers a release
+name: scorecard
+
+on:
+  # Scorecard compares against a baseline, so it needs to run on the default
+  # branch. Running it on PRs would produce scores the project cannot act on.
+  branch_protection_rule:
+  schedule:
+    - cron: "15 5 * * 1"   # Monday 05:15 UTC
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to upload SARIF to the Security tab.
+      security-events: write
+      # Required for the OIDC token used to publish results to the OpenSSF
+      # API. Without it, publish_results must be false and the badge will
+      # not resolve.
+      id-token: write
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        with:
+          # Scorecard inspects the commit history for signed commits and
+          # release provenance. A shallow clone hides that.
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@99c09fe975337306107572b4fdf4db224cf8e2f2
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publishes the score to the OpenSSF REST API so the README badge
+          # can resolve. On a private repository this is forced to false;
+          # krivostr is public, so it is worth enabling.
+          publish_results: true
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@87ef0dc97def48aa960fbf026a2563ee9dbdb470
+        with:
+          sarif_file: results.sarif
+          category: scorecard
+
+      - name: Upload artifact
+        # Keeping the raw SARIF makes it possible to diff two runs and see
+        # which check regressed, which the Security tab does not make easy.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5

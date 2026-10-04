@@ -122,7 +122,7 @@ export class KrivostrLanding extends LitElement {
     return html`
       <header class="nav">
         <div class="mark" @click=${this.enter}>
-          krivostr<span style="color:var(--mute)">/0.4.0</span>
+          KRIVOSTR<span style="color:var(--mute)">/0.4.2</span>
         </div>
         <nav>
           <a href="https://github.com/nostr-protocol/nostr" target="_blank">protocol</a>
