@@ -16,8 +16,10 @@
 
 <div align="center">
 
-<img width="2840" height="3708" alt="krivostr-ui-landing" src="https://github.com/user-attachments/assets/158086d5-a3dd-4267-815d-d3d3f0ad227d" />
-<img width="2842" height="4104" alt="krivostr-feed" src="https://github.com/user-attachments/assets/264442ee-13b6-455d-8676-35adcd24e653" />
+<img width="2904" height="4474" alt="krivostr-ui-landing" src="https://github.com/user-attachments/assets/23460a3b-499e-4160-ae45-d0e0855dce99" />
+
+<img width="2922" height="5078" alt="krivostr-all-feed" src="https://github.com/user-attachments/assets/ae10ba5e-ce8b-4725-884f-074b0a38642f" />
+
 
 </div>
 
