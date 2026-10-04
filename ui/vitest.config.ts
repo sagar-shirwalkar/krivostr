@@ -1,22 +1,12 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from 'vitest/config'
+import { playwright } from '@vitest/browser-playwright'
 
-/**
- * Root config. The named test configurations live in `vitest.workspace.ts`;
- * this file only holds settings that apply to the whole workspace.
- *
- * Note: `test.projects` is a Vitest 3 feature and is rejected by the installed
- * Vitest 2.1.9.
- */
 export default defineConfig({
   test: {
-    // Reasonable defaults for anyone invoking `vitest` with no project filter.
-    environment: 'jsdom',
     globals: true,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
-      // Measure the pure logic. Lit components are covered by the browser
-      // project's own tests, which do not report into this summary.
       include: ['src/fp/**', 'src/nostr/**'],
       exclude: ['src/nostr/bridge.ts'],
       thresholds: {
@@ -26,5 +16,27 @@ export default defineConfig({
         statements: 80,
       },
     },
+    projects: [
+      {
+        test: {
+          name: 'unit',
+          environment: 'jsdom',
+          include: ['src/__tests__/*.test.ts'],
+          exclude: ['src/__tests__/components/**/*.test.ts'],
+        },
+      },
+      {
+        test: {
+          name: 'browser',
+          include: ['src/__tests__/components/*.test.ts'],
+          browser: {
+            enabled: true,
+            headless: true,
+            provider: playwright(),
+            instances: [{ browser: 'chromium' }],
+          },
+        },
+      },
+    ],
   },
-});
+})

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { page } from '@vitest/browser/context';
+import { page } from 'vitest/browser';
 import '../../components/app-shell';
 import type { KrivostrApp } from '../../components/app-shell';
 

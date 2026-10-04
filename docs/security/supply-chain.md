@@ -82,7 +82,7 @@ for spec in \
   "docker/build-push-action v6" \
   "github/codeql-action v3" \
   "google/osv-scanner-action v2.3.1" \
-  "ossf/scorecard-action v2.4.3" \
+  "ossf/scorecard-action v2.4.4" \
   "zaproxy/action-baseline v0.14.0" \
   "gitleaks/gitleaks-action v2" \
 ; do
