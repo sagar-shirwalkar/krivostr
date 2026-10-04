@@ -37,4 +37,4 @@ jobs:
     # Pin to a full-length commit SHA before merging. See the note in
     # container-scan.yml for why: tag references are mutable, and the
     # 2026 Trivy compromise force-pushed tags to a backdoored commit.
-    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@375a0e8ebdc98e99b02ac4338a724f5750f21213"
+    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@a345acffa64b0eaede81a3d9aae6141214d9c8fc"
