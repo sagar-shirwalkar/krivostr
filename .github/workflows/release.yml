@@ -96,17 +96,15 @@ jobs:
 
       - name: Build the static binary
         run: |
-          docker build \
+          docker buildx build \
             --platform "${{ matrix.platform }}" \
-            --target build \
+            --target artifact \
+            --output type=local,dest=dist \
             -f docker/Dockerfile.linux \
-            -t krivostr:linux-build \
             .
-          cid=$(docker create krivostr:linux-build)
-          docker cp "$cid":/out/krivostr "dist/krivostr"
-          docker rm "$cid"
           chmod +x dist/krivostr
           file dist/krivostr
+          ./dist/krivostr --version
 
       - uses: actions/download-artifact@v4
         with:
