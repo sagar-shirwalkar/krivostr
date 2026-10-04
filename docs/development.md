@@ -53,7 +53,7 @@ Running `pnpm dev` needs `VITE_BRIDGE_URL` pointing at a running bridge, or
 | `make test` | `test-backend` + `test-ui` (unit **and** browser). |
 | `make coverage` | Backend report plus the UI v8 report. |
 | `make linux-binary` | Release binary via Docker — needs Docker. |
-| `make verify-version TAG=v0.2.0` | Fails if the tag disagrees with `client/package.yaml`. |
+| `make verify-version TAG=v0.3.0` | Fails if the tag disagrees with `client/package.yaml`. |
 | `make docker` / `make docker-down` | Image build, compose teardown. |
 | `make clean` | Build trees, `dist`, `ui/dist`, coverage output. |
 
@@ -69,8 +69,8 @@ across the board and passes.
 **Backend coverage is a gate that currently fails.** `.hpc-threshold` requires
 80%; the measured total is **35.7%** (164 of 460), so `make coverage-backend`
 exits non-zero. That is intentional and unchanged — the threshold is the goal,
-not the current state. The report is written to `coverage.txt` *before* the gate
-runs, so a red run still leaves you numbers to read.
+not the current state. The report is written to `coverage.txt` *before* the
+gate runs, so a red run still leaves you numbers to read.
 
 The cryptography and NIP-01 layers are well covered; the IO layers (Store,
 Pool, Relay, Bridge, Cli) are not. CI does not run coverage at all, so this
@@ -105,12 +105,12 @@ nothing is pushed to a registry, and there is no `CHANGELOG.md` to update.
 
 1. Bump `version` in [`client/package.yaml`](../client/package.yaml). It is the
    single source of truth: a Cabal version carries a fourth component, so
-   `0.2.0.0` in the package file is released as the tag `v0.2.0`.
-2. Check the tag before pushing it: `make verify-version TAG=v0.2.0`.
+   `0.3.0.0` in the package file is released as the tag `v0.3.0`.
+2. Check the tag before pushing it: `make verify-version TAG=v0.3.0`.
 3. Tag and push. The tag is what triggers the release.
 
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on a
-`v*` tag or by hand with an existing tag, re-checks the version against
+`v*` tag push or by hand with an existing tag, re-checks the version against
 `client/package.yaml`, and uploads tarballs for Linux (built in
 [`docker/Dockerfile.linux`](../docker/Dockerfile.linux)), macOS, and Windows.
 

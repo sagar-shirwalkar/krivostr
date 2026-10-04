@@ -55,10 +55,7 @@ Relay to client:
 | `["OK", <event-id>, <bool>, <message>]` | |
 | `["NOTICE", <message>]` | |
 | `["CLOSED", <sub-id>, <message>]` | |
-
-`["AUTH", …]` ([NIP-42](https://github.com/nostr-protocol/nips/blob/master/42.md))
-is **not** sent. Upstream relays that require authentication will reject `REQ`
-and `EVENT`; krivostr works against the public relays that do not.
+| `["AUTH", <challenge>]` | NIP-42 authentication challenge. |
 
 ### The REQ semantics that matter
 
@@ -93,18 +90,36 @@ The UI's `FilterSpec` presents tag filters as a `tags` record and
 
 | NIP | Title | Status |
 |---|---|---|
-| 01 | Basic protocol | Implemented. |
-| 04 | Encrypted DMs | Backend only. `krivostr dm` sends one; **the UI cannot read incoming DMs.** |
-| 07 | `window.nostr` | Implemented. One of the two signers the UI can reach. |
-| 19 | bech32 entities | Partial. See below. |
-| 46 | Remote signer | Implemented and tested, **not reachable from the UI.** |
-| 65 | Relay list metadata | Read-only. See below. |
+| 01 | Basic protocol | ✅ full — variadic `REQ` filters, `EVENT`, `EOSE`, `OK`, `NOTICE`, `CLOSED` |
+| 02 | Follow list | ❌ not implemented |
+| 04 | Encrypted direct messages | ◐ CLI can send (NIP-04); UI cannot read incoming DMs |
+| 07 | `window.nostr` | ✅ full |
+| 19 | bech32 entities | ◐ Haskell does `npub` / `nsec` only; UI encodes all six |
+| 40 | Expiration timestamp | ✅ `expiration` tag for deterministic purge (bridge + UI) |
+| 42 | Authentication | ✅ NIP-42 challenge/response (ephemeral kind 22242, single-challenge queue) |
+| 44 | Versioned encryption | ✅ NIP-44 v2 (ChaCha20-Poly1305 + HKDF) with short-ciphertext panic fix and payload-size guard |
+| 46 | Remote signer | ◐ implemented over NIP-04, not reachable from UI (NIP-44 transport planned) |
+| 49 | Private-key encryption | ✅ NIP-49 `ncryptsec` (scrypt + XChaCha20-Poly1305, bech32 `ncryptsec1...`) |
+| 50 | Search | ◐ local FTS5 only — no wire `search` filter |
+| 59 | Gift wrap | ✅ NIP-59 kind 1059 (rumor → NIP-44 seal → ephemeral-key wrap) |
+| 17 | Private direct messages | ✅ NIP-17 (rumor → NIP-44 seal → gift wrap, randomized timestamp ±2 days) |
+| 65 | Relay list metadata | ◐ kind 10002 drives CLI read relays; `writeRelays` unused |
 
 **NIP-04 is a backend feature.** `krivostr dm` encrypts with `encryptNip04` in
 [`client/src/Krivostr/Cli/Nostr.hs`](../client/src/Krivostr/Cli/Nostr.hs) —
 AES-256-CBC under an ECDH shared secret — before publishing, but nothing in the
 UI decrypts: no UI module imports a NIP-04 implementation at all. A DM stored
 by the bridge is unreadable in the browser today.
+
+**NIP-44 v2 is a core feature.** Both Haskell (`Krivostr.Nip.Nip44`) and
+TypeScript (`ui/src/nostr/nip44.ts`) implement the same ChaCha20-Poly1305 +
+HKDF-SHA256 construction with two security fixes over the reference spec:
+1. **Short-ciphertext panic fix** — validates ciphertext length before indexing
+   the 2-byte length prefix (the spec reads `buffer[0..2]` after HMAC passes,
+   which panics on <2 bytes).
+2. **Payload-size guard** — enforces maximum payload size BEFORE base64 decoding
+   (the spec decodes the full attacker-controlled payload before checking
+   version/size).
 
 **NIP-19 is asymmetric.** The UI encodes and decodes `npub`, `nsec`, `note`,
 `nprofile`, `nevent` and `naddr` in a hand-rolled
@@ -123,7 +138,28 @@ unit-tested, but `nostr-signer-picker.ts` imports only `localSigner` and
 `nip07Signer`, so nothing constructs a bunker signer. It also takes its NIP-04
 implementation as an **injected parameter** — the module imports no crypto for
 it — so a caller would have to supply one. Reaching a bunker from the UI means
-wiring up the picker and passing a NIP-04 implementation.
+wiring up the picker and passing a NIP-44 implementation.
+
+**NIP-59 gift wrap** wraps a rumor (unsigned kind 14) encrypted with NIP-44
+into an ephemeral-key-signed kind 1059 event. The relay sees only the wrapper.
+
+**NIP-17 composes NIP-44 + NIP-59** for private direct messages. A rumor (kind
+14) is sealed with NIP-44, wrapped in a gift wrap (kind 1059), with a
+randomized timestamp (±2 days) to defeat timing correlation.
+
+**NIP-49 `ncryptsec`** encrypts private keys at rest using scrypt +
+XChaCha20-Poly1305, encoded as bech32 `ncryptsec1...`. The Haskell and
+TypeScript implementations share the same derivation logic.
+
+**NIP-42 authentication** uses ephemeral kind 22242 events with a relay-supplied
+challenge. The bridge and CLI implement a single-challenge queue (a new
+challenge invalidates the previous one) to prevent challenge-queue exhaustion.
+
+**NIP-40 expiration** tags let the bridge and UI purge ephemeral ciphertexts
+deterministically, shrinking the window in which a stolen SQLite file is useful.
+
+**NIP-11 relay info** is requested on connect to discover whether a relay
+supports NIP-42, NIP-59, NIP-50, or PoW before sending traffic.
 
 ## Not implemented
 
@@ -131,12 +167,8 @@ wiring up the picker and passing a NIP-04 implementation.
   and retained, nothing more.
 - **NIP-09** deletion: no deletion-request handling. Kind 5 is recognized as a
   kind name but never published.
-- **NIP-42** `AUTH`.
-- **NIP-44** v2 encryption.
 - **NIP-50** search: **local only**. The bridge has an FTS5 index and
   `krivostr search` queries it, but no `search` field is ever placed on the
   wire, so filters are not forwarded to relays and no relay is asked to search.
-- **NIP-59** gift wrap: not implemented, despite kind 1059 being in the
-  persistent-kind set.
 - **NIP-11** relay information: not requested, so the bridge reports no
   software version.

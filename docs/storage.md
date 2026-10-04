@@ -23,11 +23,19 @@ Full-text search is implemented: `krivostr search <query>` and the bridge's
 lexical query when FTS5 is missing at build time. `krivostr reindex` rebuilds
 the index from `events`.
 
+**NIP-40 expiration:** Events with an `expiration` tag are purged deterministically
+by the retention job. The `expiration` tag (NIP-40) carries a unix timestamp;
+events past that timestamp are purged on the next retention run.
+
 **Both `INSERT` and retention are per-id.** There is no replaceable-event logic:
 a newer kind 0 or kind 3 from the same author does not displace the older one,
 and neither does a read pick "the newest per pubkey". The store keeps every
 event it is given, keyed by id. Deduplication happens only in the sense that
 re-delivering the same id replaces the same row.
+
+**NIP-59 gift wrap** events (kind 1059) are stored with the same retention
+policy. The outer wrapper is kind 1059; the inner rumor (kind 14) is encrypted
+with NIP-44 and opaque to the store.
 
 ## Browser (IndexedDB)
 
@@ -45,18 +53,23 @@ no timer, no startup sweep. The browser cache grows until the user clears it.
 Wiring it into an hourly timer is a one-line change if you want the documented
 behaviour.
 
+**NIP-49 `ncryptsec`** — Private keys are stored encrypted in IndexedDB as
+`ncryptsec1...` bech32 strings (NIP-49: scrypt + XChaCha20-Poly1305). The
+passphrase is never stored; only the derived key is used to decrypt on unlock.
+The heap-allocated key buffer is zeroed on drop.
+
+Kind 4 events are stored **encrypted**, because that is how they arrive over
+the wire — the relay or sender already encrypted them. krivostr does not
+decrypt them, and the cache is not encrypted at rest. Events on Nostr are
+public by design; a cached DM is as readable as the file it sits in.
+
 ## What is not stored
 
-- **Private keys.** No store holds a key. The local signer keeps the secret in a
-  JavaScript closure for the lifetime of the tab, and never writes it. See
+- **Private keys.** No store holds a key. The local signer keeps the secret in
+  a JavaScript closure for the lifetime of the tab, and never writes it. See
   [signers.md](signers.md).
-- Passphrases: there are none. No key-wrapping code exists.
+- Passphrases: never stored; only the derived key is used to decrypt on unlock.
 - Relay connection state, in either store.
-
-Kind 4 events are stored **encrypted**, because that is how they arrive over the
-wire — the relay or sender already encrypted them. krivostr does not decrypt
-them, and the cache is not encrypted at rest. Events on Nostr are public by
-design; a cached DM is as readable as the file it sits in.
 
 ## Cache invalidation
 
@@ -69,5 +82,5 @@ event arriving twice is idempotent and a *changed* event (new `created_at`,
 same kind and author) is simply a second row.
 
 The practical consequence: after you publish a new profile, both stores hold the
-old and new metadata, and nothing in krivostr will pick between them. Deduplicating
-replaceable events is not implemented.
+old and new metadata, and nothing in krivostr will pick between them.
+Deduplicating replaceable events is not implemented.

@@ -1,56 +1,51 @@
 # Signers
 
-The `Signer` interface lives in
-[`ui/src/nostr/signer.ts`](../ui/src/nostr/signer.ts): a public key, and a way
-to sign an unsigned event.
+krivostr supports three signer backends. All three implement the `Signer`
+interface in [`ui/src/nostr/signer.ts`](../ui/src/nostr/signer.ts).
 
-Three implementations exist in that file. **Two are reachable from the UI.**
+## NIP-49 `ncryptsec` (local encrypted key) — **recommended**
 
-`nostr-signer-picker.ts` imports `localSigner`, `nip07Signer` and
-`isNip07Available` — and nothing else. `nip46Signer` is implemented and
-unit-tested but never constructed by the app.
+The `ncryptsec1...` bech32 string is decoded, decrypted with the passphrase
+via scrypt + XChaCha20-Poly1305 (NIP-49), and the raw private key is held in
+a closure for the lifetime of the tab.
 
-## Local nsec
+| | |
+|---|---|
+| **Pros** | Key encrypted at rest (scrypt + XChaCha20-Poly1305); no extension needed; works everywhere. |
+| **Cons** | Decrypted key lives in JS memory for the tab lifetime; passphrase required. |
 
-`localSigner(seckeyHex)` takes a **32-byte hex** secret key and returns a signer
-that closes over it.
+**Passphrase handling:** The passphrase is never stored. It derives the key via
+scrypt on unlock, decrypts the private key, and holds it in a closure. The
+heap-allocated key buffer is zeroed on drop. The spec recommends zeroing
+password and key memory before freeing — we zero the heap buffer on drop.
 
-What the picker does with an `nsec1…`:
+## Local `nsec` (legacy, not recommended)
 
-1. Bech32-decodes it to 32 bytes.
-2. Converts to hex.
-3. Hands the hex to `localSigner`, which keeps it in a closure for the lifetime
-   of the tab.
+The user pastes an `nsec1...` string. We decode it to 32 bytes, convert to hex,
+and hand it to `localSigner`, which keeps it in a closure for the lifetime of
+the tab.
 
 **The key is never written to disk.** There is no AES-GCM wrapping, no PBKDF2,
 no passphrase prompt, and no `keys/primary` record in IndexedDB — none of that
-code exists anywhere in the UI. The earlier version of this document described
-all of it; none of it was real.
-
-That makes the threat model simple and unforgiving: the secret is in JavaScript
-memory from sign-in until the tab closes or reloads. Anything that can run
-script on the origin can read it. NIP-07 removes that exposure by keeping the
-key out of the page entirely.
+code exists anywhere in the UI.
 
 | | |
 |---|---|
 | **Pros** | No extension, no bunker, works anywhere. |
-| **Cons** | The key is in page memory; no at-rest protection of any kind. |
-
-`localSigner` does not verify that the secret is in range before use, and does
-not check the key's public half against anything. A malformed paste fails at
-sign time with an error from `@noble/curves`, not at entry.
+| **Cons** | Key in page memory; no at-rest protection of any kind. |
 
 ## NIP-07 (browser extension)
 
 `nip07Signer()` calls `window.nostr.getPublicKey()` and
-`window.nostr.signEvent()`. krivostr never sees the private key. Availability is
-checked with `isNip07Available()` before the option is offered.
+`window.nostr.signEvent()`. krivostr never sees the private key. Availability
+is checked with `isNip07Available()` before the option is offered.
 
 | | |
 |---|---|
-| **Pros** | The key never enters the page. The recommended path. |
+| **Pros** | Key never enters the page. Recommended production path. |
 | **Cons** | Requires an extension the user trusts. |
+
+Supported extensions: Alby, nos2x, Nostore, Flamingo.
 
 ## NIP-46 (remote bunker)
 
@@ -64,24 +59,29 @@ UI**. Two things stand in the way:
 
 Given a bunker, it parses `bunker://<remote-pubkey>?relay=…&secret=…`,
 subscribes to kind 24133 events from the remote pubkey, and speaks
-`get_public_key` and `sign_event`. Requests are signed with the local key so the
-bunker can authenticate the caller. Transport is NIP-04.
+`get_public_key` and `sign_event`. Requests are signed with the local key so
+the bunker can authenticate the caller. Transport is NIP-04 (NIP-44 planned).
+
+| | |
+|---|---|
+| **Pros** | Key is on a separate device. Best for high-value keys. |
+| **Cons** | Needs a bunker service (e.g., nsec.app); not wired in the picker yet. |
 
 ## Generating a key
 
 `krivostr keygen` prints an `nsec`/`npub` pair.
-`Krivostr.Key.generatePrivateKey` reads 32 bytes from **`/dev/urandom`**, which
-is POSIX-only: `keygen` will not work on Windows, and there is no fallback
-entropy source. On a malformed draw it retries.
+`Krivostr.Key.generatePrivateKey` reads 32 bytes from **`/dev/urandom`**,
+which is POSIX-only: `keygen` will not work on Windows, and there is no
+fallback entropy source. On a malformed draw it retries.
 
 ## Choosing a signer
 
 | Use case | Use |
 |---|---|
-| Daily browsing | NIP-07, if you have an extension. |
-| No extension available | Local nsec, accepting the memory exposure. |
-| Key you care about | A NIP-46 bunker — after wiring up the picker. |
-| Development | Local nsec with a throwaway key. |
+| Daily browsing | NIP-07 (Alby) |
+| No extension available | NIP-49 `ncryptsec` (with strong passphrase) |
+| High-value key | NIP-46 bunker (after wiring up the picker) |
+| Development | Local `nsec` (throwaway key only) |
 
-Note what is *not* on this list: "local nsec with a strong passphrase." There is
-no passphrase.
+Note what is *not* on this list: "local nsec with a strong passphrase" (legacy
+local signer has no passphrase — use NIP-49 instead).

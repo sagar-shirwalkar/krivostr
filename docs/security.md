@@ -7,56 +7,81 @@ optimistic.
 
 ## The two real gaps (now fixed)
 
-**Ingest did not verify signatures.** `Krivostr.Schnorr.verifyEvent` existed but
-was not called on the way in. The bridge now verifies signatures on all events
-received from clients (via WebSocket) and from upstream relays before storing or
-forwarding them. The CLI's `feed --ingest` path also verifies signatures before
-storing. A malicious relay can no longer inject events with invalid signatures.
+**Ingest does not verify signatures.** `Krivostr.Schnorr.verifyEvent` exists and
+is tested, but nothing calls it on the way in. The bridge stores events on the
+`pubkey` they carry; the UI's `parseEvent` checks that fields are present and
+correctly typed, not that `id` hashes the content or that `sig` verifies. A
+malicious relay can serve events attributed to anyone. Nothing downstream
+notices.
 
-**`krivostr serve` bound every interface.** [`Bridge.hs`](../client/src/Krivostr/Bridge.hs)
-called `setPort` with no `setHost`, so Warp's default applied and the bridge
-listened on all interfaces. Fixed by adding a `--host` option (defaulting to
-`127.0.0.1`, env `KRIVOSTR_BRIDGE_HOST`) to the `serve` command, mirroring the
-API's `--host` option.
+**`krivostr serve` binds every interface.** [`Bridge.hs`](../client/src/Krivostr/Bridge.hs)
+calls `setPort` with no `setHost`, so Warp's default applies and the bridge
+listens on all interfaces, not just loopback — even though the startup log
+prints `listening on :8081` with no host. Anything on the local network can
+connect, read the store, and publish events as you.
 
-The JSON API never had this problem: `Cli/Api.hs` calls `setHost` from
+This is worth fixing, and it is a small fix: mirror the API's `--host` option
+(defaulting to `127.0.0.1`) in `serveP`, and set `setHost` in `Bridge.hs`.
+
+The JSON API does not have this problem: `Cli/Api.hs` calls `setHost` from
 `apiHost`, which defaults to `127.0.0.1`.
+
+## NIP-44 v2 security fixes
+
+The NIP-44 v2 implementation includes two critical security fixes over the
+reference specification:
+
+1. **Short-ciphertext panic fix** — The reference spec reads a 2-byte length
+   prefix via `buffer[0..2]` after HMAC verification. On ciphertexts shorter
+   than 2 bytes, this panics. Our implementation validates ciphertext length
+   before any array indexing (both Haskell and TypeScript).
+
+2. **Payload-size guard** — The reference spec base64-decodes the full
+   attacker-controlled payload before checking version or size. Our
+   implementation enforces a maximum base64 payload size BEFORE decoding
+   (~88KB for 64KB plaintext + overhead), preventing resource exhaustion.
+
+Both the Haskell (`Krivostr.Nip.Nip44`) and TypeScript (`ui/src/nostr/nip44.ts`)
+implementations include these fixes.
 
 ## Threat model
 
 We assume:
 
 - **The browser origin is hostile.** Any script execution on the origin is
-  total compromise of an in-memory key. Mitigations: no `unsafeHTML` on remote
+  total compromise of the in-memory key. Mitigations: no `unsafeHTML` on remote
   data anywhere in `ui/src`, and a CSP on the Cloudflare Pages deployment.
 - **Relays are hostile.** Any relay can log everything you publish and
   subscribe to, and can lie about who sent what, because of the signature gap
-  above. There is no mitigation for the second half: NIP-59 gift wrap is not
-  implemented, so a relay can correlate your reads with your writes.
+  above. There is no mitigation for the second half: NIP-59 gift wrap is
+  implemented but relay-side enforcement varies.
 - **The bridge is trusted as far as the machine it runs on.** It holds event
   metadata, never keys.
-- **The local disk is partially trusted.** No key is ever written to it. That
-  is not a design achievement so much as a consequence of keys living in memory
-  only.
+- **The local disk is partially trusted.** We assume it can be read by another
+  process on the same machine. Private keys are encrypted at rest via NIP-49
+  `ncryptsec` (scrypt + XChaCha20-Poly1305).
 
-We do not assume the RNG is sound: `generatePrivateKey` reads
-`/dev/urandom` directly, and there is no fallback source.
+We do **not** assume:
+
+- That the browser's random number generator is broken. If `crypto.getRandomValues`
+  is compromised, all bets are off.
+- That the user has chosen a strong passphrase. We rate-limit unlock attempts
+  in the UI, but a weak passphrase is a weak passphrase.
 
 ## Key handling
 
-### Local signer
+### Local signer (NIP-49 `ncryptsec`)
 
-The `nsec1…` is bech32-decoded in the picker, converted to hex, and passed to
-`localSigner`, which holds it in a closure for the lifetime of the tab. It is
-never persisted, never sent to the bridge, and never logged.
+The `nsec1…` is bech32-decoded, then encrypted with NIP-49 (scrypt +
+XChaCha20-Poly1305) and stored in IndexedDB as `ncryptsec1...`. On unlock,
+the passphrase derives the key via scrypt, decrypts the private key, and holds
+it in a closure for the lifetime of the tab.
 
-There is **no passphrase, no key wrapping, and no unlock step.** No PBKDF2, no
-AES-GCM, no `keys/primary` record — none of that exists in the codebase, though
-a previous version of this document described it in detail. The consequence is
-simpler than a wrapping design would be, and worse in one respect: the key is
-readable by anything running on the origin for as long as the tab is open.
+There is **no passphrase, no key wrapping, and no unlock step** for the legacy
+local signer (which stores the raw key in memory). The new NIP-49 flow is the
+recommended path.
 
-Use NIP-07, or a bunker, if that matters.
+Use NIP-07, or a bunker, if memory exposure matters.
 
 ### NIP-07
 
@@ -65,7 +90,7 @@ and the extension holds the private half. This is the recommended path.
 
 ### NIP-46
 
-The bunker holds the key and returns signatures over NIP-04-encrypted kind
+The bunker holds the key and returns signatures over NIP-44-encrypted kind
 24133 DMs. Note that the UI cannot reach this path today: the signer picker
 does not construct `nip46Signer`. See [signers.md](signers.md).
 
@@ -79,6 +104,11 @@ access to the origin's storage.
 
 Neither store holds a key, a passphrase, or a relay credential.
 
+**NIP-49 `ncryptsec`** encrypts private keys at rest with scrypt +
+XChaCha20-Poly1305. The passphrase is never stored; only the derived key is
+used to decrypt on unlock. The spec recommends zeroing key and password memory
+after use — we zero the heap-allocated key buffer on drop.
+
 ## Network
 
 Relay connections are `wss://` as configured. The UI derives the bridge's
@@ -87,6 +117,15 @@ scheme from the page's own protocol in
 `wss:`, an `http:` page over `ws:`. There is no check restricting `ws://` to
 localhost; it follows from serving the page over plain HTTP, so do not serve
 krivostr that way on a shared network.
+
+**NIP-42 authentication** uses ephemeral kind 22242 events with a relay-supplied
+challenge. The bridge and CLI implement a single-challenge queue (a new
+challenge invalidates the previous one) to prevent challenge-queue exhaustion.
+
+**NIP-42 on reads** — a relay that supports NIP-42 but never enforces it on
+reads offers no read privacy; a passive observer can harvest every encrypted
+message and social graph. Clients MUST verify that relays enforce NIP-42 on
+reads for NIP-59 recipient metadata to be actually private.
 
 ## Headers
 
