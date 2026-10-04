@@ -16,15 +16,23 @@
 # compiler support libraries statically, which leaves glibc, libgmp and zlib as
 # the runtime requirements.
 #
-# The floor is glibc 2.33, not the 2.36 of the build image: that is the highest
-# versioned symbol GHC 9.10.3 links against, and it was measured rather than
-# assumed -- the resulting binary runs on bookworm but fails on bullseye
-# (2.31) with "version `GLIBC_2.33' not found". Building on bookworm is still
-# the right choice, being the oldest image that can build at all.
+# The floor is glibc 2.34, not the 2.36 of the build image. 2.34 is the point
+# at which glibc merged libpthread into libc and retagged the pthread symbols
+# from GLIBC_2.2.5 to GLIBC_2.34; GHC's threaded RTS, which arrives as a
+# prebuilt .a in the bindist, was compiled against that newer glibc, so every
+# executable linked against it inherits the newer version tags. The floor is a
+# property of the toolchain, not of this project, and it is verified rather
+# than assumed -- the resulting binary runs on bookworm (2.36) and on RHEL 9
+# (2.34) but fails on bullseye (2.31) with "version `GLIBC_2.34' not found".
 #
-# The verification step below is what holds this file to its promise: it lists
-# the shared libraries the result needs, and fails if anything beyond the
-# expected set shows up.
+# In practice 2.34 costs nothing: the only distributions pinned near 2.33
+# (Fedora 34, Ubuntu 21.04) are end-of-life, and every distribution that was
+# compatible at 2.33 remains compatible at 2.34. RHEL 9, the oldest currently
+# supported enterprise distribution, ships 2.34 exactly.
+#
+# The verification steps below are what hold this file to its promise: one
+# lists the shared libraries the result needs, the other the highest versioned
+# glibc symbol it references, and both fail if either has moved.
 
 FROM haskell:9.10.3-slim-bookworm AS build
 
@@ -59,7 +67,10 @@ RUN stack build --copy-bins --local-bin-path /out \
 #
 # Expected, and present on any glibc distribution worth the name:
 #   libc, libm         the C runtime and the resolver
-#   libdl, libpthread  separate files on glibc older than 2.34
+#   libdl, libpthread  separate files on glibc older than 2.34; on 2.34 and
+#                      newer the linker resolves through libc, so these may
+#                      still appear as versioned references even when the
+#                      runtime has no separate files
 #   libgmp             GHC's Integer arithmetic
 #   libz               pulled in by the compression libraries in the dependency
 #                      set
@@ -82,15 +93,21 @@ RUN set -eu; \
 # Enforce the documented glibc floor, so a dependency bump cannot quietly raise
 # it. ldd above cannot see this: it names files, not symbol versions, and it is
 # the versioned symbols that decide whether the binary runs on bullseye. The
-# highest GLIBC_x.y the executable requires has to stay at or below 2.33.
+# highest GLIBC_x.y the executable requires has to stay at or below 2.34.
+#
+# The floor is 2.34 because the threaded RTS in GHC 9.10.3's bindist pulls in
+# the GLIBC_2.34 retags of the pthread symbols (see the header). A run that
+# reports GLIBC_2.35 or higher means the toolchain has moved again, and both
+# this constant and the release notes' supported-distro list need updating in
+# the same commit.
 RUN set -eu; \
     objdump -p /out/krivostr \
       | grep -oE "GLIBC_[0-9]+(\.[0-9]+)*" | sort -uV > /tmp/glibc-reqs.txt; \
     echo "highest glibc symbol version required:"; tail -1 /tmp/glibc-reqs.txt; \
     highest=$(tail -1 /tmp/glibc-reqs.txt); \
     if [ -n "$highest" ] \
-       && [ "$(printf '%s\nGLIBC_2.33\n' "$highest" | sort -V | tail -1)" != "GLIBC_2.33" ]; then \
-      echo "::error::binary requires $highest, above the documented floor of GLIBC_2.33. Build on an older base image, or update the release notes and the supported-distro list together."; \
+       && [ "$(printf '%s\nGLIBC_2.34\n' "$highest" | sort -V | tail -1)" != "GLIBC_2.34" ]; then \
+      echo "::error::binary requires $highest, above the documented floor of GLIBC_2.34. If the toolchain changed, update the release notes and the supported-distro list together; if it did not, find which dependency started pulling in newer symbols."; \
       exit 1; \
     fi
 
