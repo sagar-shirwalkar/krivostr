@@ -73,26 +73,27 @@ jobs:
           retention-days: 1
 
   # ─── Linux: one binary, glibc only ───────────────────────────────
+  #
+  # Both architectures build natively. The arm64 runner is free for public
+  # repositories; on a private repository it is a paid runner, and the
+  # alternative is to restore the QEMU setup step and run arm64 under
+  # emulation on ubuntu-latest. Native is roughly an order of magnitude
+  # faster, which matters because the GHC build is the long pole.
   linux:
     name: linux-${{ matrix.arch }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
             platform: linux/amd64
+            runner: ubuntu-latest
           - arch: arm64
             platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-
-      # arm64 is built under emulation because GitHub's native arm runner is
-      # not available to every plan. On a public repository, replacing
-      # runs-on with ubuntu-24.04-arm builds it natively and much faster.
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Build the static binary
         run: |
@@ -106,7 +107,7 @@ jobs:
           file dist/krivostr
           case "${{ matrix.platform }}" in
             linux/amd64) ./dist/krivostr --version ;;
-            linux/arm64) echo "arm64: skipping --version, verified inside the build image" ;;
+            linux/arm64)  ./dist/krivostr --version ;;
           esac
 
       - uses: actions/download-artifact@v4
@@ -116,6 +117,7 @@ jobs:
 
       - name: Package
         run: |
+          set -eu
           version="${RELEASE_TAG#v}"
 
           test -x dist/krivostr \
@@ -124,7 +126,7 @@ jobs:
                       || { echo "::error::dist/ui missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
           
           cp LICENSE README.md dist/
-          tar -C dist -czf "krivostr-$version-linux-${{ matrix.arch }}.tar.gz" \
+          tar -C dist -czf "krivostr-${version}-linux-${{ matrix.arch }}.tar.gz" \
             krivostr ui LICENSE README.md
           rm -rf dist
           ls -l
@@ -254,7 +256,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: source
+          # --generate-notes walks the tag range, and the default shallow
+          # clone (fetch-depth: 1) leaves no previous tag to diff against.
+          # Full history gives it something to work with; the repo is small
+          # enough that the cost is negligible.
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -263,8 +269,8 @@ jobs:
           merge-multiple: true
 
       - name: Check the tag matches the package version
-        working-directory: source
         run: |
+          set -eu
           # A Cabal version has a fourth component that a tag has no use for:
           # client/package.yaml says 0.4.0.0, the tag is v0.4.0.
           tag_version="${RELEASE_TAG#v}"
@@ -278,8 +284,21 @@ jobs:
 
       - name: Checksums
         run: |
+          set -eu
           cd archives
-          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+          # Globs that match nothing are a real possibility if an artifact
+          # upload was skipped, and `sha256sum ./x` on a non-matching glob
+          # passes the literal pattern through to sha256sum and fails with a
+          # confusing message. Collect matches explicitly and reject empty.
+          shopt -s nullglob
+          files=(./*.tar.gz ./*.zip)
+          shopt -u nullglob
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no archives found — nothing to checksum"
+            ls -la
+            exit 1
+          fi
+          sha256sum "${files[@]}" > SHA256SUMS
           cat SHA256SUMS
           ls -l
 
@@ -287,13 +306,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -eu
           tag="$RELEASE_TAG"
           version="${tag#v}"
-          files="archives/*"
+          shopt -s nullglob
+          files=(archives/*)
+          shopt -u nullglob
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no files to upload"
+            ls -la
+            exit 1
+          fi
           if gh release view "$tag" > /dev/null 2>&1; then
-            gh release upload "$tag" $files --clobber
+            gh release upload "$tag" "${files[@]}" --clobber
           else
-            gh release create "$tag" $files \
-              --title "krivostr $version" \
+            gh release create "$tag" "${files[@]}" \
+              --title "krivostr ${version}" \
               --generate-notes
           fi
