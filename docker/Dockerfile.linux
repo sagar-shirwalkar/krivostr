@@ -34,7 +34,7 @@
 # lists the shared libraries the result needs, the other the highest versioned
 # glibc symbol it references, and both fail if either has moved.
 
-FROM haskell:9.10.3-slim-bookworm AS build
+FROM haskell:9.14.1-slim-bookworm AS build
 
 # libsecp256k1 is deliberately absent: BIP-340 is implemented in pure
 # Haskell (core/src/Krivostr/Schnorr.hs), so the only C in the build is the

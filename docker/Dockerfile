@@ -3,7 +3,7 @@
 # the one that builds the project. The tag has to name a published image:
 # "haskell:9.14.1-slim" does not exist, only per-distro tags such as
 # "haskell:9.10.3-slim-bookworm".
-FROM haskell:9.10.3-slim-bookworm@sha256:152bf2650eecf6fd9bdbb6c34c2722637d25542566825a6740771a0c6f403fe2 AS backend
+FROM haskell:9.14.1-slim-bookworm@sha256:3c42500cd55e735fa927e7b0410a3f10ec042a41a6c8d521ad6844d67a0a9a94 AS backend
 
 WORKDIR /src
 # libsecp256k1 is no longer needed: BIP-340 is pure Haskell
