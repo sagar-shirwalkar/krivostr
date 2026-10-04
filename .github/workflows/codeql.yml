@@ -29,13 +29,17 @@ on:
     - cron: "38 17 * * 3"
 
 permissions:
-  security-events: write
   packages: read
   actions: read
   contents: read
 
 jobs:
   analyze:
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
     name: analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     strategy:

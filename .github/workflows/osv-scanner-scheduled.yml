@@ -11,16 +11,26 @@ name: osv-scheduled
 
 on:
   schedule:
-    - cron: "30 4 * * 1"   # Monday 04:30 UTC, after the container scan at 04:00
+    # Monday 04:30 UTC. Offset from the other weekly jobs so a Monday
+    # morning review sees them all: OSV at 04:30, Scorecard at 05:15,
+    # Dependabot at 05:30 (once its config lands).
+    - cron: "30 4 * * 1"
   push:
     branches: [main]
   workflow_dispatch:
 
+# Top-level permissions are read-only. The security-events: write scope
+# belongs on the job that calls the reusable workflow, not on the whole
+# workflow.
 permissions:
-  actions: read
   contents: read
-  security-events: write
 
 jobs:
   scan-scheduled:
+    # See the note in osv-scanner-pr.yml: the reusable workflow uploads
+    # SARIF on this job's behalf, so the scope is granted here.
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@375a0e8ebdc98e99b02ac4338a724f5750f21213"

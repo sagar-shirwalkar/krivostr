@@ -3,7 +3,7 @@
 # the one that builds the project. The tag has to name a published image:
 # "haskell:9.14.1-slim" does not exist, only per-distro tags such as
 # "haskell:9.10.3-slim-bookworm".
-FROM haskell:9.10.3-slim-bookworm AS backend
+FROM haskell:9.10.3-slim-bookworm@sha256:152bf2650eecf6fd9bdbb6c34c2722637d25542566825a6740771a0c6f403fe2 AS backend
 
 WORKDIR /src
 # libsecp256k1 is no longer needed: BIP-340 is pure Haskell
@@ -21,7 +21,7 @@ COPY client/ client/
 RUN stack build --copy-bins --local-bin-path /out
 
 # ─── Stage 2: UI ──────────────────────────────────────────────
-FROM node:22-alpine AS ui
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS ui
 
 WORKDIR /ui
 RUN corepack enable && corepack prepare pnpm@9 --activate
@@ -37,7 +37,7 @@ RUN pnpm build
 # produces needs glibc plus the shared libraries GHC links against (libgmp,
 # zlib). An Alpine/musl runtime cannot load it -- there is no ld-linux and no
 # libgmp, so the process dies before main.
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libgmp10 zlib1g tini && \

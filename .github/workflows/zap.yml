@@ -5,6 +5,9 @@ on:
       - 'client/**'
       - 'docker/**'
 
+permissions:
+  contents: read
+
 jobs:
   zap-scan:
     runs-on: ubuntu-latest
