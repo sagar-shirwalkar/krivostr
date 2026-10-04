@@ -72,25 +72,68 @@ gh api "repos/actions/checkout/git/tags/${tagobj}" --jq '.object.sha'
 To refresh the whole inventory at once:
 
 ```bash
-for spec in \
-  "actions/checkout v4.1.1" \
-  "actions/setup-node v4" \
-  "actions/cache v4" \
-  "actions/upload-artifact v4" \
-  "actions/download-artifact v4" \
-  "docker/setup-buildx-action v3" \
-  "docker/build-push-action v6" \
-  "github/codeql-action v3" \
-  "google/osv-scanner-action v2.3.1" \
-  "ossf/scorecard-action v2.4.4" \
-  "zaproxy/action-baseline v0.14.0" \
-  "gitleaks/gitleaks-action v2" \
-; do
-  repo="${spec% *}"; ref="${spec#* }"
-  sha=$(git ls-remote --tags "https://github.com/${repo}" "refs/tags/${ref}" \
-        | tail -1 | cut -f1)
+#!/usr/bin/env bash
+# Resolve a GitHub Actions version tag to the full-length commit SHA that
+# `uses:` requires.
+#
+# Why `gh api` and not `git ls-remote`:
+#
+#   `git ls-remote --tags <url> refs/tags/<ref>` returns two lines for an
+#   annotated tag (the tag object, then its peeled commit) and one line for
+#   a lightweight tag. `tail -1` picks the right one in both cases, but the
+#   correctness depends on an output ordering that git does not document as
+#   a guarantee. A silent change there would hand you a tag-object SHA with
+#   no error, and GitHub Actions will happily accept it — which is the worst
+#   kind of wrong.
+#
+#   `gh api repos/<owner>/<repo>/commits/<ref>` dereferences annotated tags
+#   server-side and always returns a commit. One code path, one failure mode.
+#
+# Requires `gh` to be authenticated. If it is not, the `git ls-remote` form
+# is a fine fallback; see the note at the bottom.
+set -euo pipefail
+
+resolve() {
+  local repo="$1" ref="$2" sha
+  if ! sha=$(gh api "repos/${repo}/commits/${ref}" --jq '.sha' 2>/dev/null); then
+    printf '%-40s %s\n' "$repo" "FAILED to resolve ${ref}" >&2
+    return 1
+  fi
   printf '%-40s %s  # %s\n' "$repo" "$sha" "$ref"
+}
+
+# Every third-party action used by this repository. Update this list when an
+# action is added or a version is bumped; the output is what goes into the
+# workflow files and into the inventory table in
+# docs/security/supply-chain.md.
+actions=(
+  "actions/checkout                    v4.1.1"
+  "actions/setup-node                  v4"
+  "actions/cache                       v4"
+  "actions/upload-artifact             v4"
+  "actions/download-artifact           v4"
+  "docker/setup-buildx-action          v3"
+  "docker/build-push-action            v6"
+  "github/codeql-action                v3"
+  "google/osv-scanner-action           v2.3.1"
+  "ossf/scorecard-action               v2.4.4"
+  "zaproxy/action-baseline             v0.14.0"
+  "gitleaks/gitleaks-action            v2"
+)
+
+failed=0
+for entry in "${actions[@]}"; do
+  # Split on the run of spaces between repo and ref.
+  repo="${entry%% *}"
+  ref="${entry##* }"
+  resolve "$repo" "$ref" || failed=$((failed + 1))
 done
+
+if [ "$failed" -gt 0 ]; then
+  echo >&2
+  echo "${failed} action(s) failed to resolve" >&2
+  exit 1
+fi
 ```
 
 ---

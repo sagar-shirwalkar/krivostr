@@ -33,8 +33,12 @@ on:
         description: Tag to publish artifacts for (must already exist)
         required: true
 
+# Top-level permissions are read-only. The only job that needs write access
+# is `publish`, and it declares contents: write for itself below. Scorecard's
+# Token-Permissions check requires this shape: write scopes belong on the
+# job that uses them, not on the workflow.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ─── The UI, built once and shared by every archive ───────────────
@@ -270,6 +274,10 @@ jobs:
     name: publish release
     needs: [linux, macos, windows, ui]
     runs-on: ubuntu-latest
+    # The only job in this workflow that needs to write to the repository.
+    # Creating a release and uploading assets requires contents: write.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:

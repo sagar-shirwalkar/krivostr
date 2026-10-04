@@ -11,16 +11,37 @@ name: osv-scheduled
 
 on:
   schedule:
-    - cron: "30 4 * * 1"   # Monday 04:30 UTC, after the container scan at 04:00
+    # Monday 04:30 UTC. Offset from the other weekly jobs so a Monday
+    # morning review sees them all: OSV at 04:30, Scorecard at 05:15,
+    # Dependabot at 05:30 (once its config lands).
+    - cron: "30 4 * * 1"
   push:
     branches: [main]
   workflow_dispatch:
 
+# Top-level permissions are read-only. The security-events: write scope
+# belongs on the job that calls the reusable workflow, not on the whole
+# workflow.
 permissions:
-  actions: read
   contents: read
-  security-events: write
 
 jobs:
   scan-scheduled:
+    # actions: read so the reusable workflow can inspect the repository via
+    # the API. contents: read so it can check out the lockfiles.
+    #
+    # security-events: write is deliberately NOT granted. That permission is
+    # what causes the workflow to register a code-scanning configuration on
+    # main. Because this workflow runs on push and schedule but never on
+    # pull requests, that configuration has no counterpart on a PR branch,
+    # and the repository-level "Code scanning results" check fails with
+    # "1 configuration present on refs/heads/main was not found."
+    #
+    # The scan still runs and its findings still appear in the workflow log,
+    # which is where a weekly sweep is read. The PR-triggered scan in
+    # osv-scanner-pr.yml remains the one that gates merges and that appears
+    # in the Security tab.
+    permissions:
+      actions: read
+      contents: read
     uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@375a0e8ebdc98e99b02ac4338a724f5750f21213"

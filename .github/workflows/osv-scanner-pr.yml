@@ -17,13 +17,23 @@ on:
   merge_group:
     branches: [main]
 
+# Top-level permissions are read-only. The security-events: write scope
+# belongs on the job that calls the reusable workflow, not on the whole
+# workflow -- Scorecard's Token-Permissions check requires write scopes to
+# be scoped to the job that uses them.
 permissions:
-  actions: read
   contents: read
-  security-events: write
 
 jobs:
   scan-pr:
+    # The reusable workflow uploads SARIF to the Security tab, which is why
+    # this job declares security-events: write. Caller-granted permissions
+    # are the ceiling the called workflow runs under, so the scope has to be
+    # here even though the upload happens inside the reusable workflow.
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     # Pin to a full-length commit SHA before merging. See the note in
     # container-scan.yml for why: tag references are mutable, and the
     # 2026 Trivy compromise force-pushed tags to a backdoored commit.
