@@ -109,9 +109,20 @@ jobs:
             linux/arm64) echo "arm64: skipping --version, verified inside the build image" ;;
           esac
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: dist/ui
+
       - name: Package
         run: |
           version="${RELEASE_TAG#v}"
+
+          test -x dist/krivostr \
+                      || { echo "::error::dist/krivostr missing or not executable"; ls -la dist; exit 1; }
+                    test -d dist/ui \
+                      || { echo "::error::dist/ui missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
+          
           cp LICENSE README.md dist/
           tar -C dist -czf "krivostr-$version-linux-${{ matrix.arch }}.tar.gz" \
             krivostr ui LICENSE README.md
