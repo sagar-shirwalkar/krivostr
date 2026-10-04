@@ -161,13 +161,6 @@ export class KrivostrLanding extends LitElement {
         <div><span class="prompt">λ></span> subscribe { kinds: [1], limit: 50 }</div>
         <div><span class="ok">←</span> 50 events reduced <span class="cursor"></span></div>
       </div>
-      <div class="revere">
-        <div class="quote">
-          <mark>"Let the warning ride forth once more: tyranny is at our door."</mark>
-        </div>
-        <div class="cite">— Paul Revere, adapted</div>
-        <span class="hint">hover to reveal the signal</span>
-      </div>
       <section class="features">
         <article class="feature">
           <span class="num">01 / core</span>
