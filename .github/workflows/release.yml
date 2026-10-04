@@ -104,12 +104,10 @@ jobs:
             .
           chmod +x dist/krivostr
           file dist/krivostr
-          ./dist/krivostr --version
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: ui-dist
-          path: dist/ui
+          case "${{ matrix.platform }}" in
+            linux/amd64) ./dist/krivostr --version ;;
+            linux/arm64) echo "arm64: skipping --version, verified inside the build image" ;;
+          esac
 
       - name: Package
         run: |
