@@ -27,6 +27,9 @@ module Krivostr.Key
   , exportNpub
   , importNsec
   , importNpub
+  , privateKeyBytes
+  , encodeNip19
+  , decodeNip19
   ) where
 
 import Codec.Binary.Bech32

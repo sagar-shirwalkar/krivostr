@@ -3,6 +3,7 @@
 module Main (main) where
 
 import Bip340 (bip340Spec)
+import Nip44Spec (nip44Spec)
 import Data.Aeson (Value, decode, encode, eitherDecodeStrict, toJSON)
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as BS
@@ -57,6 +58,7 @@ hasPrefix p s = T.isPrefixOf p s
 main :: IO ()
 main = hspec $ do
   bip340Spec
+  nip44Spec
 
   describe "NIP-01 canonical serialization" $ do
     it "is deterministic" $

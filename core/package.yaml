@@ -16,6 +16,7 @@ dependencies:
   - time
   - base16-bytestring
   - cryptohash-sha256
+  - crypton
   - memory
   - bech32
   - transformers

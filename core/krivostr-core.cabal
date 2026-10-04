@@ -25,6 +25,7 @@ library
       Krivostr.Key
       Krivostr.Logging
       Krivostr.Nip.Nip01
+      Krivostr.Nip.Nip44
       Krivostr.Nip.Nip65
       Krivostr.Schnorr
       Krivostr.Wire
@@ -43,6 +44,7 @@ library
     , bytestring
     , containers
     , cryptohash-sha256
+    , crypton
     , memory
     , mtl
     , scientific
@@ -57,6 +59,7 @@ test-suite spec
   main-is: Spec.hs
   other-modules:
       Bip340
+      Nip44Spec
       Paths_krivostr_core
   autogen-modules:
       Paths_krivostr_core
@@ -72,6 +75,7 @@ test-suite spec
     , bytestring
     , containers
     , cryptohash-sha256
+    , crypton
     , hspec
     , krivostr-core
     , memory
