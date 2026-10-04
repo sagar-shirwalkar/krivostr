@@ -46,7 +46,7 @@ jobs:
     name: build ui
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -97,7 +97,7 @@ jobs:
             platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Build the static binary
         run: |
@@ -159,7 +159,7 @@ jobs:
           - arch: arm64
             runner: macos-14
     steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Cache Stack
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -218,7 +218,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Cache Stack
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -279,7 +279,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # --generate-notes walks the tag range, and the default shallow
           # clone (fetch-depth: 1) leaves no previous tag to diff against.
