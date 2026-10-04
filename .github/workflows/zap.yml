@@ -18,7 +18,7 @@ jobs:
           sleep 5  # give it time to bind
 
       - name: ZAP Baseline Scan
-        uses: zaproxy/action-baseline@2b5fc7f98d837319798ab7f128ea50b7d40563b6  # v0.12.0
+        uses: zaproxy/action-baseline@7c4deb10e6261301961c86d65d54a516394f9aed  # v0.14.0
         with:
           target: 'http://localhost:8081'
           fail_action: true

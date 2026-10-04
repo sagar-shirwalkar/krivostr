@@ -42,3 +42,4 @@ AGENTS.md
 # Scripts
 scripts/check-coverage.sh
 scripts/hpc-coverage.py
+scripts/resolve-action-shas.sh
