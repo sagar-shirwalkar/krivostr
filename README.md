@@ -11,6 +11,8 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Tailwind](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 [![License](https://img.shields.io/badge/AGPL--3.0-red?style=for-the-badge)](LICENSE)
+![GitHub Tag](https://img.shields.io/github/v/tag/sagar-shirwalkar/krivostr?style=for-the-badge&labelColor=black)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/sagar-shirwalkar/krivostr/ci.yml?branch=main&style=for-the-badge&labelColor=%23404040&color=%232d9e37)
 
 </div>
 
