@@ -7,7 +7,7 @@
 #   * SHA256SUMS covering every archive, generated once from the exact files
 #     that are uploaded.
 #
-# The Linux binaries are built by docker/Dockerfile.linux and need glibc >= 2.33
+# The Linux binaries are built by docker/Dockerfile.linux and need glibc >= 2.34
 # (what GHC 9.10.3 links against), libgmp and zlib; the compiler support
 # libraries are linked statically. It is not a fully static binary and
 # cannot be: GHC 9.10 ships ghc-bignum, ghc-prim and ghc-internal as shared
@@ -106,8 +106,8 @@ jobs:
           chmod +x dist/krivostr
           file dist/krivostr
           case "${{ matrix.platform }}" in
-            linux/amd64) ./dist/krivostr --version ;;
-            linux/arm64)  ./dist/krivostr --version ;;
+            linux/amd64|linux/arm64) ./dist/krivostr --version ;;
+            *) echo "::error::no verification path for ${{ matrix.platform }}"; exit 1 ;;
           esac
 
       - uses: actions/download-artifact@v4
@@ -121,9 +121,9 @@ jobs:
           version="${RELEASE_TAG#v}"
 
           test -x dist/krivostr \
-                      || { echo "::error::dist/krivostr missing or not executable"; ls -la dist; exit 1; }
-                    test -d dist/ui \
-                      || { echo "::error::dist/ui missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
+            || { echo "::error::dist/krivostr missing or not executable"; ls -la dist; exit 1; }
+          test -d dist/ui \
+            || { echo "::error::dist/ui missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
           
           cp LICENSE README.md dist/
           tar -C dist -czf "krivostr-${version}-linux-${{ matrix.arch }}.tar.gz" \
@@ -137,7 +137,14 @@ jobs:
           path: krivostr-*.tar.gz
           retention-days: 1
 
-  # ─── macOS: arm64 and x86_64 ─────────────────────────────────────
+  # ─── macOS: arm64 only ─────────────────────────────────────
+  #
+  # macOS x86_64 was dropped. Apple has not shipped an Intel Mac since early
+  # 2023, macos-13 is the last Intel runner GitHub offers and is itself on the
+  # deprecation path, and the maintenance cost of a second matrix entry
+  # (separate cache keys, separate artifact names, a second runner-minutes
+  # bill) stopped being worth the handful of users it served. Anyone still on
+  # Intel macOS can build from source: stack build --copy-bins.
   macos:
     name: macos-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -157,8 +164,8 @@ jobs:
             ~/.stack
             core/.stack-work
             client/.stack-work
-          key: stack-macos-${{ runner.arch }}-${{ hashFiles('stack.yaml.lock') }}
-          restore-keys: stack-macos-${{ runner.arch }}-
+          key: stack-macos-${{ matrix.arch }}-${{ hashFiles('stack.yaml.lock') }}
+          restore-keys: stack-macos-${{ matrix.arch }}-
 
       - name: Install Stack
         # GitHub's runners already ship Stack, and get.haskellstack.org exits 1
@@ -181,9 +188,14 @@ jobs:
 
       - name: Package
         run: |
+          set -eu
           version="${RELEASE_TAG#v}"
+
+          test -x dist/krivostr || { echo "::error::dist/krivostr missing or not executable"; ls -la dist; exit 1; }
+          test -d dist/ui || { echo "::error::dist/ui missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
+
           cp LICENSE README.md dist/
-          tar -C dist -czf "krivostr-$version-macos-${{ matrix.arch }}.tar.gz" \
+          tar -C dist -czf "krivostr-${version}-macos-${{ matrix.arch }}.tar.gz" \
             krivostr ui LICENSE README.md
           rm -rf dist
           ls -l
@@ -235,9 +247,14 @@ jobs:
 
       - name: Package
         run: |
+          set -eu
           version="${RELEASE_TAG#v}"
+
+          test -f dist/krivostr.exe || { echo "::error::dist/krivostr.exe missing"; ls -la dist; exit 1; }
+          test -d dist/ui || { echo "::error::dist/ui missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
+
           cp LICENSE README.md dist/
-          cd dist && 7z a "../krivostr-$version-windows-x86_64.zip" krivostr.exe ui LICENSE README.md
+          cd dist && 7z a "../krivostr-${version}-windows-x86_64.zip" krivostr.exe ui LICENSE README.md
           cd ..
           rm -rf dist
           ls -l
