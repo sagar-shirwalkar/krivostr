@@ -25,6 +25,8 @@ library
       Krivostr.Key
       Krivostr.Logging
       Krivostr.Nip.Nip01
+      Krivostr.Nip.Nip13
+      Krivostr.Nip.Nip40
       Krivostr.Nip.Nip44
       Krivostr.Nip.Nip65
       Krivostr.Schnorr
@@ -59,7 +61,15 @@ test-suite spec
   main-is: Spec.hs
   other-modules:
       Bip340
+      Nip11Spec
+      Nip13Spec
+      Nip17Spec
+      Nip40Spec
+      Nip42Spec
       Nip44Spec
+      Nip46Spec
+      Nip49Spec
+      Nip59Spec
       Paths_krivostr_core
   autogen-modules:
       Paths_krivostr_core

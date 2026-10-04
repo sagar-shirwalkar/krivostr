@@ -3,6 +3,14 @@
 module Main (main) where
 
 import Bip340 (bip340Spec)
+import Nip11Spec (nip11Spec)
+import Nip17Spec (nip17Spec)
+import Nip42Spec (nip42Spec)
+import Nip46Spec (nip46Spec)
+import Nip49Spec (nip49Spec)
+import Nip59Spec (nip59Spec)
+import Nip13Spec (nip13Spec)
+import Nip40Spec (nip40Spec)
 import Nip44Spec (nip44Spec)
 import Data.Aeson (Value, decode, encode, eitherDecodeStrict, toJSON)
 import qualified Data.Aeson.Types as Aeson
@@ -59,6 +67,14 @@ main :: IO ()
 main = hspec $ do
   bip340Spec
   nip44Spec
+  nip13Spec
+  nip11Spec
+  nip17Spec
+  nip42Spec
+  nip46Spec
+  nip49Spec
+  nip59Spec
+  nip40Spec
 
   describe "NIP-01 canonical serialization" $ do
     it "is deterministic" $
