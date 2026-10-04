@@ -27,10 +27,21 @@ permissions:
 
 jobs:
   scan-scheduled:
-    # See the note in osv-scanner-pr.yml: the reusable workflow uploads
-    # SARIF on this job's behalf, so the scope is granted here.
+    # actions: read so the reusable workflow can inspect the repository via
+    # the API. contents: read so it can check out the lockfiles.
+    #
+    # security-events: write is deliberately NOT granted. That permission is
+    # what causes the workflow to register a code-scanning configuration on
+    # main. Because this workflow runs on push and schedule but never on
+    # pull requests, that configuration has no counterpart on a PR branch,
+    # and the repository-level "Code scanning results" check fails with
+    # "1 configuration present on refs/heads/main was not found."
+    #
+    # The scan still runs and its findings still appear in the workflow log,
+    # which is where a weekly sweep is read. The PR-triggered scan in
+    # osv-scanner-pr.yml remains the one that gates merges and that appears
+    # in the Security tab.
     permissions:
       actions: read
       contents: read
-      security-events: write
     uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@375a0e8ebdc98e99b02ac4338a724f5750f21213"
