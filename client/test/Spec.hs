@@ -322,7 +322,6 @@ main = hspec $ do
       length limited `shouldBe` 1
       closeStore st
 
-<<<<<<< HEAD
     it "counts matches ignoring the limit" $ do
       lg <- newLogger Error
       st <- openMemoryStore lg
@@ -334,8 +333,6 @@ main = hspec $ do
       countMatching st (empty { fKinds = Just [7], fTags = [("p", ["nobody"])] }) `shouldReturn` 0
       closeStore st
 
-=======
->>>>>>> 8c2a93b (NIP 10 25 18 05 23 50 and docs)
     it "indexes what is inserted and finds it" $ do
       lg <- newLogger Error
       st <- openMemoryStore lg

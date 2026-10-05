@@ -244,6 +244,7 @@ describe('count', () => {
     }
   });
 });
+<<<<<<< HEAD
 
 describe('onEose', () => {
   it('routes EOSE sub ids to the handler', () => {
@@ -284,3 +285,5 @@ describe('count robustness', () => {
     await assertion;
   });
 });
+=======
+>>>>>>> 1c7941b (NIP 09 22 27 36 51)

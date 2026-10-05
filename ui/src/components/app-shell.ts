@@ -606,15 +606,27 @@ export class KrivostrApp extends LitElement {
   }
 
   /** Search submit: clear the feed and ask every transport for matches.
-   * An empty query restores the global feed. */
+   * An empty query restores the global feed. The result count comes from
+   * the bridge only — see `countBridge` for why relays are not summed. */
   private handleSearch(e: Event) {
     e.preventDefault();
     const status = this.relayStatus();
     if (!status) return;
     const q = this.searching.trim();
     this.feedEl()?.clear();
-    if (q === '') status.clearSearch();
-    else status.searchAll(q);
+    this.resultLine = '';
+    if (q === '') {
+      status.clearSearch();
+      return;
+    }
+    status.searchAll(q);
+    const counted = status.countBridge({ search: q, limit: 1 });
+    if (counted) {
+      void counted.then(
+        (n) => (this.resultLine = `${n} result${n === 1 ? '' : 's'} in local store`),
+        () => undefined,
+      );
+    }
   }
 
   override render() {

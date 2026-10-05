@@ -55,17 +55,12 @@ import Krivostr.Filter
 import Krivostr.Key
 -- `info` is a log level here and a parser combinator in optparse-applicative.
 import Krivostr.Logging hiding (info)
-<<<<<<< HEAD
 import Krivostr.Nip.Nip05 (parseIdentifier, verifyName, wellKnownUrl)
 import Krivostr.Nip.Nip09 (appliesTo, buildDeletionTags, parameterizedAddress)
 import Krivostr.Nip.Nip47 (Method (..), Request (..), Response (..), WalletConn (..), methodToText, parseWalletUri)
 import Krivostr.Nip.Nip51 (addEntry, bookmarkKind, bookmarkedAddresses, bookmarkedIds, muteKind, mutedPubkeys, pinKind, pinnedIds, removeEntry)
 import Krivostr.Nip.Nip22 (ItemRef (..), buildCommentTags)
 import Krivostr.Nip.Nip27 (Mention (..), MentionKind (..), findMentions)
-=======
-import Krivostr.Nip.Nip01 (verifyEvent)
-import Krivostr.Nip.Nip05 (parseIdentifier, verifyName, wellKnownUrl)
->>>>>>> 8c2a93b (NIP 10 25 18 05 23 50 and docs)
 import Krivostr.Nip.Nip23 (buildArticleTags, slugify)
 import Krivostr.Nip.Nip10 (buildReplyTags, replyRoot)
 import Krivostr.Nip.Nip18 (buildQuoteTags, buildRepostTags, embedOriginal)
@@ -152,15 +147,12 @@ data Command
   | CmdRepost RepostOpts
   | CmdVerify VerifyOpts
   | CmdPublish PublishOpts
-<<<<<<< HEAD
   | CmdDelete DeleteOpts
   | CmdResolve ResolveOpts
   | CmdComment CommentOpts
   | CmdList ListOpts
   | CmdCount CountOpts
   | CmdWallet WalletOpts
-=======
->>>>>>> 8c2a93b (NIP 10 25 18 05 23 50 and docs)
   | CmdExport ExportOpts
   | CmdWatch WatchOpts
   | CmdApi ApiOpts
@@ -236,7 +228,6 @@ data PublishOpts = PublishOpts
   , puTimeout :: Int
   }
 
-<<<<<<< HEAD
 data DeleteOpts = DeleteOpts
   { dlIds     :: [String]
   , dlRelays  :: [Text]
@@ -276,8 +267,6 @@ data WalletOpts = WalletOpts
   { woAction :: WalletAction
   }
 
-=======
->>>>>>> 8c2a93b (NIP 10 25 18 05 23 50 and docs)
 data ExportOpts = ExportOpts
   { exFilter :: FilterOpts
   , exFormat :: String
@@ -359,15 +348,12 @@ commandP = hsubparser
  <> command "repost"   (info (CmdRepost  <$> repostP)   (progDesc "Repost or quote an event (NIP-18)"))
  <> command "verify"   (info (CmdVerify  <$> verifyP)   (progDesc "Check a NIP-05 identifier against its domain"))
  <> command "publish"  (info (CmdPublish <$> publishP)  (progDesc "Publish a Markdown file as a long-form article (NIP-23)"))
-<<<<<<< HEAD
  <> command "delete"   (info (CmdDelete  <$> deleteP)   (progDesc "Request deletion of your events (NIP-09)"))
  <> command "resolve"  (info (CmdResolve <$> resolveP)  (progDesc "Resolve a nostr: reference, bech32, or hex (NIP-27)"))
  <> command "comment"  (info (CmdComment <$> commentP)  (progDesc "Comment on a non-note event (NIP-22)"))
  <> command "list"     (info (CmdList    <$> listP)     (progDesc "Show or edit a NIP-51 list: mute, pin, bookmark"))
  <> command "count"    (info (CmdCount   <$> countP)    (progDesc "Count stored events matching a filter (NIP-45)"))
  <> command "wallet"   (info (CmdWallet  <$> walletP)   (progDesc "Talk to a lightning wallet (NIP-47)"))
-=======
->>>>>>> 8c2a93b (NIP 10 25 18 05 23 50 and docs)
  <> command "export"  (info (CmdExport  <$> exportP)  (progDesc "Bulk export as nostr (ndjson), array or csv"))
  <> command "watch"   (info (CmdWatch   <$> watchP)   (progDesc "Notify on new events"))
  <> command "api"     (info (CmdApi     <$> apiP)     (progDesc "Run the JSON HTTP API on its own port"))
@@ -460,7 +446,6 @@ publishP = PublishOpts
   <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
                 <> help "How long to wait for each relay's OK")
 
-<<<<<<< HEAD
 deleteP :: Parser DeleteOpts
 deleteP = DeleteOpts
   <$> some (argument str (metavar "EVENT-ID" <> help "Hex id of your event to delete"))
@@ -505,8 +490,6 @@ walletP = WalletOpts <$> hsubparser
                        (progDesc "Create a lightning invoice"))
   )
 
-=======
->>>>>>> 8c2a93b (NIP 10 25 18 05 23 50 and docs)
 exportP :: Parser ExportOpts
 exportP = ExportOpts
   <$> filterP
@@ -709,15 +692,12 @@ dispatch (Opts g cmd) = do
       CmdRepost o -> cmdRepost lg' db o
       CmdVerify o -> cmdVerify lg' o
       CmdPublish o -> cmdPublish lg' db o
-<<<<<<< HEAD
       CmdDelete o -> cmdDelete lg' db o
       CmdResolve o -> cmdResolve lg' db o
       CmdComment o -> cmdComment lg' db o
       CmdList o -> cmdList lg' db o
       CmdCount o -> cmdCount lg' db o
       CmdWallet o -> cmdWallet lg' o
-=======
->>>>>>> 8c2a93b (NIP 10 25 18 05 23 50 and docs)
       CmdExport o -> cmdExport lg' db o
       CmdWatch o  -> cmdWatch lg' db colour o
       CmdApi o    -> withStore lg' db $ \st -> do
@@ -1124,7 +1104,6 @@ cmdPublish lg db o = do
   publishNote lg db (puTimeout o) ev (puRelays o) "publish"
   TIO.putStrLn ("address: 30023:" <> pubKeyHex (derivePublicKey sk) <> ":" <> slug)
 
-<<<<<<< HEAD
 cmdDelete :: Logger -> FilePath -> DeleteOpts -> IO ()
 cmdDelete lg db o = do
   sk <- requireKey
@@ -1319,8 +1298,6 @@ cmdWallet lg o = do
       Just v -> TE.decodeUtf8 (BLC.toStrict (encode v))
       Nothing -> "{}"
 
-=======
->>>>>>> 8c2a93b (NIP 10 25 18 05 23 50 and docs)
 publicKeyFromHex :: Text -> Maybe PublicKey
 publicKeyFromHex t = do
   bs <- either (const Nothing) Just (B16.decode (TE.encodeUtf8 t))

@@ -8,7 +8,10 @@ module Nip27Spec (nip27Spec) where
 
 import Data.Text (Text)
 import qualified Data.ByteString as BS
+<<<<<<< HEAD
 import qualified Data.ByteString.Base16 as B16
+=======
+>>>>>>> 1c7941b (NIP 09 22 27 36 51)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Krivostr.Key
@@ -42,11 +45,14 @@ profileRaw = encodeNip19 "nprofile" tlv
 kinds :: [Mention] -> [MentionKind]
 kinds = map meKind
 
+<<<<<<< HEAD
 unhex :: Text -> BS.ByteString
 unhex t = case B16.decode (TE.encodeUtf8 t) of
   Right bs -> bs
   Left _   -> error "bad hex"
 
+=======
+>>>>>>> 1c7941b (NIP 09 22 27 36 51)
 raws :: [Mention] -> [Text]
 raws = map meRaw
 
@@ -73,6 +79,7 @@ nip27Spec = describe "NIP-27 mentions" $ do
     it "finds nothing in plain text" $
       findMentions "just some words" `shouldBe` []
 
+<<<<<<< HEAD
     it "decodes nevent to its id" $ do
       let nevent = encodeNeventFor (unhex (T.replicate 32 "ef")) [] Nothing Nothing
       kinds (findMentions ("x nostr:" <> nevent)) `shouldBe` [MentionEvent (T.replicate 32 "ef")]
@@ -94,3 +101,10 @@ encodeNeventFor :: BS.ByteString -> [(Int, BS.ByteString)] -> Maybe Text -> Mayb
 encodeNeventFor eid extra _ _ = encodeNip19 "nevent" (BS.concat ([BS.pack [0, 32], eid] ++ map entry extra))
   where
     entry (t, v) = BS.pack [fromIntegral t, fromIntegral (BS.length v)] <> v
+=======
+    it "treats nevent and nsec as opaque, never decoded" $ do
+      let nevent = encodeNip19 "nevent" (BS.replicate 32 1)
+          nsec = encodeNip19 "nsec" (BS.replicate 32 2)
+      kinds (findMentions ("x nostr:" <> nevent)) `shouldBe` [MentionOpaque "nevent"]
+      kinds (findMentions ("x nostr:" <> nsec)) `shouldBe` [MentionOpaque "nsec"]
+>>>>>>> 1c7941b (NIP 09 22 27 36 51)

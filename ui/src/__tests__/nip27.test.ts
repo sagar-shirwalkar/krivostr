@@ -47,6 +47,7 @@ describe('splitSegments / mentionLabel', () => {
     expect(mentionLabel(m)).toMatch(/^@[0-9a-f]{4}…[0-9a-f]{4}$/);
   });
 });
+<<<<<<< HEAD
 
 describe('entities', () => {
   it('decodes nevent to its id and naddr to its coordinate', async () => {
@@ -62,3 +63,5 @@ describe('entities', () => {
     ]);
   });
 });
+=======
+>>>>>>> 1c7941b (NIP 09 22 27 36 51)
