@@ -72,6 +72,8 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
         if (ev._tag === 'Ok') h.onEvent(ev.value);
       } else if (data[0] === 'NOTICE') {
         h.onState('error', String(data[1]));
+      } else if (data[0] === 'EOSE') {
+        if (typeof data[1] === 'string') h.onEose?.(data[1]);
       } else if (data[0] === 'COUNT') {
         const cb = typeof data[1] === 'string' ? counting.get(data[1]) : undefined;
         const n =

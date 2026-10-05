@@ -32,6 +32,8 @@ library
       Krivostr.Nip.Nip13
       Krivostr.Nip.Nip17
       Krivostr.Nip.Nip18
+      Krivostr.Nip.Nip19
+      Krivostr.Nip.Nip21
       Krivostr.Nip.Nip22
       Krivostr.Nip.Nip23
       Krivostr.Nip.Nip25
@@ -43,6 +45,7 @@ library
       Krivostr.Nip.Nip46
       Krivostr.Nip.Nip49
       Krivostr.Nip.Nip51
+      Krivostr.Nip.Nip57
       Krivostr.Nip.Nip59
       Krivostr.Nip.Nip65
       Krivostr.Schnorr
@@ -83,6 +86,8 @@ test-suite spec
       Nip11Spec
       Nip13Spec
       Nip17Spec
+      Nip19Spec
+      Nip21Spec
       Nip22Spec
       Nip23Spec
       Nip25Spec
@@ -94,6 +99,7 @@ test-suite spec
       Nip46Spec
       Nip49Spec
       Nip51Spec
+      Nip57Spec
       Nip59Spec
       Paths_krivostr_core
   autogen-modules:

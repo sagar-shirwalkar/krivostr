@@ -41,4 +41,7 @@ tests:
       - hspec
       - QuickCheck
       - aeson
+      - bytestring
+      - base16-bytestring
+      - text
     ghc-options: [-threaded]

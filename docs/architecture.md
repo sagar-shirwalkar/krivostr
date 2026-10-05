@@ -130,6 +130,12 @@ and publishes upstream; other clients hide cited targets by the same
 authorship rule. Mute lists (kind 10000) are retention-exempt user state;
 the UI filters on its own list locally, so muting needs no relay support.
 
+**Opening and zapping.** A clicked `nostr:` mention resolves to an event
+reader (one-shot fetch by id, newest version by address) or an author view
+(feed swap), never a page load. A zap signs a kind 9734 and sends it to the
+LNURL callback — it is never published — and the wallet pays out of band;
+kind-9735 receipts render as claims with invoice-decoded amounts.
+
 **NIP-42 auth on the CLI.** The relay pool answers a challenge with a kind
 22242 event signed by the loaded key, so `feed --follow` and `dm` work against
 `auth-required` relays. The bridge itself does not yet require browser clients

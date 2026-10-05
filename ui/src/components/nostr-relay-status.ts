@@ -3,7 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { RelayHandle, RelayState, connect } from '../nostr/relay';
 import { connectBridge, chooseTransport } from '../nostr/bridge';
 import { DEFAULT_RELAYS, outboxFor, parseRelayList, RelayHint } from '../nostr/nip65';
-import { FilterSpec } from '../nostr/filter';
+import { FilterSpec, compile } from '../nostr/filter';
 import { NostrEvent } from '../nostr/event';
 
 interface Slot {
@@ -51,6 +51,7 @@ export class NostrRelayStatus extends LitElement {
       const handle = connectBridge({
         onEvent: (e) => this.emit(e),
         onState: (s) => this.updateState('bridge', s),
+        onEose: (id) => this.emitEose(id),
       });
       this.slots = [{ url: 'bridge', handle, state: 'connecting' }];
       handle.subscribe('global', { kinds: [1], limit: 50 });
@@ -65,6 +66,7 @@ export class NostrRelayStatus extends LitElement {
           this.emit(e);
         },
         onState: (s) => this.updateState(url, s),
+        onEose: (id) => this.emitEose(id),
       });
       return { url, handle, state: 'connecting' };
     });
@@ -135,10 +137,70 @@ export class NostrRelayStatus extends LitElement {
     }
   }
 
+  /** Show one author's notes instead of the global feed. */
+  showAuthor(pubkey: string): void {
+    for (const slot of this.slots) {
+      slot.handle.unsubscribe('global');
+      slot.handle.subscribe('author', { authors: [pubkey], limit: 50 });
+    }
+  }
+
+  /** Drop the author view and reopen the global feed. */
+  clearAuthor(): void {
+    for (const slot of this.slots) {
+      slot.handle.unsubscribe('author');
+      slot.handle.subscribe('global', { kinds: [1], limit: 50 });
+    }
+  }
+
   private emit(e: NostrEvent) {
     this.dispatchEvent(
       new CustomEvent('relay-event', { detail: e, bubbles: true, composed: true }),
     );
+  }
+
+  private emitEose(subId: string) {
+    this.dispatchEvent(
+      new CustomEvent('relay-eose', { detail: subId, bubbles: true, composed: true }),
+    );
+  }
+
+  private onceSeq = 0;
+
+  /**
+   * One-shot fetch: subscribe everywhere, collect matches until every slot
+   * says EOSE or the timeout fires, then unsubscribe. Resolves partial —
+   * a relay that never says EOSE must not hang the UI. Matches are tested
+   * locally, so a relay volunteering extra events cannot pollute the
+   * result, and ids deduplicate across slots.
+   */
+  async fetchOnce(filter: FilterSpec, timeoutMs = 8000): Promise<NostrEvent[]> {
+    const id = `once-${this.onceSeq++}`;
+    const found = new Map<string, NostrEvent>();
+    const eosed = new Set<string>();
+    const test = compile(filter).test;
+    const slots = this.slots.map((s) => s.handle);
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.removeEventListener('relay-event', onEvent as EventListener);
+        this.removeEventListener('relay-eose', onEose as EventListener);
+        for (const h of slots) h.unsubscribe(id);
+        resolve([...found.values()]);
+      };
+      const timer = setTimeout(done, timeoutMs);
+      const onEvent = (e: Event) => {
+        const ev = (e as CustomEvent<NostrEvent>).detail;
+        if (ev && test(ev) && !found.has(ev.id)) found.set(ev.id, ev);
+      };
+      const onEose = (e: Event) => {
+        eosed.add((e as CustomEvent<string>).detail);
+        if (eosed.size >= slots.length) done();
+      };
+      this.addEventListener('relay-event', onEvent as EventListener);
+      this.addEventListener('relay-eose', onEose as EventListener);
+      for (const h of slots) h.subscribe(id, filter);
+    });
   }
 
   private learnHints(e: NostrEvent) {

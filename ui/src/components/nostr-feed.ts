@@ -10,6 +10,8 @@ import { contentWarningOf, isSensitive } from '../nostr/sensitive';
 import { splitSegments, mentionLabel } from '../nostr/nip27';
 import { commentOf, isComment } from '../nostr/comment';
 import { isListEvent } from '../nostr/lists';
+import { zapReceiptOf, invoiceAmountSats } from '../nostr/zap';
+import { articleAddress } from '../nostr/article';
 import { Signer } from '../nostr/signer';
 
 const short = (id: string): string => (id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id);
@@ -54,6 +56,15 @@ export class NostrFeed extends LitElement {
       font-family: var(--font-mono);
       font-size: 0.85em;
     }
+    button.mention.link {
+      background: none;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    button.mention.link:hover { color: var(--text); }
     .reply {
       margin-top: var(--s-3);
       font-family: var(--font-mono);
@@ -151,26 +162,50 @@ export class NostrFeed extends LitElement {
   }
 
   /**
-   * Body text with `nostr:` references as styled spans. Clicking opens
-   * nothing yet — NIP-21 link handling is its own phase — so mentions are
-   * labelled, titled with the full span, and otherwise inert.
+   * Body text with `nostr:` references as links that open in the client
+   * (NIP-21). Opaque spans — `nsec`, unknown hrps — stay inert text: there
+   * is nothing to open, and a dead link would be worse than none.
    */
   private renderBody(content: string) {
     if (content === '') return html`<em style="color:var(--mute)">(empty)</em>`;
-    return html`${splitSegments(content).map((s) =>
-      'text' in s
-        ? html`${s.text}`
-        : html`<span class="mention" title=${s.mention.raw}>${mentionLabel(s.mention)}</span>`,
-    )}`;
+    return html`${splitSegments(content).map((s) => {
+      if ('text' in s) return html`${s.text}`;
+      const openable = s.mention.kind.type !== 'opaque';
+      return openable
+        ? html`<button class="mention link" title=${s.mention.raw} @click=${this.openMention(s.mention.raw)}>${mentionLabel(s.mention)}</button>`
+        : html`<span class="mention" title=${s.mention.raw}>${mentionLabel(s.mention)}</span>`;
+    })}`;
   }
 
-  private countsFor(id: string): string {
+  private openMention(raw: string) {
+    return (ev: Event) => {
+      ev.stopPropagation();
+      this.dispatchEvent(
+        new CustomEvent('mention-open', { detail: { raw }, bubbles: true, composed: true }),
+      );
+    };
+  }
+
+  private countsFor(e: NostrEvent): string {
     const counts = countReactions(this.visible);
-    const c = counts.find((x) => x.id === id);
-    if (!c || (c.likes === 0 && c.dislikes === 0)) return '';
+    const c = counts.find((x) => x.id === e.id);
     const parts: string[] = [];
-    if (c.likes > 0) parts.push(`♥ ${c.likes}`);
-    if (c.dislikes > 0) parts.push(`− ${c.dislikes}`);
+    if (c) {
+      if (c.likes > 0) parts.push(`♥ ${c.likes}`);
+      if (c.dislikes > 0) parts.push(`− ${c.dislikes}`);
+    }
+    // Zapped totals ride the receipts: sum what invoices claim for this
+    // note or its address. Claims, not settlements — the total says
+    // "claimed", and an undecodable invoice adds nothing.
+    const addr = articleAddress(e);
+    const sats = this.visible
+      .map((x) => zapReceiptOf(x))
+      .filter(
+        (r) => r !== undefined && (r.event === e.id || (addr !== undefined && r.address === addr)),
+      )
+      .map((r) => invoiceAmountSats(r!.bolt11) ?? 0)
+      .reduce((a, b) => a + b, 0);
+    if (sats > 0) parts.push(`⚡ ${sats}`);
     return parts.join(' · ');
   }
 
@@ -194,6 +229,7 @@ export class NostrFeed extends LitElement {
           <button @click=${this.act('reply-to', e)}>reply</button>
           <button @click=${this.act('react-to', e)}>♥ react</button>
           <button @click=${this.act('repost-of', e)}>↻ repost</button>
+          <button @click=${this.act('zap-of', e)}>⚡ zap</button>
           <button @click=${this.act('delete-of', e)}>delete</button>
         </div>
       `;
@@ -202,6 +238,7 @@ export class NostrFeed extends LitElement {
       return html`
         <div class="actions">
           <button @click=${this.act('comment-on', e)}>💬 comment</button>
+          <button @click=${this.act('zap-of', e)}>⚡ zap</button>
         </div>
       `;
     }
@@ -209,6 +246,22 @@ export class NostrFeed extends LitElement {
   }
 
   private renderEvent(e: NostrEvent) {
+    // Zap receipts render as claims: amount from the invoice, sender when
+    // public, target when cited. "Claimed" because a receipt is trusted on
+    // its author's word, not cryptographic proof of payment.
+    const receipt = zapReceiptOf(e);
+    if (receipt) {
+      const sats = invoiceAmountSats(receipt.bolt11);
+      const target = receipt.event ?? receipt.address ?? '';
+      return html`
+        <article>
+          <div class="reaction">
+            ⚡ ${sats !== undefined ? `${sats} sats` : 'zap'}${receipt.sender ? ` from ${short(receipt.sender)}` : ''}
+            to ${short(receipt.recipient)}${target ? ` on ${short(target)}` : ''}${receipt.request ? ` — “${receipt.request.comment}”` : ''}
+          </div>
+        </article>
+      `;
+    }
     // Comments render with their root scope: what article or event the
     // thread hangs off, answered or top-level alike.
     if (isComment(e)) {
@@ -284,7 +337,7 @@ export class NostrFeed extends LitElement {
     }
     const thread = threadOf(e);
     const quote = isQuote(e) ? quoteOf(e) : undefined;
-    const counts = e.kind === 1 ? this.countsFor(e.id) : '';
+    const counts = e.kind === 1 || e.kind === 30023 ? this.countsFor(e) : '';
     const replyTo = tagValue(e, 'e');
     // A warning blurs the body until the user opts in. Revealing is sticky
     // for the session but never persisted: a fresh load warns again.

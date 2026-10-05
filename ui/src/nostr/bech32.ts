@@ -185,3 +185,113 @@ export const nprofileDecode = (s: string): ProfilePointer => {
   }
   return out;
 };
+
+// ── TLV entities: nevent / naddr ────────────────────────────────
+
+/**
+ * Read a TLV stream into entries. A truncated tail fails the decode rather
+ * than silently dropping the relay hint or author it carried.
+ */
+const readTlv = (bytes: Uint8Array): Array<[number, Uint8Array]> => {
+  const out: Array<[number, Uint8Array]> = [];
+  let i = 0;
+  while (i < bytes.length) {
+    if (i + 2 > bytes.length) throw new Error('truncated NIP-19 TLV entry');
+    const t = bytes[i];
+    const l = bytes[i + 1];
+    if (i + 2 + l > bytes.length) throw new Error('truncated NIP-19 TLV value');
+    out.push([t, bytes.slice(i + 2, i + 2 + l)]);
+    i += 2 + l;
+  }
+  return out;
+};
+
+const uint32BE = (n: number): Uint8Array => {
+  if (!Number.isInteger(n) || n < 0 || n > 4294967295) throw new Error('kind does not fit in a uint32');
+  return Uint8Array.of((n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff);
+};
+
+/** A pointer to one event. */
+export interface EventPointer {
+  id: string;
+  relays?: string[];
+  author?: string;
+  kind?: number;
+}
+
+export const neventEncode = (p: EventPointer): string => {
+  const parts: Uint8Array[] = [writeTlv(0, unhex(p.id))];
+  for (const r of p.relays ?? []) parts.push(writeTlv(1, new TextEncoder().encode(r)));
+  if (p.author !== undefined) parts.push(writeTlv(2, unhex(p.author)));
+  if (p.kind !== undefined) parts.push(writeTlv(3, uint32BE(p.kind)));
+  return encode('nevent', concat(parts));
+};
+
+/** Decode an `nevent`. Rejects the wrong hrp and a missing id. */
+export const neventDecode = (s: string): EventPointer => {
+  const { hrp, bytes } = decode(s);
+  if (hrp !== 'nevent') throw new Error(`expected nevent, got ${hrp}`);
+  const entries = readTlv(bytes);
+  const id = entries.find(([t, v]) => t === 0 && v.length === 32);
+  if (!id) throw new Error('nevent has no 32-byte id');
+  const author = entries.find(([t, v]) => t === 2 && v.length === 32);
+  const kind = entries.find(([t]) => t === 3);
+  return {
+    id: hex(id[1]),
+    relays: entries.filter(([t]) => t === 1).map(([, v]) => new TextDecoder().decode(v)),
+    author: author ? hex(author[1]) : undefined,
+    kind: kind && kind[1].length === 4 ? new DataView(kind[1].buffer).getUint32(0) : undefined,
+  };
+};
+
+/** A pointer to a parameterized address. */
+export interface AddrPointer {
+  identifier: string;
+  relays?: string[];
+  author: string;
+  kind: number;
+}
+
+export const naddrEncode = (p: AddrPointer): string => {
+  if (p.identifier === '') throw new Error('naddr identifier must not be empty');
+  const parts: Uint8Array[] = [
+    writeTlv(0, new TextEncoder().encode(p.identifier)),
+    writeTlv(2, unhex(p.author)),
+    writeTlv(3, uint32BE(p.kind)),
+  ];
+  for (const r of p.relays ?? []) parts.splice(1, 0, writeTlv(1, new TextEncoder().encode(r)));
+  return encode('naddr', concat(parts));
+};
+
+/** Decode an `naddr`. Identifier, author, and kind are all mandatory. */
+export const naddrDecode = (s: string): AddrPointer => {
+  const { hrp, bytes } = decode(s);
+  if (hrp !== 'naddr') throw new Error(`expected naddr, got ${hrp}`);
+  const entries = readTlv(bytes);
+  const ident = entries.find(([t, v]) => t === 0 && v.length > 0);
+  const author = entries.find(([t, v]) => t === 2 && v.length === 32);
+  const kind = entries.find(([t]) => t === 3);
+  if (!ident) throw new Error('naddr has no identifier');
+  if (!author) throw new Error('naddr has no 32-byte author');
+  if (!kind || kind[1].length !== 4) throw new Error('naddr kind is not a uint32');
+  return {
+    identifier: new TextDecoder().decode(ident[1]),
+    relays: entries.filter(([t]) => t === 1).map(([, v]) => new TextDecoder().decode(v)),
+    author: hex(author[1]),
+    kind: new DataView(kind[1].buffer).getUint32(0),
+  };
+};
+
+/** The `kind:pubkey:d` coordinate an address pointer names. */
+export const naddrAddress = (p: AddrPointer): string => `${p.kind}:${p.author}:${p.identifier}`;
+
+const concat = (parts: Uint8Array[]): Uint8Array => {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
+};

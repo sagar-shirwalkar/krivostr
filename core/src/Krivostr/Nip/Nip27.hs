@@ -26,6 +26,7 @@ import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString as BS
 import Data.Word (Word8)
 import Krivostr.Key (decodeNip19, importNpub, pubKeyHex)
+import Krivostr.Nip.Nip19 (decodeNaddr, decodeNevent, epId, naddrAddress)
 
 -- | One @nostr:@ reference found in text: what it means plus the exact
 -- source span, so a renderer can highlight the original characters rather
@@ -38,12 +39,14 @@ data Mention = Mention
 data MentionKind
   = -- | @nostr:npub…@: an author, as hex.
     MentionPubkey !Text
-  | -- | @nostr:note…@: an event id, as hex.
+  | -- | @nostr:note…@ or @nostr:nevent…@: an event id, as hex.
     MentionEvent !Text
   | -- | @nostr:nprofile…@: an author plus relay hints.
     MentionProfile !Text ![Text]
-  | -- | Anything else bech32 (@nevent@, @naddr@, @nsec@, unknown): named by
-    -- hrp so renderers can show it without understanding it.
+  | -- | @nostr:naddr…@: a @kind:pubkey:d@ coordinate.
+    MentionAddress !Text
+  | -- | Anything else bech32 (@nsec@, unknown): named by hrp so renderers
+    -- can show it without understanding it.
     MentionOpaque !Text
   deriving (Show, Eq)
 
@@ -80,6 +83,16 @@ decodeMention raw = case decodeNip19 raw of
         Just (pk, relays) ->
           Just (Mention (MentionProfile pk relays) ("nostr:" <> raw))
         Nothing ->
+          Just (Mention (MentionOpaque hrp) ("nostr:" <> raw))
+    | hrp == "nevent" -> case decodeNevent raw of
+        Right p ->
+          Just (Mention (MentionEvent (epId p)) ("nostr:" <> raw))
+        Left _ ->
+          Just (Mention (MentionOpaque hrp) ("nostr:" <> raw))
+    | hrp == "naddr" -> case decodeNaddr raw of
+        Right p ->
+          Just (Mention (MentionAddress (naddrAddress p)) ("nostr:" <> raw))
+        Left _ ->
           Just (Mention (MentionOpaque hrp) ("nostr:" <> raw))
     | otherwise ->
         Just (Mention (MentionOpaque hrp) ("nostr:" <> raw))

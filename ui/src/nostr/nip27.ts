@@ -13,12 +13,13 @@
  * Mirrors `Krivostr.Nip.Nip27` on the Haskell side.
  */
 
-import { decode, npubDecode, noteDecode, nprofileDecode } from './bech32';
+import { decode, npubDecode, noteDecode, nprofileDecode, neventDecode, naddrDecode, naddrAddress } from './bech32';
 
 export type MentionKind =
   | { type: 'pubkey'; hex: string }
   | { type: 'event'; hex: string }
   | { type: 'profile'; hex: string; relays: string[] }
+  | { type: 'address'; coordinate: string }
   | { type: 'opaque'; hrp: string };
 
 /** One reference: what it means plus the exact source span. */
@@ -64,6 +65,14 @@ const decodeRun = (run: string): Mention | undefined => {
       const p = nprofileDecode(run);
       return { kind: { type: 'profile', hex: p.pubkey, relays: p.relays ?? [] }, raw };
     }
+    if (hrp === 'nevent') {
+      const p = neventDecode(run);
+      return { kind: { type: 'event', hex: p.id }, raw };
+    }
+    if (hrp === 'naddr') {
+      const p = naddrDecode(run);
+      return { kind: { type: 'address', coordinate: naddrAddress(p) }, raw };
+    }
     return { kind: { type: 'opaque', hrp }, raw };
   } catch {
     return undefined;
@@ -89,7 +98,7 @@ export const splitSegments = (text: string): Segment[] => {
   return segs;
 };
 
-/** Short label for a mention: `@ab12…`, `#ab12…`, or the raw span. */
+/** Short label for a mention: `@ab12…`, `#ab12…`, address, or raw span. */
 export const mentionLabel = (m: Mention): string => {
   const short = (hex: string): string => `${hex.slice(0, 4)}…${hex.slice(-4)}`;
   switch (m.kind.type) {
@@ -99,6 +108,10 @@ export const mentionLabel = (m: Mention): string => {
       return `#${short(m.kind.hex)}`;
     case 'profile':
       return `@${short(m.kind.hex)}`;
+    case 'address': {
+      const d = m.kind.coordinate.split(':')[2] ?? m.kind.coordinate;
+      return `#${d.length > 12 ? `${d.slice(0, 12)}…` : d}`;
+    }
     case 'opaque':
       return m.raw.length > 20 ? `${m.raw.slice(0, 17)}…` : m.raw;
   }

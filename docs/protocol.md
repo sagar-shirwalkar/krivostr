@@ -102,7 +102,8 @@ The UI's `FilterSpec` presents tag filters as a `tags` record and
 | 10 | Reply conventions | ✅ marked + positional `e` tags, `krivostr reply`, UI thread rendering |
 | 13 | Proof of work | ✅ `nonce` tag, leading-zero-bit difficulty, committed target |
 | 18 | Reposts | ✅ kind 6 / 16 + `q`-tag quotes, `krivostr repost`, UI rendering |
-| 19 | bech32 entities | ◐ Haskell does `npub` / `nsec` only; UI encodes all six |
+| 19 | bech32 entities | ✅ `npub`/`nsec` keys plus `nevent`/`naddr` TLV pointers, both sides |
+| 21 | `nostr:` URIs | ✅ single-reference parse; UI mentions open in-client (reader/author views) |
 | 22 | Comments | ✅ kind 1111 (uppercase root / lowercase parent), `krivostr comment`, UI threads |
 | 23 | Long-form content | ✅ kind 30023 articles, `krivostr publish`, UI article rendering |
 | 25 | Reactions | ✅ kind 7 with `e`/`p`/`k` tags, `krivostr react`, UI counts |
@@ -116,6 +117,7 @@ The UI's `FilterSpec` presents tag filters as a `tags` record and
 | 49 | Private-key encryption | ✅ NIP-49 `ncryptsec` (scrypt + XChaCha20-Poly1305, bech32 `ncryptsec1...`) |
 | 50 | Search | ✅ wire `search` filter; bridge answers from FTS5, CLI `--search`, UI search box |
 | 51 | Lists | ✅ mute / pin / bookmark, `krivostr list`, UI mute filtering |
+| 57 | Lightning zaps | ✅ kind 9734 request + 9735 receipts, LNURL flow, UI zap dialog |
 | 59 | Gift wrap | ✅ NIP-59 kind 1059 (rumor → NIP-44 seal → ephemeral-key wrap) |
 | 17 | Private direct messages | ✅ NIP-17 (rumor → NIP-44 seal → gift wrap, randomized timestamp ±2 days) |
 | 65 | Relay list metadata | ◐ kind 10002 drives CLI read relays; `writeRelays` unused |
@@ -142,12 +144,26 @@ Two security fixes over the reference spec:
    (the spec decodes the full attacker-controlled payload before checking
    version/size).
 
-**NIP-19 is asymmetric.** The UI encodes and decodes `npub`, `nsec`, `note`,
-`nprofile`, `nevent` and `naddr` in a hand-rolled
-[`bech32.ts`](../ui/src/nostr/bech32.ts). The Haskell core handles `npub` and
-`nsec` only: `importNsec` and `importNpub` reject any other human-readable part,
-and `Key.hs` has no `nprofile` decoder. `nprofile` appears there only in
-comments.
+**NIP-19 entities live on both sides.** Keys stay in `Key.hs` (`npub`/`nsec`)
+and the UI's hand-rolled [`bech32.ts`](../ui/src/nostr/bech32.ts); the TLV
+pointers are `Krivostr.Nip.Nip19` and matching `nevent`/`naddr` codecs in
+`bech32.ts` (type 0 id/identifier, 1 relays, 2 author, 3 uint32 kind).
+Mentions resolve them: `nevent` to its id, `naddr` to its coordinate, and
+`krivostr resolve` understands both.
+
+**NIP-21 `nostr:` URIs open in the client.** `parseNostrUri` accepts exactly
+one reference and nothing else; clicks dispatch `mention-open`, and the app
+opens notes and addresses in a reader overlay (one-shot fetch, newest
+version for addresses) or swaps the feed to an author's notes. Opaque spans
+(`nsec`, unknown hrps) stay inert — there is nothing to open.
+
+**NIP-57 zaps** split across visibility: the kind-9734 request is signed and
+sent to the LNURL callback, never published; the kind-9735 receipt is
+published by the recipient's wallet and rendered as a claim (amount from the
+invoice, sender when public), never as settlement proof. The UI zap dialog
+discovers the address from kind-0 metadata, honors the endpoint's min/max,
+and shows the invoice for the wallet to pay. Amounts decode from bolt11 on
+both sides, including the uneven-division refusal.
 
 **NIP-65 is read-only.** `Krivostr.Nip.Nip65` parses kind 10002 into
 `readRelays` and `writeRelays`, and the CLI resolves read relays from stored

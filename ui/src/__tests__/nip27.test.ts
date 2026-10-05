@@ -47,3 +47,18 @@ describe('splitSegments / mentionLabel', () => {
     expect(mentionLabel(m)).toMatch(/^@[0-9a-f]{4}…[0-9a-f]{4}$/);
   });
 });
+
+describe('entities', () => {
+  it('decodes nevent to its id and naddr to its coordinate', async () => {
+    const { neventEncode, naddrEncode } = await import('../nostr/bech32');
+    const ev = `nostr:${neventEncode({ id: 'ef'.repeat(32) })}`;
+    const ad = `nostr:${naddrEncode({ identifier: 'my-post', author: 'cd'.repeat(32), kind: 30023 })}`;
+    const { findMentions } = await import('../nostr/nip27');
+    expect(findMentions(`x ${ev}`).map((m) => m.kind)).toEqual([
+      { type: 'event', hex: 'ef'.repeat(32) },
+    ]);
+    expect(findMentions(`x ${ad}`).map((m) => m.kind)).toEqual([
+      { type: 'address', coordinate: `30023:${'cd'.repeat(32)}:my-post` },
+    ]);
+  });
+});

@@ -18,6 +18,9 @@ export type RelayState = 'connecting' | 'open' | 'closed' | 'error';
 export interface RelayHandlers {
   readonly onEvent: (e: NostrEvent) => void;
   readonly onState: (s: RelayState, detail?: string) => void;
+  /** End of stored events for one subscription. Optional: only one-shot
+   * fetches listen; the live feed learns nothing from it it did not know. */
+  readonly onEose?: (subId: string) => void;
 }
 
 export interface RelayHandle {
@@ -111,8 +114,12 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
         }
         break;
       }
+      case 'EOSE': {
+        if (typeof data[1] === 'string') handlers.onEose?.(data[1]);
+        handlers.onState('open', `EOSE ${typeof data[1] === 'string' ? data[1] : ''}`.trim());
+        break;
+      }
       case 'NOTICE':
-      case 'EOSE':
       case 'OK':
       case 'CLOSED': {
         const note: RelayNotice = {

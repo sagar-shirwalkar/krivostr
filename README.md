@@ -387,7 +387,8 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 | 10 | Reply conventions | ✅ marked + positional `e` tags, `krivostr reply`, UI threads |
 | 13 | Proof of work | ✅ `nonce` tag, leading-zero-bit difficulty, committed target |
 | 18 | Reposts | ✅ kind 6/16 + `q` quotes, `krivostr repost`, UI rendering |
-| 19 | bech32 entities | ◐ Haskell does `npub` / `nsec` only; UI encodes all six |
+| 19 | bech32 entities | ✅ keys + `nevent`/`naddr` TLV pointers, both sides |
+| 21 | `nostr:` URIs | ✅ single-reference parse; UI mentions open in-client |
 | 22 | Comments | ✅ kind 1111 root/parent scopes, `krivostr comment`, UI threads |
 | 23 | Long-form content | ✅ kind 30023 articles, `krivostr publish`, UI rendering |
 | 25 | Reactions | ✅ kind 7 `e`/`p`/`k`, `krivostr react`, UI counts |
@@ -401,6 +402,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 | 49 | Private-key encryption | ✅ `ncryptsec` — scrypt + XChaCha20-Poly1305 |
 | 50 | Search | ✅ wire `search` filter; bridge FTS5, CLI `--search`, UI search box |
 | 51 | Lists | ✅ mute/pin/bookmark, `krivostr list`, UI mute filtering |
+| 57 | Lightning zaps | ✅ kind 9734 + 9735 receipts, LNURL flow, UI zap dialog |
 | 59 | Gift wrap | ✅ rumor → seal (kind 13) → wrap (kind 1059), official vectors |
 | 17 | Private direct messages | ✅ kind 14 rumor → seal → wrap, ±2 day jitter |
 | 11 | Relay info | ✅ `RelayInfo` document with `supported_nips` |
@@ -412,7 +414,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 584 hspec examples across core and client
+make test-backend  # 608 hspec examples across core and client
 make test-ui       # 126 unit tests (jsdom) + 15 browser tests (real Chromium)
 ```
 
@@ -478,6 +480,8 @@ krivostr/
 │   │       ├── Nip13.hs           Proof of work: difficulty, nonce tag, mining
 │   │       ├── Nip17.hs           Private DMs: kind 14 rumor, timestamp jitter
 │   │       ├── Nip18.hs           Reposts (6/16) and q-tag quotes
+│   │       ├── Nip19.hs           Entities: nevent/naddr TLV pointers
+│   │       ├── Nip21.hs           nostr: URIs: single-reference parse
 │   │       ├── Nip22.hs           Comments: kind 1111 root/parent scopes
 │   │       ├── Nip23.hs           Long-form: slug, header tags, address
 │   │       ├── Nip25.hs           Reactions: kind 7, counts
@@ -489,6 +493,7 @@ krivostr/
 │   │       ├── Nip46.hs           nostr-connect: bunker URI, methods, requests
 │   │       ├── Nip49.hs           ncryptsec: scrypt + XChaCha20-Poly1305
 │   │       ├── Nip51.hs           Lists: mute, pins, bookmarks
+│   │       ├── Nip57.hs           Zaps: kind 9734/9735, invoice amounts
 │   │       ├── Nip59.hs           Gift wrap: rumor, seal (13), wrap (1059)
 │   │       └── Nip65.hs           Relay hints
 │   └── test/

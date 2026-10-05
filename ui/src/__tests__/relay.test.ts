@@ -244,3 +244,19 @@ describe('count', () => {
     }
   });
 });
+
+describe('onEose', () => {
+  it('routes EOSE sub ids to the handler', () => {
+    const eosed: string[] = [];
+    connect('wss://relay.example', {
+      onEvent: () => undefined,
+      onState: () => undefined,
+      onEose: (id) => eosed.push(id),
+    });
+    const socket = FakeSocket.instances.at(-1)!;
+    socket.open();
+    socket.deliver(['EOSE', 's1']);
+    socket.deliver(['EOSE', 's2']);
+    expect(eosed).toEqual(['s1', 's2']);
+  });
+});

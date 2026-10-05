@@ -5,6 +5,9 @@ module Main (main) where
 import Bip340 (bip340Spec)
 import Nip05Spec (nip05Spec)
 import Nip09Spec (nip09Spec)
+import Nip19Spec (nip19Spec)
+import Nip21Spec (nip21Spec)
+import Nip57Spec (nip57Spec)
 import Nip51Spec (nip51Spec)
 import Nip22Spec (nip22Spec)
 import Nip27Spec (nip27Spec)
@@ -77,6 +80,9 @@ main = hspec $ do
   bip340Spec
   nip05Spec
   nip09Spec
+  nip19Spec
+  nip21Spec
+  nip57Spec
   nip51Spec
   nip22Spec
   nip27Spec
