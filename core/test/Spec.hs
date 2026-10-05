@@ -3,6 +3,10 @@
 module Main (main) where
 
 import Bip340 (bip340Spec)
+import Nip05Spec (nip05Spec)
+import Nip23Spec (nip23Spec)
+import Nip10Spec (nip10Spec)
+import Nip25Spec (nip25Spec)
 import Nip11Spec (nip11Spec)
 import Nip17Spec (nip17Spec)
 import Nip42Spec (nip42Spec)
@@ -66,6 +70,10 @@ hasPrefix p s = T.isPrefixOf p s
 main :: IO ()
 main = hspec $ do
   bip340Spec
+  nip05Spec
+  nip23Spec
+  nip10Spec
+  nip25Spec
   nip44Spec
   nip13Spec
   nip11Spec
@@ -238,8 +246,17 @@ main = hspec $ do
       matches (tagEq "p" ["carol"]) e `shouldBe` False
 
     it "round-trips through JSON" $ do
-      let f = Filter (Just ["a"]) (Just ["b"]) (Just [1, 2]) (Just 0) (Just 9) (Just 5) [("e", ["x"])]
+      let f = Filter (Just ["a"]) (Just ["b"]) (Just [1, 2]) (Just 0) (Just 9) (Just 5) [("e", ["x"])] (Just "hello")
       decode (encode f) `shouldBe` Just f
+
+    it "encodes search under its wire key" $
+      BL.toStrict (encode (empty { fSearch = Just "hello" }))
+        `shouldSatisfy` BS.isInfixOf "\"search\":\"hello\""
+
+    it "matches search as a case-insensitive substring" $ do
+      let f = empty { fSearch = Just "HELLO" }
+      matches f sampleEvent `shouldBe` True
+      matches (empty { fSearch = Just "goodbye" }) sampleEvent `shouldBe` False
 
     it "encodes tags under their #e keys" $
       BL.toStrict (encode (tagEq "p" ["bob"]))

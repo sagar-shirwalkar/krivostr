@@ -41,8 +41,8 @@ reference specification:
    implementation enforces a maximum base64 payload size BEFORE decoding
    (~88KB for 64KB plaintext + overhead), preventing resource exhaustion.
 
-Both the Haskell (`Krivostr.Nip.Nip44`) and TypeScript (`ui/src/nostr/nip44.ts`)
-implementations include these fixes.
+The Haskell `Krivostr.Nip.Nip44` module includes both fixes. The TypeScript
+`ui/src/nostr/nip44.ts` mirrors it, including the same two guards.
 
 ## Threat model
 
@@ -58,8 +58,9 @@ We assume:
 - **The bridge is trusted as far as the machine it runs on.** It holds event
   metadata, never keys.
 - **The local disk is partially trusted.** We assume it can be read by another
-  process on the same machine. Private keys are encrypted at rest via NIP-49
-  `ncryptsec` (scrypt + XChaCha20-Poly1305).
+  process on the same machine. NIP-49 `ncryptsec` (scrypt + XChaCha20-Poly1305)
+  exists in the Haskell core, but the UI's IndexedDB still holds keys in the
+  clear — at-rest encryption is not wired into the browser yet.
 
 We do **not** assume:
 
@@ -91,8 +92,8 @@ and the extension holds the private half. This is the recommended path.
 ### NIP-46
 
 The bunker holds the key and returns signatures over NIP-44-encrypted kind
-24133 DMs. Note that the UI cannot reach this path today: the signer picker
-does not construct `nip46Signer`. See [signers.md](signers.md).
+24133 DMs. The signer picker constructs `nip46Signer` with the NIP-44
+transport. See [signers.md](signers.md).
 
 ## Cached events
 
@@ -119,8 +120,10 @@ localhost; it follows from serving the page over plain HTTP, so do not serve
 krivostr that way on a shared network.
 
 **NIP-42 authentication** uses ephemeral kind 22242 events with a relay-supplied
-challenge. The bridge and CLI implement a single-challenge queue (a new
-challenge invalidates the previous one) to prevent challenge-queue exhaustion.
+challenge. The CLI answers challenges through the relay pool, which keeps only
+the newest challenge per relay (a new challenge overwrites the previous one)
+so a stale challenge can never be signed and replayed. The bridge does not
+require browser clients to authenticate.
 
 **NIP-42 on reads** — a relay that supports NIP-42 but never enforces it on
 reads offers no read privacy; a passive observer can harvest every encrypted

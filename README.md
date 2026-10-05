@@ -192,6 +192,11 @@ Global flags come before the subcommand:
 | `feed` | Read the store; `--follow` streams live |
 | `search` | Full-text search over the local store |
 | `dm` | Send a DM (NIP-04 today, NIP-17 planned), or `--inbox` to read yours |
+| `reply` | Reply to a note (NIP-10, marked `e` tags) |
+| `react` | React to an event (NIP-25 kind 7, `--emoji`, default `+`) |
+| `repost` | Repost (kind 6/16) or quote with `--quote` (NIP-18) |
+| `verify` | Check a NIP-05 identifier against its domain |
+| `publish` | Publish a Markdown file as a long-form article (NIP-23) |
 | `export` | Bulk export as `nostr` (ndjson), `array`, or `csv` |
 | `watch` | Notify on new events |
 | `api` | Run the JSON HTTP API on its own port |
@@ -210,7 +215,8 @@ krivostr feed --follow --ingest                # stream from relays and store wh
 
 Filter flags shared by `feed`, `search`, `export`, and `watch`: `-k/--kind` (`note`, `dm`,
 `like`, `repost`, `delete`, `metadata`, `follow`, `relays`, or a number), `-a/--author`
-(`npub` or hex), `-t/--tag NAME=VALUE`, `--since`, `--until`, `-n/--limit`.
+(`npub` or hex), `-t/--tag NAME=VALUE`, `--since`, `--until`, `-n/--limit`,
+`-s/--search` (NIP-50 full text — FTS5 locally, forwarded to relays).
 
 ### `search`
 
@@ -230,8 +236,9 @@ krivostr dm --inbox                           # decrypt kind 4 events addressed 
 ```
 
 DMs are NIP-04 (AES-256-CBC under an ECDH shared secret). NIP-04 is deprecated in favour
-of NIP-44; see [Known limitations](#known-limitations). The core NIP-17 stack — kind 14
-rumor, NIP-44 seal, gift wrap — is implemented and tested, but `dm` still sends kind 4.
+of NIP-44; see [Known limitations](#known-limitations). The NIP-17 stack — kind 14
+rumor, NIP-44 seal, gift wrap — is implemented and tested in Haskell and
+TypeScript, but `dm` still sends kind 4.
 
 ### `export`, `watch`, `api`, `reindex`, `keygen`
 
@@ -303,7 +310,7 @@ flowchart LR
         direction TB
         SHELL["app-shell<br/>composer, feed, signer picker"]
         STATUS["nostr-relay-status<br/>owns the socket"]
-        SIGNER["signer<br/>local nsec · NIP-07<br/>(NIP-46 not wired)"]
+        SIGNER["signer<br/>local nsec · NIP-07 · NIP-46"]
         IDB[("IndexedDB cache<br/>30-day retention")]
     end
 
@@ -345,12 +352,14 @@ The Haskell and TypeScript sides deliberately mirror each other: fallible operat
 no cross-language FFI. (Filter *matching* is a hand-rolled predicate on both sides rather
 than the `Rule` algebra — see [docs/architecture.md](docs/architecture.md).)
 
-- **`core/`** — pure Haskell: NIP-01 serialization/signing/verification, NIP-13 proof of
-  work, NIP-40 expiration, NIP-42 AUTH, NIP-44 v2 encryption, NIP-46 nostr-connect,
-  NIP-49 `ncryptsec`, NIP-59 gift wrap, NIP-17 private DMs, NIP-11 relay info, NIP-65
-  relay hints, filter predicates, wire ADTs, `Writer`-based logging.
+- **`core/`** — pure Haskell: NIP-01 serialization/signing/verification, NIP-05
+  identifiers, NIP-10 replies, NIP-13 proof of work, NIP-18 reposts, NIP-23
+  articles, NIP-25 reactions, NIP-40 expiration, NIP-42 AUTH, NIP-44 v2
+  encryption, NIP-46 nostr-connect, NIP-49 `ncryptsec`, NIP-50 search filter,
+  NIP-59 gift wrap, NIP-17 private DMs, NIP-11 relay info, NIP-65 relay hints,
+  filter predicates, wire ADTs, `Writer`-based logging.
 - **`client/`** — effectful Haskell: relay pool, SQLite store (FTS5),
-  WebSocket bridge, HTTP API, CLI (9 subcommands).
+  WebSocket bridge, HTTP API, CLI (14 subcommands).
 - **`ui/`** — browser: Lit 3, hand-rolled `Maybe` / `Result` / `IO` / `Rule`, IndexedDB
   cache, signer plug-ins (NIP-07, NIP-46 modal).
 
@@ -365,15 +374,20 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 | 01 | Basic protocol | ✅ full — variadic `REQ` filters, `EVENT`, `EOSE`, `OK`, `NOTICE`, `CLOSED` |
 | 02 | Follow list | ❌ not implemented |
 | 04 | Encrypted direct messages | ◐ CLI can send; UI cannot read (NIP-04 only) |
+| 05 | DNS identifiers | ✅ parse + HTTPS verify (`krivostr verify`, UI logic) |
 | 07 | `window.nostr` | ✅ full |
+| 10 | Reply conventions | ✅ marked + positional `e` tags, `krivostr reply`, UI threads |
 | 13 | Proof of work | ✅ `nonce` tag, leading-zero-bit difficulty, committed target |
+| 18 | Reposts | ✅ kind 6/16 + `q` quotes, `krivostr repost`, UI rendering |
 | 19 | bech32 entities | ◐ Haskell does `npub` / `nsec` only; UI encodes all six |
+| 23 | Long-form content | ✅ kind 30023 articles, `krivostr publish`, UI rendering |
+| 25 | Reactions | ✅ kind 7 `e`/`p`/`k`, `krivostr react`, UI counts |
 | 40 | Expiration timestamp | ✅ `expiration` tag helpers; purge is retention-based |
 | 42 | Authentication | ✅ kind 22242 challenge/response, wired into the relay pool |
 | 44 | Versioned encryption | ✅ NIP-44 v2 — ChaCha20 + HMAC, official vectors |
-| 46 | Remote signer | ◐ core types done over NIP-44; not reachable from UI |
+| 46 | Remote signer | ✅ bunker over NIP-44, wired into the signer picker |
 | 49 | Private-key encryption | ✅ `ncryptsec` — scrypt + XChaCha20-Poly1305 |
-| 50 | Search | ◐ local FTS5 only — no wire `search` filter |
+| 50 | Search | ✅ wire `search` filter; bridge FTS5, CLI `--search`, UI search box |
 | 59 | Gift wrap | ✅ rumor → seal (kind 13) → wrap (kind 1059), official vectors |
 | 17 | Private direct messages | ✅ kind 14 rumor → seal → wrap, ±2 day jitter |
 | 11 | Relay info | ✅ `RelayInfo` document with `supported_nips` |
@@ -385,7 +399,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 488 hspec examples across core and client
+make test-backend  # 542 hspec examples across core and client
 make test-ui       # 126 unit tests (jsdom) + 15 browser tests (real Chromium)
 ```
 
@@ -444,9 +458,14 @@ krivostr/
 │   │   ├── Wire.hs                NIP-01 message ADTs, encodeClient / decodeRelay
 │   │   └── Nip/
 │   │       ├── Nip01.hs           Canonical bytes, event id, signing, verification
+│   │       ├── Nip05.hs           DNS identifiers: parse, well-known URL, verify
+│   │       ├── Nip10.hs           Replies: marked/positional e tags, thread refs
 │   │       ├── Nip11.hs           Relay info document (supported_nips)
 │   │       ├── Nip13.hs           Proof of work: difficulty, nonce tag, mining
 │   │       ├── Nip17.hs           Private DMs: kind 14 rumor, timestamp jitter
+│   │       ├── Nip18.hs           Reposts (6/16) and q-tag quotes
+│   │       ├── Nip23.hs           Long-form: slug, header tags, address
+│   │       ├── Nip25.hs           Reactions: kind 7, counts
 │   │       ├── Nip40.hs           Expiration tag parsing and filtering
 │   │       ├── Nip42.hs           AUTH: kind 22242 build and validate
 │   │       ├── Nip44.hs           NIP-44 v2: HKDF, ChaCha20, HMAC, padding
@@ -549,8 +568,8 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
   at-rest encryption and nothing is written to disk, but there is also no keyring
   integration.
 - **The Linux binary is not static.** It needs glibc 2.33+, `libgmp`, and `libz`.
-- **NIP-50 search is local only.** `Filter` has no `search` field, so relays are never
-  asked to search; `krivostr search` queries FTS5 instead.
+- **Upstream `search` depends on the relay.** The bridge answers from FTS5; remote
+  relays without NIP-50 ignore the `search` key and return unfiltered matches.
 - **`_headers` applies to Cloudflare Pages only.** `krivostr serve` serves the same files
   without the CSP.
 - **`export --filter` takes positional flags**, and `dm @alice` is not accepted; pass an
@@ -564,10 +583,8 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
 
 - Verify signatures on ingest.
 - Tests for the IO layers, to move backend coverage off the floor.
-- **NIP-50** — a `search` field on the wire `Filter`.
 - **NIP-02** — parse and honour kind 3 follow lists.
 - **NIP-13** — inbound filter with configurable difficulty threshold.
-- **NIP-46** — wire the bunker signer into the UI picker.
 
 ### Medium-term
 

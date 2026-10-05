@@ -121,6 +121,7 @@ describe('publish boundary', () => {
       url: 'x',
       state: () => 'open' as const,
       subscribe: () => undefined,
+      unsubscribe: () => undefined,
       publish: (e: unknown) => published.push(e),
       close: () => undefined,
     };

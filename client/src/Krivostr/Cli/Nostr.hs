@@ -10,6 +10,7 @@ module Krivostr.Cli.Nostr
   , publishTo
   , publishAll
   , defaultRelays
+  , fetchNip05Doc
   ) where
 
 import Control.Concurrent.STM
@@ -32,8 +33,13 @@ import Krivostr.Event
 import Krivostr.Key
 import Krivostr.Logging
 import Krivostr.Nip.Nip01 (signEvent)
+import Krivostr.Nip.Nip05 (Nip05Doc, wellKnownUrl)
 import Krivostr.Relay
 import Krivostr.Wire
+import qualified Data.Aeson as Aeson
+import qualified Network.HTTP.Client as HTTP
+import qualified Network.HTTP.Client.TLS as TLS
+import qualified Network.HTTP.Types as HTTPT
 import System.Timeout (timeout)
 
 -- | Relays used when nothing better is known. Same set the bridge defaults to.
@@ -150,3 +156,30 @@ publishAll lg waitMicros ev =
   mapM (\url -> do
       r <- publishTo lg waitMicros ev url
       pure (url, r))
+
+-- | Fetch a domain's @nostr.json@ over HTTPS. TLS is non-negotiable: the
+-- document is a trust decision, and plain HTTP would let anyone on the path
+-- hand out any pubkey for any name.
+--
+-- A non-200 status is a failure, not a document. Some hosts serve a login
+-- page with 200 on unknown paths; that fails later at the JSON parse, which
+-- is the honest place -- the bytes are not what NIP-05 asks for.
+fetchNip05Doc :: Text -> Text -> IO (Either String Nip05Doc)
+fetchNip05Doc name domain = do
+  manager <- TLS.newTlsManager
+  reqE <- try (HTTP.parseRequest (T.unpack (wellKnownUrl name domain)))
+  case reqE of
+    Left err -> pure (Left ("bad identifier domain: " ++ show (err :: SomeException)))
+    Right req0 -> do
+      let req = req0 { HTTP.requestHeaders = ("Accept", "application/json") : HTTP.requestHeaders req0
+                     , HTTP.responseTimeout = HTTP.responseTimeoutMicro (15 * 1000000)
+                     }
+      resE <- try (HTTP.httpLbs req manager)
+      case resE of
+        Left err -> pure (Left ("fetch failed: " ++ show (err :: SomeException)))
+        Right res
+          | HTTPT.statusCode (HTTP.responseStatus res) /= 200 ->
+              pure (Left ("server answered " ++ show (HTTPT.statusCode (HTTP.responseStatus res))))
+          | otherwise -> case Aeson.eitherDecode (HTTP.responseBody res) of
+              Right doc -> pure (Right doc)
+              Left err  -> pure (Left ("not a NIP-05 document: " ++ err))

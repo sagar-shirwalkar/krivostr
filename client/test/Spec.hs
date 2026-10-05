@@ -278,6 +278,28 @@ main = hspec $ do
       importHex "0xDEADBEEF" `shouldSatisfy` isLeft
 
   describe "Store search (FTS5)" $ do
+    it "answers a search filter from the FTS index" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      insertEvent st (mkSigned sk 1 "the quick brown fox")
+      insertEvent st (mkSigned sk 1 "something unrelated")
+      hits <- queryEvents st (empty { fSearch = Just "brown fox" })
+      map evContent hits `shouldBe` ["the quick brown fox"]
+      closeStore st
+
+    it "combines search with kinds and limit" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      insertEvent st (mkSigned sk 1 "shared word one")
+      insertEvent st (mkSigned sk 7 "shared word two")
+      kinds <- queryEvents st (empty { fSearch = Just "shared", fKinds = Just [7] })
+      map evKind kinds `shouldBe` [7]
+      limited <- queryEvents st (empty { fSearch = Just "shared", fLimit = Just 1 })
+      length limited `shouldBe` 1
+      closeStore st
+
     it "indexes what is inserted and finds it" $ do
       lg <- newLogger Error
       st <- openMemoryStore lg

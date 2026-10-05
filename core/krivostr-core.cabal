@@ -25,9 +25,14 @@ library
       Krivostr.Key
       Krivostr.Logging
       Krivostr.Nip.Nip01
+      Krivostr.Nip.Nip05
+      Krivostr.Nip.Nip10
       Krivostr.Nip.Nip11
       Krivostr.Nip.Nip13
       Krivostr.Nip.Nip17
+      Krivostr.Nip.Nip18
+      Krivostr.Nip.Nip23
+      Krivostr.Nip.Nip25
       Krivostr.Nip.Nip40
       Krivostr.Nip.Nip42
       Krivostr.Nip.Nip44
@@ -67,9 +72,13 @@ test-suite spec
   main-is: Spec.hs
   other-modules:
       Bip340
+      Nip05Spec
+      Nip10Spec
       Nip11Spec
       Nip13Spec
       Nip17Spec
+      Nip23Spec
+      Nip25Spec
       Nip40Spec
       Nip42Spec
       Nip44Spec

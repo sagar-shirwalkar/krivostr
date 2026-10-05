@@ -52,6 +52,11 @@ import Krivostr.Key
 -- `info` is a log level here and a parser combinator in optparse-applicative.
 import Krivostr.Logging hiding (info)
 import Krivostr.Nip.Nip01 (verifyEvent)
+import Krivostr.Nip.Nip05 (parseIdentifier, verifyName, wellKnownUrl)
+import Krivostr.Nip.Nip23 (buildArticleTags, slugify)
+import Krivostr.Nip.Nip10 (buildReplyTags, replyRoot)
+import Krivostr.Nip.Nip18 (buildQuoteTags, buildRepostTags, embedOriginal)
+import Krivostr.Nip.Nip25 (buildReactionTags)
 import Krivostr.Nip.Nip65 (RelayHint (..), RelayMode (..), parseRelayList)
 import Krivostr.Pool
 import Krivostr.Store
@@ -118,16 +123,22 @@ data FilterOpts = FilterOpts
   , foSince   :: Maybe TimeSpec
   , foUntil   :: Maybe TimeSpec
   , foLimit   :: Int
+  , foSearch  :: Maybe Text
   }
 
 emptyFilterOpts :: FilterOpts
-emptyFilterOpts = FilterOpts [] [] [] Nothing Nothing 100
+emptyFilterOpts = FilterOpts [] [] [] Nothing Nothing 100 Nothing
 
 data Command
   = CmdServe ServeOpts
   | CmdFeed FeedOpts
   | CmdSearch SearchOpts
   | CmdDm DmOpts
+  | CmdReply ReplyOpts
+  | CmdReact ReactOpts
+  | CmdRepost RepostOpts
+  | CmdVerify VerifyOpts
+  | CmdPublish PublishOpts
   | CmdExport ExportOpts
   | CmdWatch WatchOpts
   | CmdApi ApiOpts
@@ -164,6 +175,42 @@ data DmOpts = DmOpts
   , dmRelays    :: [Text]
   , dmTimeout   :: Int
   , dmLimit     :: Int
+  }
+
+data ReplyOpts = ReplyOpts
+  { rpParent  :: String
+  , rpMessage :: String
+  , rpRelays  :: [Text]
+  , rpTimeout :: Int
+  }
+
+data ReactOpts = ReactOpts
+  { raEvent   :: String
+  , raEmoji   :: String
+  , raRelays  :: [Text]
+  , raTimeout :: Int
+  }
+
+data RepostOpts = RepostOpts
+  { rsEvent   :: String
+  , rsQuote   :: Maybe String
+  , rsRelays  :: [Text]
+  , rsTimeout :: Int
+  }
+
+data VerifyOpts = VerifyOpts
+  { vfIdentifier :: String
+  , vfPubkey     :: Maybe String
+  }
+
+data PublishOpts = PublishOpts
+  { puFile    :: FilePath
+  , puTitle   :: String
+  , puSlug    :: Maybe String
+  , puSummary :: String
+  , puImage   :: String
+  , puRelays  :: [Text]
+  , puTimeout :: Int
   }
 
 data ExportOpts = ExportOpts
@@ -242,6 +289,11 @@ commandP = hsubparser
  <> command "feed"    (info (CmdFeed    <$> feedP)    (progDesc "Read the store; --follow streams live"))
  <> command "search"  (info (CmdSearch  <$> searchP)  (progDesc "Full-text search over the local store"))
  <> command "dm"      (info (CmdDm      <$> dmP)      (progDesc "Send a NIP-04 DM, or --inbox to read yours"))
+ <> command "reply"   (info (CmdReply   <$> replyP)   (progDesc "Reply to a note (NIP-10)"))
+ <> command "react"    (info (CmdReact   <$> reactP)    (progDesc "React to an event (NIP-25)"))
+ <> command "repost"   (info (CmdRepost  <$> repostP)   (progDesc "Repost or quote an event (NIP-18)"))
+ <> command "verify"   (info (CmdVerify  <$> verifyP)   (progDesc "Check a NIP-05 identifier against its domain"))
+ <> command "publish"  (info (CmdPublish <$> publishP)  (progDesc "Publish a Markdown file as a long-form article (NIP-23)"))
  <> command "export"  (info (CmdExport  <$> exportP)  (progDesc "Bulk export as nostr (ndjson), array or csv"))
  <> command "watch"   (info (CmdWatch   <$> watchP)   (progDesc "Notify on new events"))
  <> command "api"     (info (CmdApi     <$> apiP)     (progDesc "Run the JSON HTTP API on its own port"))
@@ -287,6 +339,52 @@ dmP = DmOpts
   <*> option auto (long "limit" <> short 'n' <> metavar "N" <> value 50 <> showDefault
                 <> help "How many to list with --inbox")
 
+replyP :: Parser ReplyOpts
+replyP = ReplyOpts
+  <$> argument str (metavar "EVENT-ID" <> help "Hex id of the note to answer")
+  <*> argument str (metavar "MESSAGE" <> help "Reply text")
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+reactP :: Parser ReactOpts
+reactP = ReactOpts
+  <$> argument str (metavar "EVENT-ID" <> help "Hex id of the event to react to")
+  <*> strOption (long "emoji" <> metavar "EMOJI" <> value "+" <> showDefault
+              <> help "Reaction content (+, -, or an emoji)")
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+repostP :: Parser RepostOpts
+repostP = RepostOpts
+  <$> argument str (metavar "EVENT-ID" <> help "Hex id of the event to repost")
+  <*> optional (strOption (long "quote" <> metavar "TEXT"
+              <> help "Quote instead of reposting, with this commentary"))
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+verifyP :: Parser VerifyOpts
+verifyP = VerifyOpts
+  <$> argument str (metavar "IDENTIFIER" <> help "alice@example.com, or a bare domain")
+  <*> optional (strOption (long "pubkey" <> metavar "KEY"
+              <> help "npub or hex to check (default: your KRIVOSTR_NSEC key)"))
+
+publishP :: Parser PublishOpts
+publishP = PublishOpts
+  <$> argument str (metavar "FILE" <> help "Markdown file for the article body")
+  <*> strOption (long "title" <> metavar "TITLE" <> help "Article title")
+  <*> optional (strOption (long "slug" <> metavar "SLUG"
+              <> help "Address slug (default: from the title)"))
+  <*> strOption (long "summary" <> metavar "TEXT" <> value "" <> showDefault
+              <> help "One-line summary")
+  <*> strOption (long "image" <> metavar "URL" <> value "" <> showDefault
+              <> help "Cover image URL")
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
 exportP :: Parser ExportOpts
 exportP = ExportOpts
   <$> filterP
@@ -329,6 +427,8 @@ filterP = FilterOpts
        <> help "Same forms as --since"))
   <*> option auto (long "limit" <> short 'n' <> metavar "N" <> value 100 <> showDefault
                 <> help "Maximum events")
+  <*> optional (T.pack <$> strOption (long "search" <> short 's' <> metavar "TEXT"
+                <> help "Full-text search (NIP-50); FTS5 locally, forwarded to relays"))
 
 -- ═══════════════════════════════════════════════════════════ value parsers
 
@@ -426,6 +526,7 @@ buildFilter fo = do
     , fUntil   = until'
     , fLimit   = Just (foLimit fo)
     , fTags    = groupTags (foTags fo)
+    , fSearch  = foSearch fo
     }
 
 -- | @--tag e=a --tag e=@ means @e@ matches either, not that @e@ must be both.
@@ -481,6 +582,11 @@ dispatch (Opts g cmd) = do
       CmdFeed o   -> cmdFeed lg' db colour o
       CmdSearch o -> cmdSearch lg' db colour o
       CmdDm o     -> cmdDm lg' db o
+      CmdReply o  -> cmdReply lg' db o
+      CmdReact o  -> cmdReact lg' db o
+      CmdRepost o -> cmdRepost lg' db o
+      CmdVerify o -> cmdVerify lg' o
+      CmdPublish o -> cmdPublish lg' db o
       CmdExport o -> cmdExport lg' db o
       CmdWatch o  -> cmdWatch lg' db colour o
       CmdApi o    -> withStore lg' db $ \st -> do
@@ -635,7 +741,7 @@ relayHints :: Store -> IO [Text]
 relayHints st = do
   evs <- queryEvents st Filter
     { fIds = Nothing, fAuthors = Nothing, fKinds = Just [10002]
-    , fSince = Nothing, fUntil = Nothing, fLimit = Just 20, fTags = [] }
+    , fSince = Nothing, fUntil = Nothing, fLimit = Just 20, fTags = [], fSearch = Nothing }
   pure $ case evs of
     []   -> []
     list -> [ rhUrl h | ev <- list, h <- parseRelayList ev, readable (rhMode h) ]
@@ -689,7 +795,7 @@ cmdDm lg db o
         evs <- queryEvents st Filter
           { fIds = Nothing, fAuthors = Nothing, fKinds = Just [4]
           , fSince = Nothing, fUntil = Nothing
-          , fLimit = Just (dmLimit o), fTags = [("p", [mine])] }
+          , fLimit = Just (dmLimit o), fTags = [("p", [mine])], fSearch = Nothing }
         now <- getPOSIXTime
         forM_ evs $ \e -> do
           TIO.putStrLn (renderEvent False now e)
@@ -736,6 +842,155 @@ cmdDm lg db o
           Right ok -> "ok    " <> url <> ": " <> ok
           Left  e  -> "fail  " <> url <> ": " <> T.pack e
       unless (any (either (const False) (const True) . snd) results) exitFailure
+
+-- ═══════════════════════════════════════════════════════════ social sends
+
+-- | The secret key every send command needs. One place, so the missing-key
+-- error reads the same whether the user is replying, reacting or reposting.
+requireKey :: IO PrivateKey
+requireKey = do
+  env <- envText "KRIVOSTR_NSEC"
+  case env of
+    Nothing -> die "no secret key: set KRIVOSTR_NSEC=nsec1... (see: krivostr keygen)"
+    Just t  -> case importNsec t of
+      Right sk -> pure sk
+      Left e   -> die ("KRIVOSTR_NSEC is not an nsec: " ++ e)
+
+-- | Fetch an event from the store by hex id. Bech32 note ids arrive with
+-- NIP-27; until then hex is the input and anything else is a usage error,
+-- not a lookup miss.
+requireEvent :: Logger -> FilePath -> String -> IO Event
+requireEvent lg db raw = do
+  let eid = T.pack raw
+  unless (isHex64 eid) (die "event id must be 64 hex characters")
+  withStore lg db $ \st -> do
+    found <- getEventById st eid
+    case found of
+      Just e  -> pure e
+      Nothing -> die ("no event " ++ raw ++ " in the local store (try: krivostr feed first)")
+
+-- | Publish a signed event and report each relay's answer. Exits non-zero
+-- when every relay refused, so scripts can test the outcome.
+publishNote :: Logger -> FilePath -> Int -> Event -> [Text] -> Text -> IO ()
+publishNote lg db timeoutSecs ev relays what = do
+  targets <- case relays of
+    [] -> withStore lg db $ \st -> do
+      hinted <- relayHints st
+      pure (if null hinted then defaultRelays else hinted)
+    xs -> pure xs
+  emit lg Info (what <> " via " <> T.intercalate ", " targets)
+  results <- publishAll lg (timeoutSecs * 1000000) ev targets
+  forM_ results $ \(url, r) ->
+    -- The relay's own words matter more than our verdict, so print both and
+    -- let the relay explain itself.
+    TIO.putStrLn $ case r of
+      Right ok -> "ok    " <> url <> ": " <> ok
+      Left e   -> "fail  " <> url <> ": " <> T.pack e
+  unless (any (either (const False) (const True) . snd) results) exitFailure
+
+cmdReply :: Logger -> FilePath -> ReplyOpts -> IO ()
+cmdReply lg db o = do
+  sk <- requireKey
+  parent <- requireEvent lg db (rpParent o)
+  now <- getPOSIXTime
+  -- The root's author names the thread's p tag. When the root is not in the
+  -- store its author is unknown, and an empty p tag would be worse than a
+  -- missing one, so only tag authors we actually have.
+  let rootId = fromMaybe (evId parent) (replyRoot parent)
+  rootAuthor <- if rootId == evId parent
+    then pure (evPubkey parent)
+    else withStore lg db $ \st -> maybe "" evPubkey <$> getEventById st rootId
+  let tags = buildReplyTags rootId "" rootAuthor (evId parent) "" (evPubkey parent)
+      ev = signUnsigned sk UnsignedEvent
+        { uePubkey    = pubKeyHex (derivePublicKey sk)
+        , ueCreatedAt = now
+        , ueKind      = 1
+        , ueTags      = tags
+        , ueContent   = T.pack (rpMessage o)
+        }
+  publishNote lg db (rpTimeout o) ev (rpRelays o) "reply"
+
+cmdReact :: Logger -> FilePath -> ReactOpts -> IO ()
+cmdReact lg db o = do
+  sk <- requireKey
+  target <- requireEvent lg db (raEvent o)
+  now <- getPOSIXTime
+  let ev = signUnsigned sk UnsignedEvent
+        { uePubkey    = pubKeyHex (derivePublicKey sk)
+        , ueCreatedAt = now
+        , ueKind      = 7
+        , ueTags      = buildReactionTags (evId target) "" (evPubkey target) (evKind target)
+        , ueContent   = T.pack (raEmoji o)
+        }
+  publishNote lg db (raTimeout o) ev (raRelays o) "react"
+
+cmdRepost :: Logger -> FilePath -> RepostOpts -> IO ()
+cmdRepost lg db o = do
+  sk <- requireKey
+  target <- requireEvent lg db (rsEvent o)
+  now <- getPOSIXTime
+  let me = pubKeyHex (derivePublicKey sk)
+      ev = case rsQuote o of
+        -- A quote is a kind 1 with a q tag: commentary plus citation, and
+        -- deliberately no e tag, so it never joins the original's thread.
+        Just commentary -> signUnsigned sk UnsignedEvent
+          { uePubkey    = me
+          , ueCreatedAt = now
+          , ueKind      = 1
+          , ueTags      = buildQuoteTags (evId target) ""
+          , ueContent   = T.pack commentary
+          }
+        -- A repost embeds the original; kind 6 for notes, kind 16 for
+        -- anything else, with a k tag saying what it wraps.
+        Nothing -> signUnsigned sk UnsignedEvent
+          { uePubkey    = me
+          , ueCreatedAt = now
+          , ueKind      = if evKind target == 1 then 6 else 16
+          , ueTags      = buildRepostTags (evId target) "" (evPubkey target) (evKind target)
+          , ueContent   = embedOriginal target
+          }
+  publishNote lg db (rsTimeout o) ev (rsRelays o) "repost"
+
+cmdVerify :: Logger -> VerifyOpts -> IO ()
+cmdVerify lg o = do
+  (name, domain) <- either die pure (parseIdentifier (T.pack (vfIdentifier o)))
+  pubkey <- case vfPubkey o of
+    -- An explicit key wins: verification is a claim about a key, and the
+    -- flag states the claim out loud.
+    Just s -> case resolveAuthor s of
+      Right hex -> pure hex
+      Left e    -> die e
+    Nothing -> do
+      sk <- requireKey
+      pure (pubKeyHex (derivePublicKey sk))
+  emit lg Info ("verify: " <> name <> " at " <> wellKnownUrl name domain)
+  doc <- either die pure =<< fetchNip05Doc name domain
+  case verifyName name pubkey doc of
+    Right () -> TIO.putStrLn (T.pack (vfIdentifier o) <> " verifies for " <> pubkey)
+    Left e   -> die e
+
+cmdPublish :: Logger -> FilePath -> PublishOpts -> IO ()
+cmdPublish lg db o = do
+  sk <- requireKey
+  body <- TIO.readFile (puFile o)
+  when (T.null (T.strip body)) (die ("empty article: " ++ puFile o))
+  now <- getPOSIXTime
+  -- An empty slug would address nothing, so fall back to the title; an empty
+  -- title with no slug has no address at all and is a usage error.
+  let slug = case puSlug o of
+        Just s  -> T.pack s
+        Nothing -> slugify (T.pack (puTitle o))
+  when (T.null slug) (die "no slug: pass --title or --slug")
+  let ev = signUnsigned sk UnsignedEvent
+        { uePubkey    = pubKeyHex (derivePublicKey sk)
+        , ueCreatedAt = now
+        , ueKind      = 30023
+        , ueTags      = buildArticleTags slug (T.pack (puTitle o))
+                          (T.pack (puSummary o)) (T.pack (puImage o)) (Just now)
+        , ueContent   = body
+        }
+  publishNote lg db (puTimeout o) ev (puRelays o) "publish"
+  TIO.putStrLn ("address: 30023:" <> pubKeyHex (derivePublicKey sk) <> ":" <> slug)
 
 publicKeyFromHex :: Text -> Maybe PublicKey
 publicKeyFromHex t = do

@@ -38,6 +38,11 @@ dependencies:
   - base64-bytestring
   - base16-bytestring
   - process
+  # NIP-05 verification is an HTTPS fetch of /.well-known/nostr.json. Both
+  # are in the lts snapshot, so this adds no extra-deps -- just the TLS the
+  # spec's always-HTTPS rule requires.
+  - http-client
+  - http-client-tls
 
 executables:
   krivostr:

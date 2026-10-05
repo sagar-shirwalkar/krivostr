@@ -107,15 +107,19 @@ directly, so the bridge is a drop-in stand-in for a direct relay connection.
 ## Data flow
 
 **Publishing.** The user types in `<nostr-compose>`, which bubbles a
-`publish-request` to `<krivostr-app>`. The app calls the selected `Signer`,
-then sends `["EVENT", …]` to the bridge. The bridge inserts it into SQLite,
-broadcasts it to the upstream pool, delivers it to other connected clients, and
-answers `OK`. The UI caches it in IndexedDB.
+`publish-request` (content, kind, tags) to `<krivostr-app>`. The app calls
+the selected `Signer`, then sends `["EVENT", …]` to the bridge. The bridge
+inserts it into SQLite, broadcasts it to the upstream pool, delivers it to
+other connected clients, and answers `OK`. The UI caches it in IndexedDB.
+Reply, react, and repost buttons on each note dispatch the same event with
+prebuilt tags, so one signer path serves every social action.
 
 **Subscribing.** The bridge answers a `REQ` from its own store first: it
 queries SQLite, replays the matching events, sends `EOSE`, and only then
 broadcasts the `REQ` upstream. So a client gets history immediately and live
-events afterwards, and the `EOSE` marks the seam between them.
+events afterwards, and the `EOSE` marks the seam between them. A `search`
+filter is answered from the FTS5 index on the same path — the bridge's
+instant search is this replay with a MATCH clause.
 
 **NIP-42 auth on the CLI.** The relay pool answers a challenge with a kind
 22242 event signed by the loaded key, so `feed --follow` and `dm` work against
@@ -123,9 +127,11 @@ events afterwards, and the `EOSE` marks the seam between them.
 to authenticate.
 
 **NIP-59 gift wrap and NIP-17 private DMs.** Both are implemented in `core`
-(`Krivostr.Nip.Nip59`, `Krivostr.Nip.Nip17`) and covered by tests against the
-spec's published vectors. Neither is wired into the CLI or the UI yet: `dm`
-still sends NIP-04 kind 4, and the browser has no gift-wrap module.
+(`Krivostr.Nip.Nip59`, `Krivostr.Nip.Nip17`) and in the browser
+(`ui/src/nostr/nip59.ts`, `ui/src/nostr/nip17.ts`), each covered by tests —
+the TypeScript side opens the spec's published seal to the published rumor.
+Neither is wired into a send path yet: `dm` still sends NIP-04 kind 4, and
+the compose box publishes plaintext notes.
 
 **NIP-49 `ncryptsec`.** The core `Krivostr.Nip.Nip49` module encrypts private
 keys with scrypt + XChaCha20-Poly1305. The UI does not use it yet — IndexedDB

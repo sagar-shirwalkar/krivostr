@@ -5,19 +5,24 @@ interface in [`ui/src/nostr/signer.ts`](../ui/src/nostr/signer.ts).
 
 ## NIP-49 `ncryptsec` (local encrypted key) — **recommended**
 
-The `ncryptsec1...` bech32 string is decoded, decrypted with the passphrase
-via scrypt + XChaCha20-Poly1305 (NIP-49), and the raw private key is held in
-a closure for the lifetime of the tab.
+NIP-49 lives in the Haskell core (`Krivostr.Nip.Nip49`, covered by tests
+against the spec's published vector) and in `ui/src/nostr/nip49.ts` (same
+KDF parameters, same 91-byte payload layout, decrypting the same spec
+vector): the `ncryptsec1...` bech32 string is decoded and decrypted with
+the passphrase via scrypt + XChaCha20-Poly1305. The signer picker does not
+use it yet — the UI's local signer still holds a raw pasted key in a
+closure — so encrypted-at-rest keys are a CLI-side reality and a UI-side
+module awaiting its unlock flow.
 
 | | |
 |---|---|
 | **Pros** | Key encrypted at rest (scrypt + XChaCha20-Poly1305); no extension needed; works everywhere. |
 | **Cons** | Decrypted key lives in JS memory for the tab lifetime; passphrase required. |
 
-**Passphrase handling:** The passphrase is never stored. It derives the key via
-scrypt on unlock, decrypts the private key, and holds it in a closure. The
-heap-allocated key buffer is zeroed on drop. The spec recommends zeroing
-password and key memory before freeing — we zero the heap buffer on drop.
+**Passphrase handling (Haskell):** The passphrase is never stored. It derives
+the key via scrypt on unlock and decrypts the private key. The spec recommends
+zeroing password and key memory before freeing — the Haskell side zeroes the
+heap buffer on drop.
 
 ## Local `nsec` (legacy, not recommended)
 
@@ -49,27 +54,24 @@ Supported extensions: Alby, nos2x, Nostore, Flamingo.
 
 ## NIP-46 (remote bunker)
 
-Implemented in `nip46Signer` and covered by tests, but **not reachable from the
-UI**. Two things stand in the way:
-
-1. The picker does not import it.
-2. It takes its NIP-04 implementation as an **injected parameter**
-   (`{encrypt, decrypt}`) and imports no crypto for it. The test supplies a
-   fake. A real caller must pass a real NIP-04 implementation.
+Implemented in `nip46Signer`, reachable from the signer picker, and covered
+by tests. It takes its transport as an **injected parameter**
+(`{encrypt, decrypt}`); the picker passes `nip44Transport` from
+`ui/src/nostr/nip46.ts`, so the wire transport is NIP-44 v2 — the same
+conversation most bunkers have moved to. The method table and
+request/response codecs live in the same module, mirroring
+`Krivostr.Nip.Nip46`.
 
 Given a bunker, it parses `bunker://<remote-pubkey>?relay=…&secret=…`,
 subscribes to kind 24133 events from the remote pubkey, and speaks
-`get_public_key` and `sign_event`. Requests are signed with the local key so
-the bunker can authenticate the caller. Transport is NIP-04 (NIP-44 planned).
-
-The Haskell core has a matching `Krivostr.Nip.Nip46` module — bunker URI
-parsing, the method table, and request/response codecs over NIP-44 — but the
-TypeScript signer does not call it, so the two are not yet interoperable.
+`get_public_key` and `sign_event`. Requests are signed with a fresh one-time
+session key — not the user's key, which never leaves the bunker — so the
+bunker can authenticate the caller.
 
 | | |
 |---|---|
 | **Pros** | Key is on a separate device. Best for high-value keys. |
-| **Cons** | Needs a bunker service (e.g., nsec.app); not wired in the picker yet. |
+| **Cons** | Needs a bunker service (e.g., nsec.app); the session key lives in page memory. |
 
 ## Generating a key
 
@@ -84,7 +86,7 @@ fallback entropy source. On a malformed draw it retries.
 |---|---|
 | Daily browsing | NIP-07 (Alby) |
 | No extension available | NIP-49 `ncryptsec` (with strong passphrase) |
-| High-value key | NIP-46 bunker (after wiring up the picker) |
+| High-value key | NIP-46 bunker |
 | Development | Local `nsec` (throwaway key only) |
 
 Note what is *not* on this list: "local nsec with a strong passphrase" (legacy

@@ -84,6 +84,7 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
     url: BRIDGE_URL,
     state: () => state,
     subscribe: (id, f) => send(['REQ', id, toWire(f)]),
+    unsubscribe: (id) => send(['CLOSE', id]),
     publish: (e) => send(['EVENT', e]),
     close: () => ws.close(),
   };

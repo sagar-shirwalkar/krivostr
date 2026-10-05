@@ -75,8 +75,9 @@ Not trusted:
 **A hostile relay.** It receives every event published, every filter
 subscribed, and can correlate a public key with an IP address and a
 subscription pattern. Mitigations: the outbox model (NIP-65) limits which
-relays see which keys; DMs use NIP-59 gift wrap so the relay cannot see who
-is talking to whom; all relay traffic is `wss://`.
+relays see which keys; NIP-59 gift wrap and NIP-17 DMs exist in the core so a
+relay need not see who is talking to whom, but the CLI `dm` command still
+sends NIP-04 kind 4; all relay traffic is `wss://`.
 
 **An XSS on the hosted UI origin.** If an attacker injects script into the
 Cloudflare Pages deployment, they can read whatever is in the page's memory.
@@ -154,15 +155,11 @@ model.
 
 ### NIP-46 (bunker)
 
-The user pastes a `bunker://` URL. Requests are encrypted with NIP-04 (NIP-44
-is planned) and sent over the bunker's relay. The bunker holds the key and
-returns signatures. The signing key never enters the browser.
-
-The transport is NIP-04, which has known weaknesses — padding-oracle
-susceptibility and no authenticated encryption. The threat it protects
-against here is a relay observing requests, not a determined cryptanalyst.
-NIP-44 is the planned replacement; until it lands, NIP-46 is recommended
-for its key isolation, not for its transport security.
+The user pastes a `bunker://` URL. Requests are encrypted with NIP-44 v2
+(ChaCha20 + HMAC-SHA256, authenticated) and sent over the bunker's relay.
+The bunker holds the key and returns signatures. The signing key never
+enters the browser; only a fresh one-time session key identifying this tab
+to the bunker lives in page memory.
 
 ---
 

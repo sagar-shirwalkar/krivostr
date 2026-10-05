@@ -26,6 +26,8 @@ export interface RelayHandle {
   readonly state: () => RelayState;
   /** Open (or replace) a subscription. */
   readonly subscribe: (id: string, f: FilterSpec) => void;
+  /** Revoke one subscription. Re-subscribing the same id replaces it. */
+  readonly unsubscribe: (id: string) => void;
   readonly close: () => void;
   readonly publish: (e: NostrEvent) => void;
 }
@@ -108,6 +110,9 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
     subscribe: (id: string, f: FilterSpec) => {
       subs.add(id);
       send(['REQ', id, toWire(f)]);
+    },
+    unsubscribe: (id: string) => {
+      if (subs.delete(id)) send(['CLOSE', id]);
     },
     publish: (e: NostrEvent) => send(['EVENT', e]),
     close: () => {

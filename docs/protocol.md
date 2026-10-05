@@ -82,6 +82,7 @@ is applied by the caller — `any (\f -> Filter.matches f e) filters` in
 | `until` | integer | Inclusive upper bound on `created_at`. |
 | `limit` | integer | Maximum events to return. |
 | `#<name>` | `string[]` | Tag filter; matches if any tag with that name carries any listed value. |
+| `search` | string | NIP-50 full-text search. Relays answer from their own index; the bridge answers from SQLite FTS5; single-event matching is a case-insensitive substring. |
 
 The UI's `FilterSpec` presents tag filters as a `tags` record and
 `toWire` flattens them into `#name` keys before sending.
@@ -93,15 +94,20 @@ The UI's `FilterSpec` presents tag filters as a `tags` record and
 | 01 | Basic protocol | ✅ full — variadic `REQ` filters, `EVENT`, `EOSE`, `OK`, `NOTICE`, `CLOSED` |
 | 02 | Follow list | ❌ not implemented |
 | 04 | Encrypted direct messages | ◐ CLI can send (NIP-04); UI cannot read incoming DMs |
+| 05 | DNS identifiers | ✅ parse + HTTPS `nostr.json` verify (`krivostr verify`, UI badge logic) |
 | 07 | `window.nostr` | ✅ full |
+| 10 | Reply conventions | ✅ marked + positional `e` tags, `krivostr reply`, UI thread rendering |
 | 13 | Proof of work | ✅ `nonce` tag, leading-zero-bit difficulty, committed target |
+| 18 | Reposts | ✅ kind 6 / 16 + `q`-tag quotes, `krivostr repost`, UI rendering |
 | 19 | bech32 entities | ◐ Haskell does `npub` / `nsec` only; UI encodes all six |
+| 23 | Long-form content | ✅ kind 30023 articles, `krivostr publish`, UI article rendering |
+| 25 | Reactions | ✅ kind 7 with `e`/`p`/`k` tags, `krivostr react`, UI counts |
 | 40 | Expiration timestamp | ✅ `expiration` tag for deterministic purge (bridge + UI) |
 | 42 | Authentication | ✅ NIP-42 challenge/response (ephemeral kind 22242, single-challenge queue) |
-| 44 | Versioned encryption | ✅ NIP-44 v2 (ChaCha20-Poly1305 + HKDF) with short-ciphertext panic fix and payload-size guard |
-| 46 | Remote signer | ◐ implemented over NIP-04, not reachable from UI (NIP-44 transport planned) |
+| 44 | Versioned encryption | ✅ NIP-44 v2 (ChaCha20 + HMAC + HKDF) with short-ciphertext panic fix and payload-size guard |
+| 46 | Remote signer | ✅ bunker over NIP-44, wired into the signer picker |
 | 49 | Private-key encryption | ✅ NIP-49 `ncryptsec` (scrypt + XChaCha20-Poly1305, bech32 `ncryptsec1...`) |
-| 50 | Search | ◐ local FTS5 only — no wire `search` filter |
+| 50 | Search | ✅ wire `search` filter; bridge answers from FTS5, CLI `--search`, UI search box |
 | 59 | Gift wrap | ✅ NIP-59 kind 1059 (rumor → NIP-44 seal → ephemeral-key wrap) |
 | 17 | Private direct messages | ✅ NIP-17 (rumor → NIP-44 seal → gift wrap, randomized timestamp ±2 days) |
 | 65 | Relay list metadata | ◐ kind 10002 drives CLI read relays; `writeRelays` unused |
@@ -112,11 +118,12 @@ AES-256-CBC under an ECDH shared secret — before publishing, but nothing in th
 UI decrypts: no UI module imports a NIP-04 implementation at all. A DM stored
 by the bridge is unreadable in the browser today.
 
-**NIP-44 v2 is a Haskell core feature.** `Krivostr.Nip.Nip44` implements the
-ChaCha20 + HMAC + HKDF-SHA256 construction with two security fixes over the
-reference spec. The TypeScript side has no NIP-44 module yet — `nip46Signer`
-takes its transport as an injected `{encrypt, decrypt}` pair and currently
-speaks NIP-04, so a NIP-44 implementation is a drop-in there.
+**NIP-44 v2 is implemented on both sides.** Haskell (`Krivostr.Nip.Nip44`)
+and TypeScript (`ui/src/nostr/nip44.ts`) implement the same ChaCha20 + HMAC +
+HKDF-SHA256 construction, checked against the same published vectors — the
+TypeScript tests assert the canonical payload byte for byte. `nip46Signer`
+takes its transport as an injected `{encrypt, decrypt}` pair, and the picker
+passes the NIP-44 adapter (`nip44Transport`), so bunker traffic rides NIP-44.
 
 Two security fixes over the reference spec:
 
@@ -135,16 +142,16 @@ and `Key.hs` has no `nprofile` decoder. `nprofile` appears there only in
 comments.
 
 **NIP-65 is read-only.** `Krivostr.Nip.Nip65` parses kind 10002 into
-`readRelays` and `writeRelays`, and `krivostr relay-hints` resolves a pubkey's
-read relays. Nothing publishes a kind 10002, and `writeRelays` is parsed but
-never consulted when publishing.
+`readRelays` and `writeRelays`, and the CLI resolves read relays from stored
+kind 10002s when no `--relay` is given. Nothing publishes a kind 10002, and
+`writeRelays` is parsed but never consulted when publishing.
 
-**NIP-46 is unreachable from the browser.** `nip46Signer` is complete and
-unit-tested, but `nostr-signer-picker.ts` imports only `localSigner` and
-`nip07Signer`, so nothing constructs a bunker signer. It also takes its NIP-04
-implementation as an **injected parameter** — the module imports no crypto for
-it — so a caller would have to supply one. Reaching a bunker from the UI means
-wiring up the picker and passing a NIP-44 implementation.
+**NIP-46 reaches the browser through the picker.** `nip46Signer` takes its
+transport as an injected `{encrypt, decrypt}` pair; the picker passes
+`nip44Transport`, so bunker traffic rides NIP-44 v2. The method table and
+request/response codecs live in `ui/src/nostr/nip46.ts`, mirroring
+`Krivostr.Nip.Nip46`. The session key is a fresh one-time key identifying
+the tab — the user's key never leaves the bunker.
 
 **NIP-59 gift wrap** wraps a rumor (unsigned kind 14) encrypted with NIP-44
 into an ephemeral-key-signed kind 1059 event. The relay sees only the wrapper.
@@ -167,15 +174,46 @@ deterministically, shrinking the window in which a stolen SQLite file is useful.
 **NIP-11 relay info** is requested on connect to discover whether a relay
 supports NIP-42, NIP-59, NIP-50, or PoW before sending traffic.
 
+**NIP-05 identifiers** resolve `alice@example.com` through the domain's
+`/.well-known/nostr.json` (always HTTPS, with the `?name=` query some hosts
+require). `Krivostr.Nip.Nip05` parses and compares; `krivostr verify` fetches
+and checks against a `--pubkey` or the `KRIVOSTR_NSEC` key; the UI mirrors
+the logic in `ui/src/nostr/nip05.ts` with a three-state badge (verified /
+failed / unknown — a network error is unknown, not failed).
+
+**NIP-10 replies** read marked `e` tags (`root` / `reply`) with the positional
+order as fallback for old events. `krivostr reply` looks the parent up in the
+store, resolves the thread root, and publishes a marked kind 1 both old and
+new clients parse the same way. The UI groups threads and renders reply
+context; the compose box carries the target.
+
+**NIP-25 reactions** are kind 7 with `e` / `p` / `k` tags; content is `+`,
+`-`, or an emoji. `krivostr react` publishes one (`--emoji`, default `+`);
+the UI shows per-note like/dislike counts and one-click ♥ buttons.
+
+**NIP-18 reposts** are kind 6 (notes) embedding the original as JSON, kind 16
+for other kinds with a `k` tag, and kind-1 *quotes* citing with `q` — never
+`e`, so quotes stay out of the reply thread. `krivostr repost` does both
+(`--quote` for the quote form); the UI renders embedded originals.
+
+**NIP-23 articles** are kind 30023 with a `d` slug, `title` / `summary` /
+`image` / `published_at` header, and Markdown body. `krivostr publish FILE
+--title …` publishes (or replaces, per slug) and prints the
+`30023:pubkey:slug` address; the UI renders the header over the body.
+
+**NIP-50 search** rides the wire `search` filter. The bridge answers it from
+SQLite FTS5 (ranked by bm25, other filter clauses still applied); without an
+index the same filter degrades to a substring scan rather than failing.
+`feed`, `export`, and `watch` take `--search`, the API takes `?search=`, and
+the UI has a search box that swaps the global subscription for a search one
+(and back on clear).
+
 ## Not implemented
 
 - **NIP-02** follow lists: no parsing or rendering of kind 3. Kind 3 is stored
   and retained, nothing more.
 - **NIP-09** deletion: no deletion-request handling. Kind 5 is recognized as a
   kind name but never published.
-- **NIP-50** search: **local only**. The bridge has an FTS5 index and
-  `krivostr search` queries it, but no `search` field is ever placed on the
-  wire, so filters are not forwarded to relays and no relay is asked to search.
 - **NIP-11** relay information: the document is parsed and `supported_nips` is
   queryable, but nothing requests it on connect yet, so no relay's capabilities
   are discovered in practice.

@@ -48,6 +48,8 @@ executable krivostr
     , direct-sqlite
     , directory
     , filepath
+    , http-client
+    , http-client-tls
     , http-types
     , krivostr-core
     , monad-logger
@@ -101,6 +103,8 @@ test-suite spec
     , directory
     , filepath
     , hspec
+    , http-client
+    , http-client-tls
     , http-types
     , krivostr-core
     , monad-logger

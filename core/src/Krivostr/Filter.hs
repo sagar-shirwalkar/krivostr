@@ -27,6 +27,9 @@ data Filter = Filter
   , fUntil   :: !(Maybe POSIXTime)
   , fLimit   :: !(Maybe Int)
   , fTags    :: ![(Text, [Text])]
+  -- | NIP-50 full-text search. On the wire this is @"search"@; relays answer
+  -- from their own index, whose semantics (stemming, ranking) are theirs.
+  , fSearch  :: !(Maybe Text)
   } deriving (Show, Eq, Generic)
 
 instance ToJSON Filter where
@@ -37,6 +40,7 @@ instance ToJSON Filter where
     , maybe [] (\v -> ["since"   .= v]) (fSince f)
     , maybe [] (\v -> ["until"   .= v]) (fUntil f)
     , maybe [] (\v -> ["limit"   .= v]) (fLimit f)
+    , maybe [] (\v -> ["search"  .= v]) (fSearch f)
     , [ K.fromText ("#" <> k) .= v | (k, v) <- fTags f ]
     ]
 
@@ -48,6 +52,7 @@ instance FromJSON Filter where
     since   <- o .:? "since"
     until   <- o .:? "until"
     limit   <- o .:? "limit"
+    search  <- o .:? "search"
     let tags =
           [ (K.toText k & T.drop 1, v)
           | (k, Array arr) <- KM.toList o
@@ -57,13 +62,14 @@ instance FromJSON Filter where
     pure Filter
       { fIds = ids, fAuthors = authors, fKinds = kinds
       , fSince = since, fUntil = until, fLimit = limit
+      , fSearch = search
       , fTags = tags
       }
     where
       (&) = flip ($)
 
 empty :: Filter
-empty = Filter Nothing Nothing Nothing Nothing Nothing Nothing []
+empty = Filter Nothing Nothing Nothing Nothing Nothing Nothing [] Nothing
 
 onlyKinds :: [Int] -> Filter
 onlyKinds ks = empty { fKinds = Just ks }
@@ -81,8 +87,16 @@ matches f e =
   && maybe True (elem (evKind e)) (fKinds f)
   && maybe True (<= evCreatedAt e) (fSince f)
   && maybe True (>= evCreatedAt e) (fUntil f)
+  && maybe True searchMatches (fSearch f)
   && all tagMatches (fTags f)
   where
+    -- A single event has no index, so the local reading of NIP-50 is a
+    -- case-insensitive substring on the content. The store answers the same
+    -- filter from FTS5 instead; both agree on plain words, which is what a
+    -- search box sends.
+    searchMatches q =
+      T.toCaseFold q `T.isInfixOf` T.toCaseFold (evContent e)
+
     tagMatches (k, vs) =
       any (\tag -> case tag of
              (t:_) -> t == k && any (`elem` tag) vs

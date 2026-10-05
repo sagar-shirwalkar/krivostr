@@ -11,7 +11,7 @@ that also exists in the repo is a copy that goes stale.
 
 ```bash
 stack build --fast     # build
-stack test             # 142 examples: 87 core, 55 client
+ stack test             # 542 examples: 478 core, 64 client
 stack ghci krivostr-core   # REPL against the pure layer
 ```
 
@@ -26,8 +26,8 @@ cd ui
 pnpm install --frozen-lockfile
 pnpm dev              # Vite dev server
 pnpm typecheck        # tsc --noEmit
-pnpm test             # 126 unit tests (jsdom)
-pnpm test:browser     # 15 browser tests (real Chromium)
+pnpm test             # 224 unit tests (jsdom)
+pnpm test:browser     # 16 browser tests (real Chromium)
 pnpm coverage         # v8, thresholds at 80
 ```
 
@@ -67,12 +67,12 @@ The two sides behave differently, and the difference is worth understanding.
 across the board and passes.
 
 **Backend coverage is a gate that currently fails.** `.hpc-threshold` requires
-80%; the measured total is **35.7%** (164 of 460), so `make coverage-backend`
+80%; the measured total is **55.7%** (546 of 980), so `make coverage-backend`
 exits non-zero. That is intentional and unchanged — the threshold is the goal,
 not the current state. The report is written to `coverage.txt` *before* the
 gate runs, so a red run still leaves you numbers to read.
 
-The cryptography and NIP-01 layers are well covered; the IO layers (Store,
+The NIP modules are well covered; the IO layers (Store,
 Pool, Relay, Bridge, Cli) are not. CI does not run coverage at all, so this
 gate is local-only for now.
 

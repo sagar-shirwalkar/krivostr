@@ -33,7 +33,7 @@ describe('<nostr-compose>', () => {
   };
 
   const button = (): HTMLButtonElement =>
-    el.shadowRoot!.querySelector('button')!;
+    el.shadowRoot!.querySelector('button[type="submit"]')!;
 
   const collect = (): CustomEvent[] => {
     const events: CustomEvent[] = [];
@@ -73,7 +73,25 @@ describe('<nostr-compose>', () => {
     await el.updateComplete;
 
     expect(events).toHaveLength(1);
-    expect(events[0].detail).toEqual({ content: 'hello', kind: 1 });
+    expect(events[0].detail).toEqual({ content: 'hello', kind: 1, tags: [] });
+  });
+
+  it('includes NIP-10 tags when replying', async () => {
+    el.signer = localSigner(NSEC_HEX);
+    el.replyTo = {
+      id: 'p'.repeat(64), pubkey: 'q'.repeat(64), created_at: 1700000000,
+      kind: 1, tags: [], content: 'parent', sig: 'r'.repeat(128),
+    };
+    const events = collect();
+    await type('answer');
+    button().click();
+    await el.updateComplete;
+
+    expect(events).toHaveLength(1);
+    expect(events[0].detail.tags).toEqual([
+      ['e', 'p'.repeat(64), '', 'root'],
+      ['p', 'q'.repeat(64)],
+    ]);
   });
 
   it('trims the content it publishes', async () => {

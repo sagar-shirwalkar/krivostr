@@ -299,21 +299,43 @@ insertEvents st es = do
 
 -- | Query by a filter. Everything happens in SQL for indexed fields,
 -- tag and content matching happens in Haskell (small N, cleaner).
+--
+-- A NIP-50 @search@ filter is answered from the FTS5 index instead of the
+-- row scan: the MATCH ranks by bm25, and 'matches' then applies the
+-- remaining predicates (ids, time bounds, tags, and the substring reading
+-- of the same search). Without an index the row scan still runs and
+-- 'matches' answers search as a substring, so the filter never fails -- it
+-- only gets slower.
 queryEvents :: Store -> Filter -> IO [Event]
-queryEvents st f = do
-  let (whereClause, params) = buildWhere f
-      lim = fromMaybe defaultLimit (fLimit f)
-      -- The limit is a bound parameter in the SQL rather than a Haskell `take`
-      -- afterwards: `take` still pulled every matching row out of SQLite
-      -- first, so a broad filter read the entire table to return 500 of them.
-      sql = "SELECT id, pubkey, created_at, kind, tags, content, sig \
-            \FROM events " <> whereClause <> " ORDER BY created_at DESC LIMIT ?"
-      allParams = params ++ [toField lim]
-  rows <- query (stConn st) (Query sql) allParams
-  -- Tag and content predicates still run in Haskell, so the limit can be
-  -- reached before enough rows pass; fetch the bounded page and let the caller
-  -- see what survived.
-  pure (filter (matches f) rows)
+queryEvents st f = case fSearch f of
+  Just q | not (T.null (T.strip q)) -> do
+    ok <- searchAvailable st
+    if not ok
+      then rowScan
+      else do
+        let lim = fromMaybe defaultLimit (fLimit f)
+            author = case fAuthors f of
+              Just [a] -> Just a
+              _        -> Nothing
+        evs <- searchEvents st q False (fKinds f) author (max 1 (lim * 4))
+        pure (take lim (filter (matches f) evs))
+  _ -> rowScan
+  where
+    rowScan = do
+      let (whereClause, params) = buildWhere f
+          lim = fromMaybe defaultLimit (fLimit f)
+          -- The limit is a bound parameter in the SQL rather than a Haskell
+          -- `take` afterwards: `take` still pulled every matching row out of
+          -- SQLite first, so a broad filter read the entire table to return
+          -- 500 of them.
+          sql = "SELECT id, pubkey, created_at, kind, tags, content, sig \
+                \FROM events " <> whereClause <> " ORDER BY created_at DESC LIMIT ?"
+          allParams = params ++ [toField lim]
+      rows <- query (stConn st) (Query sql) allParams
+      -- Tag and content predicates still run in Haskell, so the limit can be
+      -- reached before enough rows pass; fetch the bounded page and let the caller
+      -- see what survived.
+      pure (filter (matches f) rows)
 
 -- | Query with an ad-hoc SQL suffix (escape hatch for advanced callers).
 queryEventsWith :: Store -> Text -> [SQLData] -> IO [Event]

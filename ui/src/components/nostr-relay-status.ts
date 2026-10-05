@@ -90,6 +90,27 @@ export class NostrRelayStatus extends LitElement {
     return this.slots.map((s) => s.url);
   }
 
+  /**
+   * Search everywhere the global feed reads from. The bridge answers from
+   * SQLite FTS5 (instant, ranked); upstream relays answer from their own
+   * index when they support NIP-50, and ignore the `search` key when they
+   * do not — in which case the feed simply shows what matches locally.
+   */
+  searchAll(query: string): void {
+    for (const slot of this.slots) {
+      slot.handle.unsubscribe('global');
+      slot.handle.subscribe('search', { search: query, limit: 50 });
+    }
+  }
+
+  /** Drop the search subscription and reopen the global feed. */
+  clearSearch(): void {
+    for (const slot of this.slots) {
+      slot.handle.unsubscribe('search');
+      slot.handle.subscribe('global', { kinds: [1], limit: 50 });
+    }
+  }
+
   private emit(e: NostrEvent) {
     this.dispatchEvent(
       new CustomEvent('relay-event', { detail: e, bubbles: true, composed: true }),

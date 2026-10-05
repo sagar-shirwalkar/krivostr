@@ -1,6 +1,8 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Signer } from '../nostr/signer';
+import { NostrEvent } from '../nostr/event';
+import { buildReplyTags, replyRoot } from '../nostr/thread';
 
 @customElement('nostr-compose')
 export class NostrCompose extends LitElement {
@@ -55,30 +57,60 @@ export class NostrCompose extends LitElement {
   `;
 
   @property({ attribute: false }) signer: Signer | null = null;
+
+  /** The note being answered, if any. Set by the feed's reply button. */
+  @property({ attribute: false }) replyTo: NostrEvent | null = null;
+
   @state() private text = '';
 
   private onInput(e: Event) {
     this.text = (e.target as HTMLTextAreaElement).value;
   }
 
+  private cancelReply() {
+    this.replyTo = null;
+  }
+
   private submit(e: Event) {
     e.preventDefault();
     const trimmed = this.text.trim();
     if (!trimmed || !this.signer) return;
+    // A reply carries NIP-10 tags naming the thread root and the parent.
+    // Hints the browser never saw stay empty rather than becoming junk tags.
+    const rootId = this.replyTo ? (replyRoot(this.replyTo) ?? this.replyTo.id) : '';
+    const tags: string[][] = this.replyTo
+      ? buildReplyTags(
+          rootId,
+          '',
+          // The root author is known only when the parent is the root; the
+          // builder drops the p tag it cannot fill.
+          rootId === this.replyTo.id ? this.replyTo.pubkey : '',
+          this.replyTo.id,
+          '',
+          this.replyTo.pubkey,
+        )
+      : [];
     this.dispatchEvent(
       new CustomEvent('publish-request', {
-        detail: { content: trimmed, kind: 1 },
+        detail: { content: trimmed, kind: 1, tags },
         bubbles: true,
         composed: true,
       }),
     );
     this.text = '';
+    this.replyTo = null;
   }
 
   override render() {
     const disabled = !this.text.trim() || !this.signer;
     return html`
       <form @submit=${this.submit}>
+        ${this.replyTo
+          ? html`<div class="row">
+              <span>↳ replying to ${this.replyTo.pubkey.slice(0, 8)}…</span>
+              <button type="button" @click=${this.cancelReply}>cancel</button>
+            </div>`
+          : ''}
         <textarea
           placeholder=${this.signer ? "What's reducing?" : 'Choose a signer to publish'}
           .value=${this.text}

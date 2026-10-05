@@ -24,6 +24,12 @@ export interface FilterSpec {
   /** Tag name to accepted values. The event matches if any tag with that name
    *  carries any of the listed values. */
   readonly tags?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * NIP-50 full-text search. Goes on the wire as `search`; relays answer
+   * from their own index. The local reading is a case-insensitive substring
+   * on the content — same rule as the Haskell `matches`.
+   */
+  readonly search?: string;
 }
 
 /** Wire form: the tag record is flattened into `#name` keys. */
@@ -69,6 +75,7 @@ export const compile = (f: FilterSpec): CompiledFilter => {
     if (kinds && !kinds.has(e.kind)) return false;
     if (f.since !== undefined && e.created_at < f.since) return false;
     if (f.until !== undefined && e.created_at > f.until) return false;
+    if (f.search !== undefined && !e.content.toLowerCase().includes(f.search.toLowerCase())) return false;
 
     for (const [name, values] of tagTests) {
       const hit = e.tags.some(
