@@ -68,6 +68,10 @@ subscribes to kind 24133 events from the remote pubkey, and speaks
 session key — not the user's key, which never leaves the bunker — so the
 bunker can authenticate the caller.
 
+The Haskell core has a matching `Krivostr.Nip.Nip46` module — bunker URI
+parsing, the method table, and request/response codecs over NIP-44 — but the
+TypeScript signer does not call it, so the two are not yet interoperable.
+
 | | |
 |---|---|
 | **Pros** | Key is on a separate device. Best for high-value keys. |
