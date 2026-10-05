@@ -122,7 +122,10 @@ describe('publish boundary', () => {
       state: () => 'open' as const,
       subscribe: () => undefined,
       unsubscribe: () => undefined,
+<<<<<<< HEAD
       count: () => Promise.resolve(0),
+=======
+>>>>>>> 8c2a93b (NIP 10 25 18 05 23 50 and docs)
       publish: (e: unknown) => published.push(e),
       close: () => undefined,
     };

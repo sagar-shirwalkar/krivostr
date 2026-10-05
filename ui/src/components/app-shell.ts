@@ -599,6 +599,24 @@ export class KrivostrApp extends LitElement {
     `;
   }
 
+  private feedEl(): (HTMLElement & { clear: () => void }) | null {
+    return this.renderRoot.querySelector('nostr-feed') as
+      | (HTMLElement & { clear: () => void })
+      | null;
+  }
+
+  /** Search submit: clear the feed and ask every transport for matches.
+   * An empty query restores the global feed. */
+  private handleSearch(e: Event) {
+    e.preventDefault();
+    const status = this.relayStatus();
+    if (!status) return;
+    const q = this.searching.trim();
+    this.feedEl()?.clear();
+    if (q === '') status.clearSearch();
+    else status.searchAll(q);
+  }
+
   override render() {
     if (this.view === 'landing') {
       return html`
