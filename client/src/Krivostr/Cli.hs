@@ -53,6 +53,10 @@ import Krivostr.Key
 import Krivostr.Logging hiding (info)
 import Krivostr.Nip.Nip01 (verifyEvent)
 import Krivostr.Nip.Nip05 (parseIdentifier, verifyName, wellKnownUrl)
+import Krivostr.Nip.Nip09 (appliesTo, buildDeletionTags, parameterizedAddress)
+import Krivostr.Nip.Nip51 (addEntry, bookmarkKind, bookmarkedAddresses, bookmarkedIds, muteKind, mutedPubkeys, pinKind, pinnedIds, removeEntry)
+import Krivostr.Nip.Nip22 (ItemRef (..), buildCommentTags)
+import Krivostr.Nip.Nip27 (Mention (..), MentionKind (..), findMentions)
 import Krivostr.Nip.Nip23 (buildArticleTags, slugify)
 import Krivostr.Nip.Nip10 (buildReplyTags, replyRoot)
 import Krivostr.Nip.Nip18 (buildQuoteTags, buildRepostTags, embedOriginal)
@@ -139,6 +143,11 @@ data Command
   | CmdRepost RepostOpts
   | CmdVerify VerifyOpts
   | CmdPublish PublishOpts
+  | CmdDelete DeleteOpts
+  | CmdResolve ResolveOpts
+  | CmdComment CommentOpts
+  | CmdList ListOpts
+  | CmdCount CountOpts
   | CmdExport ExportOpts
   | CmdWatch WatchOpts
   | CmdApi ApiOpts
@@ -159,6 +168,7 @@ data FeedOpts = FeedOpts
   , fdFollow :: Bool
   , fdIngest :: Bool
   , fdRelays :: [Text]
+  , fdReveal :: Bool
   }
 
 data SearchOpts = SearchOpts
@@ -211,6 +221,35 @@ data PublishOpts = PublishOpts
   , puImage   :: String
   , puRelays  :: [Text]
   , puTimeout :: Int
+  }
+
+data DeleteOpts = DeleteOpts
+  { dlIds     :: [String]
+  , dlRelays  :: [Text]
+  , dlTimeout :: Int
+  }
+
+data ResolveOpts = ResolveOpts
+  { rsRef :: String
+  }
+
+data CommentOpts = CommentOpts
+  { coTarget  :: String
+  , coMessage :: String
+  , coRelays  :: [Text]
+  , coTimeout :: Int
+  }
+
+data ListOpts = ListOpts
+  { liList   :: String
+  , liAdd    :: [String]
+  , liDel    :: [String]
+  , liRelays :: [Text]
+  , liTimeout :: Int
+  }
+
+newtype CountOpts = CountOpts
+  { cnFilter :: FilterOpts
   }
 
 data ExportOpts = ExportOpts
@@ -294,6 +333,11 @@ commandP = hsubparser
  <> command "repost"   (info (CmdRepost  <$> repostP)   (progDesc "Repost or quote an event (NIP-18)"))
  <> command "verify"   (info (CmdVerify  <$> verifyP)   (progDesc "Check a NIP-05 identifier against its domain"))
  <> command "publish"  (info (CmdPublish <$> publishP)  (progDesc "Publish a Markdown file as a long-form article (NIP-23)"))
+ <> command "delete"   (info (CmdDelete  <$> deleteP)   (progDesc "Request deletion of your events (NIP-09)"))
+ <> command "resolve"  (info (CmdResolve <$> resolveP)  (progDesc "Resolve a nostr: reference, bech32, or hex (NIP-27)"))
+ <> command "comment"  (info (CmdComment <$> commentP)  (progDesc "Comment on a non-note event (NIP-22)"))
+ <> command "list"     (info (CmdList    <$> listP)     (progDesc "Show or edit a NIP-51 list: mute, pin, bookmark"))
+ <> command "count"    (info (CmdCount   <$> countP)    (progDesc "Count stored events matching a filter (NIP-45)"))
  <> command "export"  (info (CmdExport  <$> exportP)  (progDesc "Bulk export as nostr (ndjson), array or csv"))
  <> command "watch"   (info (CmdWatch   <$> watchP)   (progDesc "Notify on new events"))
  <> command "api"     (info (CmdApi     <$> apiP)     (progDesc "Run the JSON HTTP API on its own port"))
@@ -320,6 +364,7 @@ feedP = FeedOpts
   <*> switch (long "follow" <> short 'f' <> help "Stream live from relays instead of reading the store")
   <*> switch (long "ingest" <> help "With --follow, also store what arrives")
   <*> many (urlOption "relay" "Relay to stream from")
+  <*> switch (long "show-sensitive" <> help "Reveal content behind content-warning tags")
 
 searchP :: Parser SearchOpts
 searchP = SearchOpts
@@ -384,6 +429,37 @@ publishP = PublishOpts
   <*> many (urlOption "relay" "Relay to publish to")
   <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
                 <> help "How long to wait for each relay's OK")
+
+deleteP :: Parser DeleteOpts
+deleteP = DeleteOpts
+  <$> some (argument str (metavar "EVENT-ID" <> help "Hex id of your event to delete"))
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+resolveP :: Parser ResolveOpts
+resolveP = ResolveOpts
+  <$> argument str (metavar "REF" <> help "nostr:npub… URL, bare bech32, or 64-char hex")
+
+commentP :: Parser CommentOpts
+commentP = CommentOpts
+  <$> argument str (metavar "TARGET" <> help "Hex event id, or kind:pubkey:slug address")
+  <*> argument str (metavar "MESSAGE" <> help "Comment text (plaintext)")
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+listP :: Parser ListOpts
+listP = ListOpts
+  <$> argument str (metavar "LIST" <> help "mute | pin | bookmark")
+  <*> many (strOption (long "add" <> metavar "VALUE" <> help "Add an entry (repeatable)"))
+  <*> many (strOption (long "del" <> metavar "VALUE" <> help "Remove an entry (repeatable)"))
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+countP :: Parser CountOpts
+countP = CountOpts <$> filterP
 
 exportP :: Parser ExportOpts
 exportP = ExportOpts
@@ -587,6 +663,11 @@ dispatch (Opts g cmd) = do
       CmdRepost o -> cmdRepost lg' db o
       CmdVerify o -> cmdVerify lg' o
       CmdPublish o -> cmdPublish lg' db o
+      CmdDelete o -> cmdDelete lg' db o
+      CmdResolve o -> cmdResolve lg' db o
+      CmdComment o -> cmdComment lg' db o
+      CmdList o -> cmdList lg' db o
+      CmdCount o -> cmdCount lg' db o
       CmdExport o -> cmdExport lg' db o
       CmdWatch o  -> cmdWatch lg' db colour o
       CmdApi o    -> withStore lg' db $ \st -> do
@@ -689,7 +770,7 @@ cmdFeed lg db colour o
       f   <- buildFilter (fdFilter o)
       evs <- queryEvents st f
       now <- getPOSIXTime
-      forM_ evs (putEvent colour now (fdJson o) (fdLong o))
+      forM_ evs (putEvent colour now (fdJson o) (fdLong o) (fdReveal o))
       when (null evs) $
         TIO.hPutStrLn stderr "no events matched; try --limit 500, or --kind note"
   where
@@ -712,7 +793,7 @@ cmdFeed lg db colour o
       lock <- newMVar ()
       let onEvent e = withMVar lock $ \_ -> do
             now <- getPOSIXTime
-            putEvent colour now (fdJson o) (fdLong o) e
+            putEvent colour now (fdJson o) (fdLong o) (fdReveal o) e
             case store of
               Nothing -> pure ()
               Just st -> do
@@ -766,7 +847,7 @@ cmdSearch lg db colour o = withStore lg db $ \st -> do
          author
          (foLimit fo)
   now <- getPOSIXTime
-  forM_ evs (putEvent colour now (seJson o) False)
+  forM_ evs (putEvent colour now (seJson o) False False)
   TIO.hPutStrLn stderr
     (T.pack (show (length evs)) <> " match(es) for " <> seQuery o)
 
@@ -798,7 +879,7 @@ cmdDm lg db o
           , fLimit = Just (dmLimit o), fTags = [("p", [mine])], fSearch = Nothing }
         now <- getPOSIXTime
         forM_ evs $ \e -> do
-          TIO.putStrLn (renderEvent False now e)
+          TIO.putStrLn (renderEvent False False now e)
           case senderOf e of
             "" -> pure ()
             v  -> case publicKeyFromHex v of
@@ -992,6 +1073,165 @@ cmdPublish lg db o = do
   publishNote lg db (puTimeout o) ev (puRelays o) "publish"
   TIO.putStrLn ("address: 30023:" <> pubKeyHex (derivePublicKey sk) <> ":" <> slug)
 
+cmdDelete :: Logger -> FilePath -> DeleteOpts -> IO ()
+cmdDelete lg db o = do
+  sk <- requireKey
+  let mine = pubKeyHex (derivePublicKey sk)
+  targets <- mapM (requireEvent lg db) (dlIds o)
+  -- Deletion is self-service only. Refusing here beats publishing a request
+  -- every relay will ignore and then deleting a stranger's note locally.
+  forM_ targets $ \t ->
+    when (evPubkey t /= mine) (die ("not yours, refusing: " ++ T.unpack (evId t)))
+  now <- getPOSIXTime
+  let addrs = [a | Just a <- map parameterizedAddress targets]
+      ev = signUnsigned sk UnsignedEvent
+        { uePubkey    = mine
+        , ueCreatedAt = now
+        , ueKind      = 5
+        , ueTags      = buildDeletionTags (map evId targets) addrs
+        , ueContent   = ""
+        }
+  -- Sanity, not trust: the request we just built must apply to every target
+  -- by our own rule, or the tags are wrong and relays will ignore them.
+  unless (all (appliesTo ev) targets) (die "internal error: deletion does not apply to its targets")
+  publishNote lg db (dlTimeout o) ev (dlRelays o) "delete"
+  withStore lg db $ \st -> forM_ targets (deleteEvent st . evId)
+  TIO.putStrLn ("removed " <> T.pack (show (length targets)) <> " event(s) locally")
+
+cmdResolve :: Logger -> FilePath -> ResolveOpts -> IO ()
+cmdResolve lg db o = do
+  now <- getPOSIXTime
+  let raw = T.pack (rsRef o)
+      -- The input is (or contains) a nostr: reference; resolve the first
+      -- one. Text around it is ignored, so pasting a whole sentence works.
+      -- A bare bech32 without the scheme gets one added before scanning.
+      refs = case findMentions raw of
+        [] | "nostr:" `T.isPrefixOf` raw -> []
+           | otherwise -> findMentions ("nostr:" <> raw)
+        ms -> ms
+  case refs of
+    (Mention kind _ : _) -> case kind of
+      MentionPubkey hex -> TIO.putStrLn ("author " <> hex)
+      MentionEvent eid -> withStore lg db $ \st -> do
+        found <- getEventById st eid
+        case found of
+          Just e  -> TIO.putStrLn (renderEventBlock False True now e)
+          Nothing -> TIO.putStrLn ("event " <> eid <> " (not in the local store)")
+      MentionProfile hex relays -> do
+        TIO.putStrLn ("author " <> hex)
+        forM_ relays $ \r -> TIO.putStrLn ("relay " <> r)
+      MentionOpaque hrp ->
+        TIO.putStrLn (hrp <> " references resolve in phase 2.3 (nevent/naddr entities)")
+    -- No bech32 at all: a hex event id, or a hex pubkey.
+    [] -> withStore lg db $ \st -> do
+      found <- getEventById st raw
+      case found of
+        Just e  -> TIO.putStrLn (renderEventBlock False True now e)
+        Nothing -> case resolveAuthor (rsRef o) of
+          Right hex -> TIO.putStrLn ("author " <> hex)
+          Left _    -> die (rsRef o ++ " is not a nostr: reference, bech32, or hex")
+
+cmdComment :: Logger -> FilePath -> CommentOpts -> IO ()
+cmdComment lg db o = do
+  sk <- requireKey
+  target <- resolveTarget (coTarget o)
+  -- Kind 1 takes NIP-10 replies, not kind 1111: commenting on a note would
+  -- strand the thread where no reader looks for it.
+  when (evKind target == 1) (die "that is a kind 1 note: use reply, not comment")
+  now <- getPOSIXTime
+  let ref = ItemRef
+        { refId      = Just (evId target)
+        , refAddress = parameterizedAddress target
+        , refKind    = evKind target
+        , refAuthor  = evPubkey target
+        , refRelay   = ""
+        }
+      ev = signUnsigned sk UnsignedEvent
+        { uePubkey    = pubKeyHex (derivePublicKey sk)
+        , ueCreatedAt = now
+        , ueKind      = 1111
+        , ueTags      = buildCommentTags ref Nothing
+        , ueContent   = T.pack (coMessage o)
+        }
+  publishNote lg db (coTimeout o) ev (coRelays o) "comment"
+  where
+    -- An address names the article; the newest stored version is what the
+    -- comment's E tag pins, so readers see what the author saw.
+    resolveTarget raw
+      | isHex64 (T.pack raw) = requireEvent lg db raw
+      | otherwise = case T.splitOn ":" (T.pack raw) of
+          [kindT, pub, slug] -> withStore lg db $ \st -> do
+            kinds <- case reads (T.unpack kindT) of
+              [(n, "")] -> pure [n :: Int]
+              _         -> die "address must be kind:pubkey:slug"
+            cands <- queryEvents st Filter
+              { fIds = Nothing, fAuthors = Just [pub], fKinds = Just kinds
+              , fSince = Nothing, fUntil = Nothing, fLimit = Just 10
+              , fTags = [("d", [slug])], fSearch = Nothing }
+            case cands of
+              (e : _) -> pure e
+              []      -> die ("nothing at that address in the local store: " ++ raw)
+          _ -> die "target must be a hex event id or kind:pubkey:slug"
+
+cmdList :: Logger -> FilePath -> ListOpts -> IO ()
+cmdList lg db o = do
+  kind <- case liList o of
+    "mute"     -> pure muteKind
+    "pin"      -> pure pinKind
+    "bookmark" -> pure bookmarkKind
+    other      -> die ("unknown list: " ++ other ++ " (try mute, pin, bookmark)")
+  sk <- requireKey
+  let mine = pubKeyHex (derivePublicKey sk)
+  current <- withStore lg db $ \st -> do
+    evs <- queryEvents st Filter
+      { fIds = Nothing, fAuthors = Just [mine], fKinds = Just [kind]
+      , fSince = Nothing, fUntil = Nothing, fLimit = Just 1
+      , fTags = [], fSearch = Nothing }
+    pure (maybe [] evTags (listToMaybe' evs))
+  -- Values are interpreted per list: mute takes authors, pins take event
+  -- ids, bookmarks take either (an address cites with a, an id with e).
+  let entryOf v = case (kind, resolveAuthor v) of
+        (k, Right hex) | k == muteKind -> Right ("p", hex)
+        (_, _) | isHex64 (T.pack v) ->
+          Right (if kind == muteKind then ("p", T.pack v) else ("e", T.pack v))
+        (_, _) | kind == bookmarkKind && isAddress (T.pack v) -> Right ("a", T.pack v)
+        _ -> Left ("not a value for " ++ liList o ++ ": " ++ v)
+  adds <- mapM (either die pure . entryOf) (liAdd o)
+  dels <- mapM (either die pure . entryOf) (liDel o)
+  let tags = foldr (uncurry removeEntry) (foldr (uncurry addEntry) current adds) dels
+  -- Showing prints entries, not tags: the reader wants values.
+  if null adds && null dels
+    then printEntries kind (bareList kind current)
+    else do
+      now <- getPOSIXTime
+      let ev = signUnsigned sk UnsignedEvent
+            { uePubkey    = mine
+            , ueCreatedAt = now
+            , ueKind      = kind
+            , ueTags      = tags
+            , ueContent   = ""
+            }
+      publishNote lg db (liTimeout o) ev (liRelays o) ("list " <> T.pack (liList o))
+      withStore lg db $ \st -> void (insertEvent st ev)
+      TIO.putStrLn "saved locally"
+  where
+    bareList kind tags = Event "" "" 0 kind tags "" ""
+    isAddress t = length (T.splitOn ":" t) == 3
+    printEntries kind e
+      | kind == muteKind = mapM_ (TIO.putStrLn . ("muted " <>)) (mutedPubkeys e)
+      | kind == pinKind = mapM_ (TIO.putStrLn . ("pinned " <>)) (pinnedIds e)
+      | otherwise = do
+          mapM_ (TIO.putStrLn . ("saved " <>)) (bookmarkedIds e)
+          mapM_ (TIO.putStrLn . ("saved " <>)) (bookmarkedAddresses e)
+
+cmdCount :: Logger -> FilePath -> CountOpts -> IO ()
+cmdCount lg db o = withStore lg db $ \st -> do
+  f <- buildFilter (cnFilter o)
+  -- countMatching ignores the limit: NIP-45 counts everything the filter
+  -- matches, not the page size, so --limit only bounds feed output.
+  n <- countMatching st f
+  TIO.putStrLn (T.pack (show n))
+
 publicKeyFromHex :: Text -> Maybe PublicKey
 publicKeyFromHex t = do
   bs <- either (const Nothing) Just (B16.decode (TE.encodeUtf8 t))
@@ -1086,7 +1326,7 @@ cmdWatch lg db colour o
   where
     announce e = do
       now <- getPOSIXTime
-      TIO.putStrLn (renderEventBlock colour now e)
+      TIO.putStrLn (renderEventBlock colour False now e)
       when (waBell o) (hFlush stdout >> putStr "\a" >> hFlush stdout)
       forM_ (waExec o) $ \cmd -> do
         (code, out, err) <-
@@ -1142,7 +1382,9 @@ systemdUnit db o =
 
 -- ═══════════════════════════════════════════════════════════ output
 
-putEvent :: Bool -> POSIXTime -> Bool -> Bool -> Event -> IO ()
-putEvent _ _ True _ e = BLC.putStrLn (encode e)
-putEvent colour now _ True  e = TIO.putStrLn (renderEventBlock colour now e)
-putEvent colour now _ False e = TIO.putStrLn (renderEvent colour now e)
+-- | Print an event: JSON, long, or one line. The last 'Bool' is the
+-- @--show-sensitive@ reveal; JSON always carries the raw bytes.
+putEvent :: Bool -> POSIXTime -> Bool -> Bool -> Bool -> Event -> IO ()
+putEvent _ _ True _ _ e = BLC.putStrLn (encode e)
+putEvent colour now _ True reveal e = TIO.putStrLn (renderEventBlock colour reveal now e)
+putEvent colour now _ False reveal e = TIO.putStrLn (renderEvent colour reveal now e)

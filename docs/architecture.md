@@ -121,6 +121,15 @@ events afterwards, and the `EOSE` marks the seam between them. A `search`
 filter is answered from the FTS5 index on the same path — the bridge's
 instant search is this replay with a MATCH clause.
 
+**Counting.** A `COUNT` never leaves the bridge: it is answered from SQLite
+(one indexed `COUNT(*)`, FTS subquery for search) and overlapping filters
+union by id. Upstream relays answer for themselves when asked directly.
+
+**Deleting and muting.** A kind 5 removes the author's own rows from SQLite
+and publishes upstream; other clients hide cited targets by the same
+authorship rule. Mute lists (kind 10000) are retention-exempt user state;
+the UI filters on its own list locally, so muting needs no relay support.
+
 **NIP-42 auth on the CLI.** The relay pool answers a challenge with a kind
 22242 event signed by the loaded key, so `feed --follow` and `dm` work against
 `auth-required` relays. The bridge itself does not yet require browser clients

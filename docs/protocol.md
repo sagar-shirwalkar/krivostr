@@ -45,6 +45,7 @@ Client to relay:
 | `["EVENT", <event>]` | Variadic in NIP-01; krivostr always sends exactly one event. |
 | `["REQ", <sub-id>, <filter>…]` | Filters are **variadic**, per NIP-01. |
 | `["CLOSE", <sub-id>]` | |
+| `["COUNT", <sub-id>, <filter>…]` | NIP-45: how many stored events match, without fetching them. |
 
 Relay to client:
 
@@ -56,6 +57,7 @@ Relay to client:
 | `["NOTICE", <message>]` | |
 | `["CLOSED", <sub-id>, <message>]` | |
 | `["AUTH", <challenge>]` | NIP-42 authentication challenge. |
+| `["COUNT", <sub-id>, {"count": N}]` | NIP-45 answer. |
 
 ### The REQ semantics that matter
 
@@ -96,18 +98,24 @@ The UI's `FilterSpec` presents tag filters as a `tags` record and
 | 04 | Encrypted direct messages | ◐ CLI can send (NIP-04); UI cannot read incoming DMs |
 | 05 | DNS identifiers | ✅ parse + HTTPS `nostr.json` verify (`krivostr verify`, UI badge logic) |
 | 07 | `window.nostr` | ✅ full |
+| 09 | Event deletion | ✅ kind 5 (author-checked), `krivostr delete`, local removal + UI hide |
 | 10 | Reply conventions | ✅ marked + positional `e` tags, `krivostr reply`, UI thread rendering |
 | 13 | Proof of work | ✅ `nonce` tag, leading-zero-bit difficulty, committed target |
 | 18 | Reposts | ✅ kind 6 / 16 + `q`-tag quotes, `krivostr repost`, UI rendering |
 | 19 | bech32 entities | ◐ Haskell does `npub` / `nsec` only; UI encodes all six |
+| 22 | Comments | ✅ kind 1111 (uppercase root / lowercase parent), `krivostr comment`, UI threads |
 | 23 | Long-form content | ✅ kind 30023 articles, `krivostr publish`, UI article rendering |
 | 25 | Reactions | ✅ kind 7 with `e`/`p`/`k` tags, `krivostr react`, UI counts |
+| 27 | Text note references | ✅ `nostr:` scanning, `krivostr resolve`, UI mention rendering |
+| 36 | Sensitive content | ✅ `content-warning` tag, CLI gate, UI blur-to-reveal |
 | 40 | Expiration timestamp | ✅ `expiration` tag for deterministic purge (bridge + UI) |
 | 42 | Authentication | ✅ NIP-42 challenge/response (ephemeral kind 22242, single-challenge queue) |
 | 44 | Versioned encryption | ✅ NIP-44 v2 (ChaCha20 + HMAC + HKDF) with short-ciphertext panic fix and payload-size guard |
+| 45 | Counting results | ✅ wire `COUNT`, bridge answers from SQLite, `krivostr count`, UI `count()` |
 | 46 | Remote signer | ✅ bunker over NIP-44, wired into the signer picker |
 | 49 | Private-key encryption | ✅ NIP-49 `ncryptsec` (scrypt + XChaCha20-Poly1305, bech32 `ncryptsec1...`) |
 | 50 | Search | ✅ wire `search` filter; bridge answers from FTS5, CLI `--search`, UI search box |
+| 51 | Lists | ✅ mute / pin / bookmark, `krivostr list`, UI mute filtering |
 | 59 | Gift wrap | ✅ NIP-59 kind 1059 (rumor → NIP-44 seal → ephemeral-key wrap) |
 | 17 | Private direct messages | ✅ NIP-17 (rumor → NIP-44 seal → gift wrap, randomized timestamp ±2 days) |
 | 65 | Relay list metadata | ◐ kind 10002 drives CLI read relays; `writeRelays` unused |
@@ -208,12 +216,47 @@ index the same filter degrades to a substring scan rather than failing.
 the UI has a search box that swaps the global subscription for a search one
 (and back on clear).
 
+**NIP-09 deletion** is a kind 5 citing `e` ids and `a` addresses, effective
+only against its author's own events. `krivostr delete` refuses foreign
+events, publishes, then drops its own copies; the UI hides cited targets and
+renders the request as a receipt. Advisory throughout — relays may keep the
+bytes.
+
+**NIP-22 comments** thread anything but kind 1 notes: kind 1111, plaintext,
+UPPERCASE root scope (`E`/`A`, `K`, `P`) and lowercase parent (`e`/`a`,
+`k`, `p`). `krivostr comment` takes an id or `kind:pubkey:slug` address and
+refuses kind 1 (that is NIP-10's job); the UI comments on articles from the
+feed and renders comment threads.
+
+**NIP-27 mentions** scan `nostr:` URIs out of free text: `npub` to hex
+authors, `note` to ids, `nprofile` through its TLV. `nsec` parses as opaque
+and is never decoded. `krivostr resolve` prints authors, relays, and stored
+events; the UI renders mentions as labelled spans (click-through is NIP-21's
+phase).
+
+**NIP-36 sensitive content** is the `content-warning` tag — presence is the
+signal, the reason advisory, and a reasonless tag still counts. `feed` hides
+bodies behind the warning unless `--show-sensitive`; the UI blurs behind a
+click that never persists.
+
+**NIP-51 lists** are replaceable tag-sets: kind 10000 mutes `p` pubkeys,
+10001 pins `e` ids, 10003 bookmarks `e`/`a`/`d`/`t`. `krivostr list
+mute|pin|bookmark [--add V]... [--del V]...` edits (or shows) the latest own
+list, publishes, and stores it; lists are retention-exempt. The UI subscribes
+to its own kind 10000 and hides muted authors locally — no relay support
+needed.
+
+**NIP-45 COUNT** asks `["COUNT", id, filters…]` and gets
+`["COUNT", id, {"count": N}]`. The bridge answers from SQLite — one indexed
+`COUNT(*)` (search via an FTS subquery), tags via a bounded fetch — and never
+forwards; overlapping filters union by id. `krivostr count` prints the
+number; the UI `count()` backs the search result line, bridge-slot only,
+because cross-relay sums would double-count.
+
 ## Not implemented
 
 - **NIP-02** follow lists: no parsing or rendering of kind 3. Kind 3 is stored
   and retained, nothing more.
-- **NIP-09** deletion: no deletion-request handling. Kind 5 is recognized as a
-  kind name but never published.
 - **NIP-11** relay information: the document is parsed and `supported_nips` is
   queryable, but nothing requests it on connect yet, so no relay's capabilities
   are discovered in practice.

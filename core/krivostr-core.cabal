@@ -26,18 +26,23 @@ library
       Krivostr.Logging
       Krivostr.Nip.Nip01
       Krivostr.Nip.Nip05
+      Krivostr.Nip.Nip09
       Krivostr.Nip.Nip10
       Krivostr.Nip.Nip11
       Krivostr.Nip.Nip13
       Krivostr.Nip.Nip17
       Krivostr.Nip.Nip18
+      Krivostr.Nip.Nip22
       Krivostr.Nip.Nip23
       Krivostr.Nip.Nip25
+      Krivostr.Nip.Nip27
+      Krivostr.Nip.Nip36
       Krivostr.Nip.Nip40
       Krivostr.Nip.Nip42
       Krivostr.Nip.Nip44
       Krivostr.Nip.Nip46
       Krivostr.Nip.Nip49
+      Krivostr.Nip.Nip51
       Krivostr.Nip.Nip59
       Krivostr.Nip.Nip65
       Krivostr.Schnorr
@@ -73,17 +78,22 @@ test-suite spec
   other-modules:
       Bip340
       Nip05Spec
+      Nip09Spec
       Nip10Spec
       Nip11Spec
       Nip13Spec
       Nip17Spec
+      Nip22Spec
       Nip23Spec
       Nip25Spec
+      Nip27Spec
+      Nip36Spec
       Nip40Spec
       Nip42Spec
       Nip44Spec
       Nip46Spec
       Nip49Spec
+      Nip51Spec
       Nip59Spec
       Paths_krivostr_core
   autogen-modules:

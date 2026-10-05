@@ -19,6 +19,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock.POSIX (POSIXTime)
 import Krivostr.Event
+import Krivostr.Nip.Nip36 (contentWarningOf)
 
 -- ANSI, hand-rolled: the escape sequences are short and pulling in
 -- ansi-terminal for four of them is not worth another dependency.
@@ -67,12 +68,16 @@ relativeTime now then_ =
      else secs 31536000 <> "y"
 
 -- | One line per event: age, kind, author, content.
-renderEvent :: Bool -> POSIXTime -> Event -> Text
-renderEvent colour now e =
+--
+-- When @reveal@ is 'False', a @content-warning@ tag replaces the body with
+-- the warning: the flag exists so scripts and eyeballs do not render
+-- sensitive content by accident. @--show-sensitive@ sets it.
+renderEvent :: Bool -> Bool -> POSIXTime -> Event -> Text
+renderEvent colour reveal now e =
   let age  = relativeTime now (evCreatedAt e)
       kind = "#" <> T.pack (show (evKind e))
       who  = shortHex 8 (evPubkey e)
-      body = oneLine 100 (evContent e)
+      body = if reveal then oneLine 100 (evContent e) else warnBody e
       plain = T.concat
         [ padRight 6 age, " ", padRight 7 kind, " ", padRight 17 who, "  ", body ]
   in if colour
@@ -83,12 +88,20 @@ renderEvent colour now e =
          , "  ", body ]
        else plain
 
+-- | The body with a warning substituted when the event is sensitive.
+warnBody :: Event -> Text
+warnBody e = case contentWarningOf e of
+  Nothing     -> oneLine 100 (evContent e)
+  Just reason -> "sensitive" <> (if T.null reason then "" else ": " <> oneLine 80 reason)
+
 -- | A multi-line rendering that keeps the content's own line breaks, for
 -- @--long@ and for notifications.
-renderEventBlock :: Bool -> POSIXTime -> Event -> Text
-renderEventBlock colour now e =
-  let header = renderEvent colour now e
-      body   = T.unlines (map ("    " <>) (T.lines (T.replace "\t" "  " (evContent e))))
+renderEventBlock :: Bool -> Bool -> POSIXTime -> Event -> Text
+renderEventBlock colour reveal now e =
+  let header = renderEvent colour reveal now e
+      body   = case contentWarningOf e of
+        Just _ | not reveal -> "    [content hidden: content-warning]"
+        _ -> T.unlines (map ("    " <>) (T.lines (T.replace "\t" "  " (evContent e))))
       tags   = if null (evTags e) then "" else
                   "    " <> dim <> T.intercalate " " (map renderTag (evTags e))
                   <> if colour then reset else ""

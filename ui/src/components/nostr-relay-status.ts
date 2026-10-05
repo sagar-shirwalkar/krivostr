@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { RelayHandle, RelayState, connect } from '../nostr/relay';
 import { connectBridge, chooseTransport } from '../nostr/bridge';
 import { DEFAULT_RELAYS, outboxFor, parseRelayList, RelayHint } from '../nostr/nip65';
+import { FilterSpec } from '../nostr/filter';
 import { NostrEvent } from '../nostr/event';
 
 interface Slot {
@@ -88,6 +89,29 @@ export class NostrRelayStatus extends LitElement {
   /** Relay addresses currently connected, for display and diagnostics. */
   get connectedUrls(): string[] {
     return this.slots.map((s) => s.url);
+  }
+
+  /**
+   * NIP-45 COUNT against the bridge slot only. Counts do not sum across
+   * relays — one event on three relays is still one event — so only the
+   * local store (which deduplicates by id) gets a number. Undefined on
+   * direct-relay transport, where no honest total exists.
+   */
+  countBridge(filter: FilterSpec): Promise<number> | undefined {
+    const bridge = this.slots.find((s) => s.url === 'bridge');
+    if (!bridge) return undefined;
+    return bridge.handle.count(filter);
+  }
+
+  /**
+   * Subscribe to the viewer's own mute list (NIP-51 kind 10000). The feed
+   * filters on it locally, so muting works against any relay. Called once
+   * the signer reveals its pubkey.
+   */
+  subscribeOwn(pubkey: string): void {
+    for (const slot of this.slots) {
+      slot.handle.subscribe('own-mute-list', { kinds: [10000], authors: [pubkey], limit: 1 });
+    }
   }
 
   /**

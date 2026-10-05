@@ -59,6 +59,10 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
   ws.onclose = () => set('closed');
   ws.onerror = (e) => set('error', String(e));
 
+  /** Outstanding COUNT requests by subscription id. */
+  const counting = new Map<string, (n: number) => void>();
+  let countSeq = 0;
+
   ws.onmessage = (msg) => {
     try {
       const data = JSON.parse(msg.data) as unknown[];
@@ -68,6 +72,16 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
         if (ev._tag === 'Ok') h.onEvent(ev.value);
       } else if (data[0] === 'NOTICE') {
         h.onState('error', String(data[1]));
+      } else if (data[0] === 'COUNT') {
+        const cb = typeof data[1] === 'string' ? counting.get(data[1]) : undefined;
+        const n =
+          typeof data[2] === 'object' && data[2] !== null
+            ? (data[2] as Record<string, unknown>).count
+            : undefined;
+        if (cb && typeof n === 'number') {
+          counting.delete(data[1] as string);
+          cb(n);
+        }
       }
     } catch (e) {
       h.onState('error', String(e));
@@ -85,6 +99,15 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
     state: () => state,
     subscribe: (id, f) => send(['REQ', id, toWire(f)]),
     unsubscribe: (id) => send(['CLOSE', id]),
+    count: (f) =>
+      new Promise<number>((resolve, reject) => {
+        const id = `count-${countSeq++}`;
+        counting.set(id, resolve);
+        setTimeout(() => {
+          if (counting.delete(id)) reject(new Error('COUNT timed out'));
+        }, 10_000);
+        send(['COUNT', id, toWire(f)]);
+      }),
     publish: (e) => send(['EVENT', e]),
     close: () => ws.close(),
   };

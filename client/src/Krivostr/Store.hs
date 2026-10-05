@@ -18,6 +18,8 @@ module Krivostr.Store
   , searchEvents
   , searchQuery
   , searchAvailable
+  , countMatching
+  , countCap
   , searchCount
   , reindexEvents
   , reindexIfStale
@@ -46,9 +48,10 @@ import qualified Data.ByteString.Lazy as BL
 defaultLimit :: Int
 defaultLimit = 500
 
--- | Kinds that are never evicted, regardless of age.
+-- | Kinds that are never evicted, regardless of age. Lists are user state,
+-- not traffic: evicting a mute list would unmute everyone on a schedule.
 persistentKinds :: [Int]
-persistentKinds = [0, 3, 4, 1059, 10002]
+persistentKinds = [0, 3, 4, 1059, 10000, 10001, 10002, 10003]
 
 -- | Default retention for ephemeral events (30 days).
 defaultRetentionDays :: NominalDiffTime
@@ -341,6 +344,51 @@ queryEvents st f = case fSearch f of
 queryEventsWith :: Store -> Text -> [SQLData] -> IO [Event]
 queryEventsWith st sql params =
   query (stConn st) (Query sql) params
+
+-- | Row cap for the fetch fallback in 'countMatching'. High enough that a
+-- personal bridge never hits it; the exact-SQL path below handles the rest.
+countCap :: Int
+countCap = 100000
+
+-- | How many stored events match a filter. The limit is ignored -- NIP-45
+-- counts everything the filter matches, not the page size.
+--
+-- Indexed clauses (ids, authors, kinds, time bounds, and a search via an
+-- FTS5 subquery) count in SQL without touching a row. Tag predicates have
+-- no index, so a filter carrying #tags falls back to fetching and filtering
+-- in Haskell, bounded by 'countCap'. Either way the number answers from
+-- SQLite, which is what makes COUNT instant next to a REQ replay.
+countMatching :: Store -> Filter -> IO Int
+countMatching st f
+  | null (fTags f') = sqlCount
+  | otherwise = length . filter (matches f') <$> queryEvents st (f' { fLimit = Just countCap })
+  where
+    f' = f { fLimit = Nothing }
+    sqlCount = do
+      let (whereClause, params) = buildWhere (f' { fSearch = Nothing })
+          rest = if T.null whereClause then "" else " AND " <> T.drop 6 whereClause
+      (matchClause, matchParams, indexed) <- matchPart
+      if not indexed
+        then length . filter (matches f') <$> queryEvents st (f' { fLimit = Just countCap })
+        else do
+          [Only n] <- query (stConn st)
+            (Query ("SELECT COUNT(*) FROM events WHERE " <> matchClause <> rest))
+            (matchParams ++ params)
+          pure (fromIntegral (n :: Int64))
+    -- The search half of the count: an FTS subquery, or "matches nothing"
+    -- when the query has no searchable words. The third element says whether
+    -- the count can stay in SQL at all -- without an FTS index it cannot.
+    matchPart = case fSearch f' of
+      Just q | not (T.null (T.strip q)) -> case searchQuery False q of
+        Just expr -> do
+          ok <- searchAvailable st
+          pure
+            ( "id IN (SELECT event_id FROM events_fts WHERE events_fts MATCH ?)"
+            , [toField expr]
+            , ok
+            )
+        Nothing -> pure ("0 = 1", [], True)
+      _ -> pure ("1 = 1", [], True)
 
 -- | Turn a 'Filter' into a @WHERE@ fragment and its bound parameters.
 --

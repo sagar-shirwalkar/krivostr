@@ -5,6 +5,11 @@ import { threadOf } from '../nostr/thread';
 import { countReactions, isReaction, reactionOf } from '../nostr/reaction';
 import { embeddedOriginal, isRepost, isQuote, quoteOf, repostOf } from '../nostr/repost';
 import { articleOf } from '../nostr/article';
+import { applyDeletions, deletionOf, isDeletion } from '../nostr/nip09';
+import { contentWarningOf, isSensitive } from '../nostr/sensitive';
+import { splitSegments, mentionLabel } from '../nostr/nip27';
+import { commentOf, isComment } from '../nostr/comment';
+import { isListEvent } from '../nostr/lists';
 import { Signer } from '../nostr/signer';
 
 const short = (id: string): string => (id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id);
@@ -44,6 +49,11 @@ export class NostrFeed extends LitElement {
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .mention {
+      color: var(--amber);
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+    }
     .reply {
       margin-top: var(--s-3);
       font-family: var(--font-mono);
@@ -61,6 +71,27 @@ export class NostrFeed extends LitElement {
       font-family: var(--font-mono);
       font-size: var(--step--1);
       color: var(--mute);
+    }
+    .sensitive .body {
+      filter: blur(6px);
+      user-select: none;
+    }
+    .warn {
+      margin-top: var(--s-3);
+      font-family: var(--font-mono);
+      font-size: var(--step--1);
+      color: var(--amber);
+    }
+    .warn button {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--mute);
+      font-family: var(--font-mono);
+      font-size: var(--step--1);
+      padding: var(--s-1) var(--s-3);
+      cursor: pointer;
+      margin-left: var(--s-2);
     }
     .counts {
       margin-top: var(--s-2);
@@ -89,6 +120,12 @@ export class NostrFeed extends LitElement {
 
   @state() events: NostrEvent[] = [];
 
+  /** Ids the user chose to reveal despite a content warning. */
+  @state() private revealed = new Set<string>();
+
+  /** Pubkeys on the viewer's own mute list. Local rule, any transport. */
+  @property({ attribute: false }) muted: string[] = [];
+
   @property({ attribute: false }) signer: Signer | null = null;
 
   push(e: NostrEvent) {
@@ -102,8 +139,33 @@ export class NostrFeed extends LitElement {
     this.events = [];
   }
 
+  /**
+   * Events minus anything a valid deletion removes, anything muted, and
+   * the list events themselves (protocol traffic, not posts). Deletion
+   * requests stay visible as receipts.
+   */
+  private get visible(): NostrEvent[] {
+    return applyDeletions(this.events).filter(
+      (e) => !isListEvent(e) && !this.muted.includes(e.pubkey),
+    );
+  }
+
+  /**
+   * Body text with `nostr:` references as styled spans. Clicking opens
+   * nothing yet — NIP-21 link handling is its own phase — so mentions are
+   * labelled, titled with the full span, and otherwise inert.
+   */
+  private renderBody(content: string) {
+    if (content === '') return html`<em style="color:var(--mute)">(empty)</em>`;
+    return html`${splitSegments(content).map((s) =>
+      'text' in s
+        ? html`${s.text}`
+        : html`<span class="mention" title=${s.mention.raw}>${mentionLabel(s.mention)}</span>`,
+    )}`;
+  }
+
   private countsFor(id: string): string {
-    const counts = countReactions(this.events);
+    const counts = countReactions(this.visible);
     const c = counts.find((x) => x.id === id);
     if (!c || (c.likes === 0 && c.dislikes === 0)) return '';
     const parts: string[] = [];
@@ -122,17 +184,58 @@ export class NostrFeed extends LitElement {
   }
 
   private actionRow(e: NostrEvent) {
-    if (!this.signer || e.kind !== 1) return '';
-    return html`
-      <div class="actions">
-        <button @click=${this.act('reply-to', e)}>reply</button>
-        <button @click=${this.act('react-to', e)}>♥ react</button>
-        <button @click=${this.act('repost-of', e)}>↻ repost</button>
-      </div>
-    `;
+    if (!this.signer) return '';
+    // Notes get the NIP-10/25/18 row; anything else commentable (articles
+    // today) gets the NIP-22 row. Kind 1 never takes kind 1111 — that is
+    // NIP-10's job, and mixing them strands replies across two threads.
+    if (e.kind === 1) {
+      return html`
+        <div class="actions">
+          <button @click=${this.act('reply-to', e)}>reply</button>
+          <button @click=${this.act('react-to', e)}>♥ react</button>
+          <button @click=${this.act('repost-of', e)}>↻ repost</button>
+          <button @click=${this.act('delete-of', e)}>delete</button>
+        </div>
+      `;
+    }
+    if (e.kind === 30023) {
+      return html`
+        <div class="actions">
+          <button @click=${this.act('comment-on', e)}>💬 comment</button>
+        </div>
+      `;
+    }
+    return '';
   }
 
   private renderEvent(e: NostrEvent) {
+    // Comments render with their root scope: what article or event the
+    // thread hangs off, answered or top-level alike.
+    if (isComment(e)) {
+      const c = commentOf(e);
+      const scope = c?.root.address ?? c?.root.id ?? '';
+      return html`
+        <article>
+          <div class="head">
+            <span class="pub">${short(e.pubkey)}</span>
+            <span class="kind">comment · ${new Date(e.created_at * 1000).toLocaleTimeString()}</span>
+          </div>
+          <div class="body">${this.renderBody(e.content)}</div>
+          ${scope ? html`<div class="reply">on ${short(scope)}</div>` : ''}
+        </article>
+      `;
+    }
+    // Deletion requests render as one compact line naming what they cite.
+    // The cited targets are already gone from `visible`; this is the receipt.
+    if (isDeletion(e)) {
+      const d = deletionOf(e);
+      const n = (d?.eventIds.length ?? 0) + (d?.addresses.length ?? 0);
+      return html`
+        <article>
+          <div class="reaction">🗑 ${short(e.pubkey)} requested deletion of ${n} event${n === 1 ? '' : 's'}</div>
+        </article>
+      `;
+    }
     // Articles render the header — title, summary, cover — over the body.
     // The body stays raw text: no Markdown renderer lives in this component.
     const article = articleOf(e);
@@ -146,7 +249,7 @@ export class NostrFeed extends LitElement {
           ${article.image ? html`<div><a href=${article.image}>cover image</a></div>` : ''}
           <div class="body"><strong>${article.title || article.slug}</strong></div>
           ${article.summary ? html`<div class="reply">${article.summary}</div>` : ''}
-          <div class="body">${e.content}</div>
+          <div class="body">${this.renderBody(e.content)}</div>
         </article>
       `;
     }
@@ -170,9 +273,9 @@ export class NostrFeed extends LitElement {
             <span class="kind">repost · ${new Date(e.created_at * 1000).toLocaleTimeString()}</span>
           </div>
           ${inner
-            ? html`<div class="repost">
+            ? html`              <div class="repost">
                 <div class="head"><span class="pub">${short(inner.pubkey)}</span></div>
-                <div class="body">${inner.content}</div>
+                <div class="body">${this.renderBody(inner.content)}</div>
               </div>`
             : html`<div class="reply">repost of ${short(rp?.eventId ?? '')} (original not readable)</div>`}
           ${this.actionRow(e)}
@@ -183,13 +286,24 @@ export class NostrFeed extends LitElement {
     const quote = isQuote(e) ? quoteOf(e) : undefined;
     const counts = e.kind === 1 ? this.countsFor(e.id) : '';
     const replyTo = tagValue(e, 'e');
+    // A warning blurs the body until the user opts in. Revealing is sticky
+    // for the session but never persisted: a fresh load warns again.
+    const warning = isSensitive(e) && !this.revealed.has(e.id) ? contentWarningOf(e) : undefined;
+    const reveal = (ev: Event) => {
+      ev.stopPropagation();
+      this.revealed = new Set([...this.revealed, e.id]);
+    };
     return html`
-      <article>
+      <article class=${warning !== undefined ? 'sensitive' : ''}>
         <div class="head">
           <span class="pub">${e.pubkey.slice(0, 8)}…${e.pubkey.slice(-4)}</span>
           <span class="kind">kind ${e.kind} · ${new Date(e.created_at * 1000).toLocaleTimeString()}</span>
         </div>
-        <div class="body">${e.content || html`<em style="color:var(--mute)">(empty)</em>`}</div>
+        <div class="body">${this.renderBody(e.content)}</div>
+        ${warning !== undefined
+          ? html`<div class="warn">sensitive${warning ? `: ${warning}` : ''}
+              <button @click=${reveal}>reveal</button></div>`
+          : ''}
         ${thread && thread.rootId !== e.id
           ? html`<div class="reply">replying to ${short(thread.rootId)}</div>`
           : replyTo
@@ -203,9 +317,10 @@ export class NostrFeed extends LitElement {
   }
 
   override render() {
-    if (this.events.length === 0) {
+    const visible = this.visible;
+    if (visible.length === 0) {
       return html`<div class="empty">// no events yet — waiting on relays</div>`;
     }
-    return html`${this.events.map((e) => this.renderEvent(e))}`;
+    return html`${visible.map((e) => this.renderEvent(e))}`;
   }
 }

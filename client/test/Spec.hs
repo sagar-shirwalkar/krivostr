@@ -266,6 +266,17 @@ main = hspec $ do
     it "parses CLOSE" $
       parsed "[\"CLOSE\",\"s1\"]" `shouldBe` Just (CClose "s1")
 
+    it "parses COUNT with filters as trailing elements" $
+      parsed "[\"COUNT\",\"c1\",{\"kinds\":[1]}]"
+        `shouldBe` Just (CCount "c1" [onlyKinds [1]])
+
+    it "round-trips its own COUNT encoding" $
+      parseMaybe parseClient (encodeClient (CCount "c1" [onlyKinds [1], tagEq "e" ["x"]]))
+        `shouldBe` Just (CCount "c1" [onlyKinds [1], tagEq "e" ["x"]])
+
+    it "rejects a COUNT with no filters" $
+      parsed "[\"COUNT\",\"c1\"]" `shouldBe` Nothing
+
   describe "Key" $ do
     it "generates distinct keys" $ do
       sk1 <- generatePrivateKey
@@ -298,6 +309,17 @@ main = hspec $ do
       map evKind kinds `shouldBe` [7]
       limited <- queryEvents st (empty { fSearch = Just "shared", fLimit = Just 1 })
       length limited `shouldBe` 1
+      closeStore st
+
+    it "counts matches ignoring the limit" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      forM_ [1..5] $ \i -> insertEvent st (mkSigned sk 1 (T.pack ("counted " ++ show (i :: Int))))
+      insertEvent st (mkSigned sk 7 "counted reaction")
+      countMatching st (empty { fKinds = Just [1], fLimit = Just 2 }) `shouldReturn` 5
+      countMatching st (empty { fSearch = Just "counted" }) `shouldReturn` 6
+      countMatching st (empty { fKinds = Just [7], fTags = [("p", ["nobody"])] }) `shouldReturn` 0
       closeStore st
 
     it "indexes what is inserted and finds it" $ do

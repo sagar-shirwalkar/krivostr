@@ -4,6 +4,11 @@ module Main (main) where
 
 import Bip340 (bip340Spec)
 import Nip05Spec (nip05Spec)
+import Nip09Spec (nip09Spec)
+import Nip51Spec (nip51Spec)
+import Nip22Spec (nip22Spec)
+import Nip27Spec (nip27Spec)
+import Nip36Spec (nip36Spec)
 import Nip23Spec (nip23Spec)
 import Nip10Spec (nip10Spec)
 import Nip25Spec (nip25Spec)
@@ -16,7 +21,7 @@ import Nip59Spec (nip59Spec)
 import Nip13Spec (nip13Spec)
 import Nip40Spec (nip40Spec)
 import Nip44Spec (nip44Spec)
-import Data.Aeson (Value, decode, encode, eitherDecodeStrict, toJSON)
+import Data.Aeson (Value, decode, encode, eitherDecodeStrict, object, toJSON, (.=))
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
@@ -71,6 +76,11 @@ main :: IO ()
 main = hspec $ do
   bip340Spec
   nip05Spec
+  nip09Spec
+  nip51Spec
+  nip22Spec
+  nip27Spec
+  nip36Spec
   nip23Spec
   nip10Spec
   nip25Spec
@@ -335,6 +345,10 @@ main = hspec $ do
       BL.toStrict (encode (encodeClient (CClose "s1")))
         `shouldSatisfy` BS.isInfixOf "\"CLOSE\""
 
+    it "encodes COUNT with filters as trailing elements" $
+      BL.toStrict (encode (encodeClient (CCount "c1" [onlyKinds [1]])))
+        `shouldBe` "[\"COUNT\",\"c1\",{\"kinds\":[1]}]"
+
     it "decodes an EVENT relay message" $
       Aeson.parseEither decodeRelay (toJSON (["EVENT", "s1", toJSON sampleEvent] :: [Value]))
         `shouldSatisfy` isRight
@@ -348,6 +362,14 @@ main = hspec $ do
         `shouldSatisfy` isRight
       Aeson.parseEither decodeRelay (toJSON (["NOTICE", "hi"] :: [Value]))
         `shouldSatisfy` isRight
+
+    it "decodes a COUNT answer" $
+      Aeson.parseEither decodeRelay (toJSON (["COUNT", "c1", object ["count" .= (41 :: Int)]] :: [Value]))
+        `shouldBe` Right (RCount "c1" 41)
+
+    it "rejects a COUNT without a numeric count" $
+      Aeson.parseEither decodeRelay (toJSON (["COUNT", "c1", object ["count" .= ("many" :: Text)]] :: [Value]))
+        `shouldSatisfy` isLeft
 
     it "rejects an unknown relay message" $
       Aeson.parseEither decodeRelay (toJSON (["NOPE"] :: [Value]))

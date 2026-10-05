@@ -210,3 +210,37 @@ describe('publish and close', () => {
     expect(handle.state()).toBe('error');
   });
 });
+
+describe('count', () => {
+  it('sends COUNT and resolves the matching answer', async () => {
+    const { handle, socket } = connectTo();
+    socket.open();
+    const p = handle.count({ kinds: [1] });
+    expect(socket.parsed()[0]).toEqual(['COUNT', 'count-0', { kinds: [1] }]);
+    socket.deliver(['COUNT', 'count-0', { count: 41 }]);
+    await expect(p).resolves.toBe(41);
+  });
+
+  it('ignores COUNT answers for other ids', async () => {
+    const { handle, socket } = connectTo();
+    socket.open();
+    const p = handle.count({ kinds: [1] });
+    socket.deliver(['COUNT', 'count-99', { count: 1 }]);
+    socket.deliver(['COUNT', 'count-0', { count: 7 }]);
+    await expect(p).resolves.toBe(7);
+  });
+
+  it('rejects when nobody answers', async () => {
+    vi.useFakeTimers();
+    try {
+      const { handle, socket } = connectTo();
+      socket.open();
+      const p = handle.count({ kinds: [1] });
+      const assertion = expect(p).rejects.toThrow('COUNT timed out');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

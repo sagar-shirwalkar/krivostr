@@ -11,7 +11,7 @@ that also exists in the repo is a copy that goes stale.
 
 ```bash
 stack build --fast     # build
- stack test             # 542 examples: 478 core, 64 client
+ stack test             # 584 examples: 516 core, 68 client
 stack ghci krivostr-core   # REPL against the pure layer
 ```
 
@@ -26,7 +26,7 @@ cd ui
 pnpm install --frozen-lockfile
 pnpm dev              # Vite dev server
 pnpm typecheck        # tsc --noEmit
-pnpm test             # 224 unit tests (jsdom)
+pnpm test             # 255 unit tests (jsdom)
 pnpm test:browser     # 16 browser tests (real Chromium)
 pnpm coverage         # v8, thresholds at 80
 ```

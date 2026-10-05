@@ -11,6 +11,8 @@ import { NostrCompose } from './nostr-compose';
 import { NostrEvent } from '../nostr/event';
 import { buildReactionTags } from '../nostr/reaction';
 import { buildRepostTags, embedOriginal } from '../nostr/repost';
+import { buildDeletionTags, parameterizedAddress } from '../nostr/nip09';
+import { mutedPubkeys } from '../nostr/lists';
 
 @customElement('krivostr-app')
 export class KrivostrApp extends LitElement {
@@ -71,11 +73,21 @@ export class KrivostrApp extends LitElement {
       cursor: pointer;
     }
     .search button:hover { color: var(--text); border-color: var(--amber-dim); }
+    .resultline {
+      font-family: var(--font-mono);
+      font-size: var(--step--1);
+      color: var(--mute);
+      margin-bottom: var(--s-4);
+    }
   `;
 
   @state() private view: 'landing' | 'app' = 'landing';
   @state() private signer: Signer | null = null;
   @state() private searching = '';
+  /** "N results…" line under the search box; empty when not searching. */
+  @state() private resultLine = '';
+  /** My own pubkey, once the signer reveals it. Gates mute-list updates. */
+  private myPubkey: string | null = null;
 
   /**
    * The relay transport belongs to <krivostr-relay-status>, which is the only
@@ -90,8 +102,11 @@ export class KrivostrApp extends LitElement {
     this.view = 'app';
   }
 
-  private handleSigner(e: CustomEvent<{ signer: Signer }>) {
+  private async handleSigner(e: CustomEvent<{ signer: Signer }>) {
     this.signer = e.detail.signer;
+    const pk = await this.signer.pubkey();
+    this.myPubkey = pk._tag === 'Ok' ? pk.value : null;
+    if (this.myPubkey) this.relayStatus()?.subscribeOwn(this.myPubkey);
   }
 
   private async handlePublish(e: CustomEvent<{ content: string; kind: number; tags?: string[][] }>) {
@@ -128,6 +143,17 @@ export class KrivostrApp extends LitElement {
     const compose = this.renderRoot.querySelector('nostr-compose') as NostrCompose | null;
     if (compose) {
       compose.replyTo = e.detail.event;
+      compose.commentOn = null;
+      compose.focus();
+    }
+  }
+
+  /** The feed's comment button parks a non-note target for NIP-22. */
+  private handleCommentOn(e: CustomEvent<{ event: NostrEvent }>) {
+    const compose = this.renderRoot.querySelector('nostr-compose') as NostrCompose | null;
+    if (compose) {
+      compose.commentOn = e.detail.event;
+      compose.replyTo = null;
       compose.focus();
     }
   }
@@ -141,6 +167,33 @@ export class KrivostrApp extends LitElement {
           content: '+',
           kind: 7,
           tags: buildReactionTags(target.id, '', target.pubkey, target.kind),
+        },
+      }),
+    );
+  }
+
+  /**
+   * Delete-your-own: publishes a kind-5 citing the id (and the address,
+   * for replaceable events) after confirming authorship. A click on
+   * someone else's note fails here, not on the relay.
+   */
+  private async handleDeleteOf(e: CustomEvent<{ event: NostrEvent }>) {
+    if (!this.signer) return;
+    const pk = await this.signer.pubkey();
+    if (pk._tag === 'Err') return;
+    const target = e.detail.event;
+    if (target.pubkey !== pk.value) {
+      // eslint-disable-next-line no-console
+      console.error('delete refused: not your event');
+      return;
+    }
+    const addr = parameterizedAddress(target);
+    void this.handlePublish(
+      new CustomEvent('publish-request', {
+        detail: {
+          content: '',
+          kind: 5,
+          tags: buildDeletionTags([target.id], addr ? [addr] : []),
         },
       }),
     );
@@ -163,9 +216,15 @@ export class KrivostrApp extends LitElement {
 
   private handleFeedEvent(e: CustomEvent<NostrEvent>) {
     const feed = this.renderRoot.querySelector('nostr-feed') as
-      | (HTMLElement & { push: (ev: NostrEvent) => void })
+      | (HTMLElement & { push: (ev: NostrEvent) => void; muted: string[] })
       | null;
-    feed?.push(e.detail);
+    if (!feed) return;
+    // My own mute list updates the filter; list events never render.
+    if (e.detail.kind === 10000 && this.myPubkey !== null && e.detail.pubkey === this.myPubkey) {
+      feed.muted = mutedPubkeys(e.detail);
+      return;
+    }
+    feed.push(e.detail);
   }
 
   private feedEl(): (HTMLElement & { clear: () => void }) | null {
@@ -175,15 +234,27 @@ export class KrivostrApp extends LitElement {
   }
 
   /** Search submit: clear the feed and ask every transport for matches.
-   * An empty query restores the global feed. */
+   * An empty query restores the global feed. The result count comes from
+   * the bridge only — see `countBridge` for why relays are not summed. */
   private handleSearch(e: Event) {
     e.preventDefault();
     const status = this.relayStatus();
     if (!status) return;
     const q = this.searching.trim();
     this.feedEl()?.clear();
-    if (q === '') status.clearSearch();
-    else status.searchAll(q);
+    this.resultLine = '';
+    if (q === '') {
+      status.clearSearch();
+      return;
+    }
+    status.searchAll(q);
+    const counted = status.countBridge({ search: q, limit: 1 });
+    if (counted) {
+      void counted.then(
+        (n) => (this.resultLine = `${n} result${n === 1 ? '' : 's'} in local store`),
+        () => undefined,
+      );
+    }
   }
 
   override render() {
@@ -199,8 +270,10 @@ export class KrivostrApp extends LitElement {
            @signer-chosen=${this.handleSigner}
            @publish-request=${this.handlePublish}
            @reply-to=${this.handleReplyTo}
+           @comment-on=${this.handleCommentOn}
            @react-to=${this.handleReactTo}
            @repost-of=${this.handleRepostOf}
+           @delete-of=${this.handleDeleteOf}
            @relay-event=${this.handleFeedEvent}>
         <header class="topbar">
           <div class="brand">krivostr</div>
@@ -219,6 +292,7 @@ export class KrivostrApp extends LitElement {
             />
             <button type="submit">search</button>
           </form>
+          ${this.resultLine ? html`<div class="resultline">${this.resultLine}</div>` : ''}
           <nostr-feed .signer=${this.signer}></nostr-feed>
         </main>
       </div>

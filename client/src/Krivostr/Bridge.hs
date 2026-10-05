@@ -21,7 +21,7 @@ import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, finally, try)
 import Control.Monad (forever, forM_, void, when)
-import Data.Aeson (Value (String), encode, eitherDecode, parseJSON, toJSON, withArray)
+import Data.Aeson (Value (String), encode, eitherDecode, object, parseJSON, toJSON, withArray, (.=))
 import qualified Data.ByteString.Lazy as BL
 import Data.Aeson.Types (Parser, parseMaybe)
 import Data.Text (Text)
@@ -42,6 +42,7 @@ import System.FilePath ((</>))
 import Network.Wai.Handler.WebSockets (websocketsOr)
 import Network.WebSockets
 import Krivostr.Event (Event, evId)
+import Krivostr.Filter (Filter (fLimit))
 import qualified Krivostr.Filter as Filter
 import Krivostr.Logging
 import Krivostr.Nip.Nip01 (verifyEvent)
@@ -227,6 +228,14 @@ handleClientMsg bst cs v = case parseMaybe parseClient v of
     atomically $ modifyTVar' (csSubs cs) (M.delete sid)
     broadcast (bsPool bst) (CClose sid)
 
+  -- NIP-45: answered from SQLite and never forwarded. A count is a local
+  -- question -- the bridge knows its own store, and upstream relays answer
+  -- for themselves when asked directly. Overlapping filters union by id, so
+  -- one event matching two filters counts once.
+  Just (CCount sid filters) -> do
+    n <- countUnion (bsStore bst) filters
+    enqueue (csOutbox cs) (countMsg sid n)
+
 -- | Push an event to every connected client with a matching subscription.
 deliverEvent :: BridgeState -> Event -> IO ()
 deliverEvent bst e = do
@@ -266,6 +275,18 @@ dedupe = go mempty
       | evId e `elem` seen = go seen es
       | otherwise          = e : go (evId e : seen) es
 
+countMsg :: Text -> Int -> Value
+countMsg sid n = toJSON [toJSON ("COUNT" :: Text), toJSON sid, object ["count" .= n]]
+
+-- | Count matches across the filters of one COUNT. A single filter counts
+-- exactly in SQL; several union by id, bounded by 'countCap', because an
+-- event matching two filters is still one event.
+countUnion :: Store -> [Filter] -> IO Int
+countUnion st [f] = countMatching st f
+countUnion st fs = do
+  evs <- concat <$> mapM (\f -> queryEvents st (f { fLimit = Just countCap })) fs
+  pure (length (dedupe evs))
+
 -- | Parse a client message into our ADT. Mirrors @decodeRelay@.
 --
 -- Subscriptions are variadic, @[\"REQ\", <subscription_id>, <filter>, ...]@, so
@@ -276,6 +297,7 @@ parseClient = withArray "ClientMessage" $ \arr -> case toList arr of
   [String "EVENT", ev]                        -> CEvent <$> parseJSON ev
   (String "REQ" : String sid : fs@(_:_))      -> CReq sid <$> traverse parseJSON fs
   [String "CLOSE", String sid]                -> pure (CClose sid)
+  (String "COUNT" : String sid : fs@(_:_))    -> CCount sid <$> traverse parseJSON fs
   _                                          -> fail "unknown"
   where
     toList = foldr (:) []

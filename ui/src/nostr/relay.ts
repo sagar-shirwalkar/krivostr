@@ -28,6 +28,11 @@ export interface RelayHandle {
   readonly subscribe: (id: string, f: FilterSpec) => void;
   /** Revoke one subscription. Re-subscribing the same id replaces it. */
   readonly unsubscribe: (id: string) => void;
+  /**
+   * NIP-45 count: how many stored events match, without fetching them.
+   * Rejects when the relay never answers (10s) or does not support COUNT.
+   */
+  readonly count: (f: FilterSpec) => Promise<number>;
   readonly close: () => void;
   readonly publish: (e: NostrEvent) => void;
 }
@@ -62,6 +67,10 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
     else pending.push(json);
   };
 
+  /** Outstanding COUNT requests by subscription id. */
+  const counting = new Map<string, (n: number) => void>();
+  let countSeq = 0;
+
   ws.onopen = () => {
     set('open');
     while (pending.length > 0) ws.send(pending.shift()!);
@@ -86,6 +95,20 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
         // relay must not look like a transport failure.
         const parsed = parseEvent(data[2]);
         if (parsed._tag === 'Ok') handlers.onEvent(parsed.value);
+        break;
+      }
+      case 'COUNT': {
+        // NIP-45 answer: ["COUNT", <sub-id>, {"count": N}]. An id with no
+        // waiter is a late or foreign reply — dropped, not surfaced.
+        const cb = typeof data[1] === 'string' ? counting.get(data[1]) : undefined;
+        const n =
+          typeof data[2] === 'object' && data[2] !== null
+            ? (data[2] as Record<string, unknown>).count
+            : undefined;
+        if (cb && typeof n === 'number') {
+          counting.delete(data[1] as string);
+          cb(n);
+        }
         break;
       }
       case 'NOTICE':
@@ -114,6 +137,15 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
     unsubscribe: (id: string) => {
       if (subs.delete(id)) send(['CLOSE', id]);
     },
+    count: (f: FilterSpec) =>
+      new Promise<number>((resolve, reject) => {
+        const id = `count-${countSeq++}`;
+        counting.set(id, resolve);
+        setTimeout(() => {
+          if (counting.delete(id)) reject(new Error('COUNT timed out'));
+        }, 10_000);
+        send(['COUNT', id, toWire(f)]);
+      }),
     publish: (e: NostrEvent) => send(['EVENT', e]),
     close: () => {
       for (const id of subs) send(['CLOSE', id]);

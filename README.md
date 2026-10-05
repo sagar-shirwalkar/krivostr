@@ -34,8 +34,10 @@ reachable from the command line. Relays forget; your store does not. The name is
 portmanteau of **Nostr** and **Krivine**, the call-by-name abstract machine that evaluates
 lambda terms through a stack of closures.
 
-- **One binary, nine subcommands** — `serve`, `feed`, `search`, `dm`, `export`, `watch`,
-  `api`, `reindex`, `keygen`. SQLite and FTS5 are linked in; no runtime to install.
+- **One binary, nineteen subcommands** — `serve`, `feed`, `search`, `dm`, `reply`,
+  `react`, `repost`, `verify`, `publish`, `delete`, `resolve`, `comment`, `list`,
+  `count`, `export`, `watch`, `api`, `reindex`, `keygen`. SQLite and FTS5 are linked
+  in; no runtime to install.
 - **A store that outlives the browser** — events in SQLite with a 30-day retention
   window, indexed on `pubkey`, `created_at`, and `kind`, plus an FTS5 index for search.
 - **A relay-shaped WebSocket bridge** — the browser speaks ordinary Nostr to `krivostr
@@ -197,6 +199,11 @@ Global flags come before the subcommand:
 | `repost` | Repost (kind 6/16) or quote with `--quote` (NIP-18) |
 | `verify` | Check a NIP-05 identifier against its domain |
 | `publish` | Publish a Markdown file as a long-form article (NIP-23) |
+| `delete` | Request deletion of your events (NIP-09), removes locally |
+| `resolve` | Resolve a `nostr:` reference, bech32, or hex (NIP-27) |
+| `comment` | Comment on a non-note event by id or address (NIP-22) |
+| `list` | Show or edit a NIP-51 list: `mute`, `pin`, `bookmark` |
+| `count` | Count stored events matching a filter (NIP-45) |
 | `export` | Bulk export as `nostr` (ndjson), `array`, or `csv` |
 | `watch` | Notify on new events |
 | `api` | Run the JSON HTTP API on its own port |
@@ -294,7 +301,7 @@ flowchart LR
         POOL["Pool<br/>relay multiplexer<br/>one drain thread per relay"]
         STORE[("Store<br/>SQLite + FTS5<br/>30-day retention")]
         BRIDGE["Bridge<br/>WebSocket + static files<br/>hourly GC thread"]
-        CLI["Cli<br/>nine subcommands"]
+        CLI["Cli<br/>nineteen subcommands"]
         API["Cli.Api<br/>JSON on :8090"]
     end
 
@@ -359,7 +366,7 @@ than the `Rule` algebra — see [docs/architecture.md](docs/architecture.md).)
   NIP-59 gift wrap, NIP-17 private DMs, NIP-11 relay info, NIP-65 relay hints,
   filter predicates, wire ADTs, `Writer`-based logging.
 - **`client/`** — effectful Haskell: relay pool, SQLite store (FTS5),
-  WebSocket bridge, HTTP API, CLI (14 subcommands).
+  WebSocket bridge, HTTP API, CLI (19 subcommands).
 - **`ui/`** — browser: Lit 3, hand-rolled `Maybe` / `Result` / `IO` / `Rule`, IndexedDB
   cache, signer plug-ins (NIP-07, NIP-46 modal).
 
@@ -376,18 +383,24 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 | 04 | Encrypted direct messages | ◐ CLI can send; UI cannot read (NIP-04 only) |
 | 05 | DNS identifiers | ✅ parse + HTTPS verify (`krivostr verify`, UI logic) |
 | 07 | `window.nostr` | ✅ full |
+| 09 | Event deletion | ✅ kind 5, `krivostr delete`, local removal + UI hide |
 | 10 | Reply conventions | ✅ marked + positional `e` tags, `krivostr reply`, UI threads |
 | 13 | Proof of work | ✅ `nonce` tag, leading-zero-bit difficulty, committed target |
 | 18 | Reposts | ✅ kind 6/16 + `q` quotes, `krivostr repost`, UI rendering |
 | 19 | bech32 entities | ◐ Haskell does `npub` / `nsec` only; UI encodes all six |
+| 22 | Comments | ✅ kind 1111 root/parent scopes, `krivostr comment`, UI threads |
 | 23 | Long-form content | ✅ kind 30023 articles, `krivostr publish`, UI rendering |
 | 25 | Reactions | ✅ kind 7 `e`/`p`/`k`, `krivostr react`, UI counts |
+| 27 | Text note references | ✅ `nostr:` scanning, `krivostr resolve`, UI mentions |
+| 36 | Sensitive content | ✅ `content-warning`, CLI gate, UI blur-to-reveal |
 | 40 | Expiration timestamp | ✅ `expiration` tag helpers; purge is retention-based |
 | 42 | Authentication | ✅ kind 22242 challenge/response, wired into the relay pool |
 | 44 | Versioned encryption | ✅ NIP-44 v2 — ChaCha20 + HMAC, official vectors |
+| 45 | Counting results | ✅ wire `COUNT`, bridge SQLite answer, `krivostr count` |
 | 46 | Remote signer | ✅ bunker over NIP-44, wired into the signer picker |
 | 49 | Private-key encryption | ✅ `ncryptsec` — scrypt + XChaCha20-Poly1305 |
 | 50 | Search | ✅ wire `search` filter; bridge FTS5, CLI `--search`, UI search box |
+| 51 | Lists | ✅ mute/pin/bookmark, `krivostr list`, UI mute filtering |
 | 59 | Gift wrap | ✅ rumor → seal (kind 13) → wrap (kind 1059), official vectors |
 | 17 | Private direct messages | ✅ kind 14 rumor → seal → wrap, ±2 day jitter |
 | 11 | Relay info | ✅ `RelayInfo` document with `supported_nips` |
@@ -399,7 +412,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 542 hspec examples across core and client
+make test-backend  # 584 hspec examples across core and client
 make test-ui       # 126 unit tests (jsdom) + 15 browser tests (real Chromium)
 ```
 
@@ -455,22 +468,27 @@ krivostr/
 │   │   ├── Key.hs                 x-only keys, NIP-19 npub + nsec
 │   │   ├── Logging.hs             Writer logger
 │   │   ├── Schnorr.hs             BIP-340 in pure Haskell
-│   │   ├── Wire.hs                NIP-01 message ADTs, encodeClient / decodeRelay
+│   │   ├── Wire.hs                NIP-01 + NIP-45 message ADTs, encodeClient / decodeRelay
 │   │   └── Nip/
 │   │       ├── Nip01.hs           Canonical bytes, event id, signing, verification
 │   │       ├── Nip05.hs           DNS identifiers: parse, well-known URL, verify
+│   │       ├── Nip09.hs           Deletion: kind 5, authorship, addresses
 │   │       ├── Nip10.hs           Replies: marked/positional e tags, thread refs
 │   │       ├── Nip11.hs           Relay info document (supported_nips)
 │   │       ├── Nip13.hs           Proof of work: difficulty, nonce tag, mining
 │   │       ├── Nip17.hs           Private DMs: kind 14 rumor, timestamp jitter
 │   │       ├── Nip18.hs           Reposts (6/16) and q-tag quotes
+│   │       ├── Nip22.hs           Comments: kind 1111 root/parent scopes
 │   │       ├── Nip23.hs           Long-form: slug, header tags, address
 │   │       ├── Nip25.hs           Reactions: kind 7, counts
+│   │       ├── Nip27.hs           Text references: nostr: scanning, TLV
+│   │       ├── Nip36.hs           Sensitive content: content-warning tag
 │   │       ├── Nip40.hs           Expiration tag parsing and filtering
 │   │       ├── Nip42.hs           AUTH: kind 22242 build and validate
 │   │       ├── Nip44.hs           NIP-44 v2: HKDF, ChaCha20, HMAC, padding
 │   │       ├── Nip46.hs           nostr-connect: bunker URI, methods, requests
 │   │       ├── Nip49.hs           ncryptsec: scrypt + XChaCha20-Poly1305
+│   │       ├── Nip51.hs           Lists: mute, pins, bookmarks
 │   │       ├── Nip59.hs           Gift wrap: rumor, seal (13), wrap (1059)
 │   │       └── Nip65.hs           Relay hints
 │   └── test/
