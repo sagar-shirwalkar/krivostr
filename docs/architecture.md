@@ -110,36 +110,26 @@ directly, so the bridge is a drop-in stand-in for a direct relay connection.
 `publish-request` to `<krivostr-app>`. The app calls the selected `Signer`,
 then sends `["EVENT", …]` to the bridge. The bridge inserts it into SQLite,
 broadcasts it to the upstream pool, delivers it to other connected clients, and
-answers `OK`. The UI caches it in IndexedDB (NIP-49 `ncryptsec` at rest).
+answers `OK`. The UI caches it in IndexedDB.
 
 **Subscribing.** The bridge answers a `REQ` from its own store first: it
 queries SQLite, replays the matching events, sends `EOSE`, and only then
 broadcasts the `REQ` upstream. So a client gets history immediately and live
 events afterwards, and the `EOSE` marks the seam between them.
 
-**NIP-42 auth on the bridge.** The bridge requires NIP-42 auth for private
-operations. The handshake uses ephemeral kind 22242 events with a relay-supplied
-challenge. A single-challenge queue prevents challenge-queue exhaustion.
+**NIP-42 auth on the CLI.** The relay pool answers a challenge with a kind
+22242 event signed by the loaded key, so `feed --follow` and `dm` work against
+`auth-required` relays. The bridge itself does not yet require browser clients
+to authenticate.
 
-**NIP-59 gift wrap on the bridge.** The bridge can serve and forward kind 1059
-gift wraps. The outer wrapper is signed by an ephemeral key; the inner rumor is
-encrypted with NIP-44. Relays see only the wrapper.
+**NIP-59 gift wrap and NIP-17 private DMs.** Both are implemented in `core`
+(`Krivostr.Nip.Nip59`, `Krivostr.Nip.Nip17`) and covered by tests against the
+spec's published vectors. Neither is wired into the CLI or the UI yet: `dm`
+still sends NIP-04 kind 4, and the browser has no gift-wrap module.
 
-**NIP-17 private DMs.** The CLI `dm` command and the UI compose NIP-44 + NIP-59
-for private messages. A rumor (kind 14) is sealed with NIP-44, wrapped in a
-gift wrap (kind 1059) signed by an ephemeral key, with a randomized timestamp
-(±2 days) to defeat timing correlation.
-
-**NIP-49 `ncryptsec` at rest.** Private keys in IndexedDB are encrypted with
-scrypt + XChaCha20-Poly1305 (bech32 `ncryptsec1...`). The passphrase derives
-the key via scrypt on unlock; the heap-allocated key buffer is zeroed on drop.
-
-**NIP-42 auth on the bridge.** The bridge requires NIP-42 auth for private
-operations. The handshake uses ephemeral kind 22242 events with a relay-supplied
-challenge. A single-challenge queue prevents challenge-queue exhaustion.
-
-**NIP-42 auth on the CLI.** The CLI `dm` and `feed --follow` commands implement
-the same NIP-42 handshake when connecting to authenticated relays.
+**NIP-49 `ncryptsec`.** The core `Krivostr.Nip.Nip49` module encrypts private
+keys with scrypt + XChaCha20-Poly1305. The UI does not use it yet — IndexedDB
+holds keys in the clear.
 
 ## The two sides mirror each other
 

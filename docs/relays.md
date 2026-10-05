@@ -26,15 +26,17 @@ environment variable anywhere.
 
 ## NIP-11 relay info
 
-krivostr requests `supported_nips` on connect (NIP-11). This lets the client
-discover whether a relay:
+The core `Krivostr.Nip.Nip11` module parses the NIP-11 document and answers
+`supportsNip`. Nothing requests it on connect yet, so no relay's capabilities
+are discovered in practice. A relay may:
 
 - Enforces NIP-42 on reads (required for NIP-59 read privacy)
 - Serves kind 1059 (gift wrap)
 - Honours NIP-50 search
 - Supports PoW (NIP-13)
 
-The CLI's `relay-info` command prints the relay's advertised capabilities.
+The core `Krivostr.Nip.Nip11` module parses the document and answers
+`supportsNip`; no CLI subcommand prints it yet.
 
 ## NIP-65 relay hints
 
@@ -54,16 +56,16 @@ Three limits worth knowing:
 
 ## NIP-42 authentication
 
-Relays that require authentication send an `AUTH` challenge (NIP-42). The bridge
-and CLI both implement the handshake:
+Relays that require authentication send an `AUTH` challenge (NIP-42). The CLI
+implements the handshake through the relay pool:
 
 1. Relay sends `["AUTH", <challenge>]`.
-2. Client signs the challenge with an ephemeral key (kind 22242).
-3. Client sends `["AUTH", <signed-challenge>]`.
+2. The pool builds a kind 22242 event with the relay's URL and the challenge as
+   tags, signed by the loaded key.
+3. The pool sends `["AUTH", <signed-event>]`.
 
-The bridge and CLI implement a **single-challenge queue**: a new challenge
-invalidates the previous one. This prevents challenge-queue exhaustion (an
-attacker flooding the client with challenges to exhaust memory).
+The relay handle keeps only the **newest** challenge: a new one overwrites the
+previous, so a stale challenge can never be signed and replayed.
 
 ## NIP-59 gift wrap
 
@@ -86,8 +88,9 @@ that runs on your machine. It:
   default set).
 - Enforces a retention policy (30 days for ephemeral, forever for persistent
   kinds).
-- **NIP-42 auth** — the bridge requires NIP-42 auth for private operations.
-- **NIP-59** — the bridge can serve and forward kind 1059 gift wraps.
+- Does not yet require browser clients to authenticate (NIP-42 on the bridge is
+  not implemented).
+- Stores kind 1059 gift wraps like any other event; it cannot open them.
 
 This means your browser can scroll back a month even if upstream relays have
 pruned everything. It also means your browser doesn't need to maintain a dozen

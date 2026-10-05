@@ -62,6 +62,10 @@ subscribes to kind 24133 events from the remote pubkey, and speaks
 `get_public_key` and `sign_event`. Requests are signed with the local key so
 the bunker can authenticate the caller. Transport is NIP-04 (NIP-44 planned).
 
+The Haskell core has a matching `Krivostr.Nip.Nip46` module — bunker URI
+parsing, the method table, and request/response codecs over NIP-44 — but the
+TypeScript signer does not call it, so the two are not yet interoperable.
+
 | | |
 |---|---|
 | **Pros** | Key is on a separate device. Best for high-value keys. |

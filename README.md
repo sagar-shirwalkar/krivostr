@@ -191,7 +191,7 @@ Global flags come before the subcommand:
 | `serve` | Run the bridge: WebSocket plus static UI |
 | `feed` | Read the store; `--follow` streams live |
 | `search` | Full-text search over the local store |
-| `dm` | Send a NIP-04 DM, or `--inbox` to read yours |
+| `dm` | Send a DM (NIP-04 today, NIP-17 planned), or `--inbox` to read yours |
 | `export` | Bulk export as `nostr` (ndjson), `array`, or `csv` |
 | `watch` | Notify on new events |
 | `api` | Run the JSON HTTP API on its own port |
@@ -230,7 +230,8 @@ krivostr dm --inbox                           # decrypt kind 4 events addressed 
 ```
 
 DMs are NIP-04 (AES-256-CBC under an ECDH shared secret). NIP-04 is deprecated in favour
-of NIP-44; see [Known limitations](#known-limitations).
+of NIP-44; see [Known limitations](#known-limitations). The core NIP-17 stack — kind 14
+rumor, NIP-44 seal, gift wrap — is implemented and tested, but `dm` still sends kind 4.
 
 ### `export`, `watch`, `api`, `reindex`, `keygen`
 
@@ -344,8 +345,10 @@ The Haskell and TypeScript sides deliberately mirror each other: fallible operat
 no cross-language FFI. (Filter *matching* is a hand-rolled predicate on both sides rather
 than the `Rule` algebra — see [docs/architecture.md](docs/architecture.md).)
 
-- **`core/`** — pure Haskell: NIP-01 serialization/signing/verification, NIP-65 relay hints,
-  filter predicates, wire ADTs, `Writer`-based logging.
+- **`core/`** — pure Haskell: NIP-01 serialization/signing/verification, NIP-13 proof of
+  work, NIP-40 expiration, NIP-42 AUTH, NIP-44 v2 encryption, NIP-46 nostr-connect,
+  NIP-49 `ncryptsec`, NIP-59 gift wrap, NIP-17 private DMs, NIP-11 relay info, NIP-65
+  relay hints, filter predicates, wire ADTs, `Writer`-based logging.
 - **`client/`** — effectful Haskell: relay pool, SQLite store (FTS5),
   WebSocket bridge, HTTP API, CLI (9 subcommands).
 - **`ui/`** — browser: Lit 3, hand-rolled `Maybe` / `Result` / `IO` / `Rule`, IndexedDB
@@ -363,16 +366,17 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 | 02 | Follow list | ❌ not implemented |
 | 04 | Encrypted direct messages | ◐ CLI can send; UI cannot read (NIP-04 only) |
 | 07 | `window.nostr` | ✅ full |
+| 13 | Proof of work | ✅ `nonce` tag, leading-zero-bit difficulty, committed target |
 | 19 | bech32 entities | ◐ Haskell does `npub` / `nsec` only; UI encodes all six |
-| 44 | Versioned encryption | ❌ not implemented (NIP-04 only) |
-| 46 | Remote signer | ◐ implemented over NIP-04, not reachable from UI |
-| 49 | Private-key encryption | ❌ not implemented |
+| 40 | Expiration timestamp | ✅ `expiration` tag helpers; purge is retention-based |
+| 42 | Authentication | ✅ kind 22242 challenge/response, wired into the relay pool |
+| 44 | Versioned encryption | ✅ NIP-44 v2 — ChaCha20 + HMAC, official vectors |
+| 46 | Remote signer | ◐ core types done over NIP-44; not reachable from UI |
+| 49 | Private-key encryption | ✅ `ncryptsec` — scrypt + XChaCha20-Poly1305 |
 | 50 | Search | ◐ local FTS5 only — no wire `search` filter |
-| 59 | Gift wrap | ❌ not implemented |
-| 17 | Private direct messages | ❌ not implemented |
-| 42 | Authentication | ❌ not implemented |
-| 40 | Expiration timestamp | ❌ not implemented |
-| 11 | Relay info | ❌ not implemented |
+| 59 | Gift wrap | ✅ rumor → seal (kind 13) → wrap (kind 1059), official vectors |
+| 17 | Private direct messages | ✅ kind 14 rumor → seal → wrap, ±2 day jitter |
+| 11 | Relay info | ✅ `RelayInfo` document with `supported_nips` |
 | 65 | Relay list metadata | ◐ kind 10002 drives CLI read relays; `writeRelays` unused |
 
 ---
@@ -381,7 +385,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 142 hspec examples across core and client
+make test-backend  # 488 hspec examples across core and client
 make test-ui       # 126 unit tests (jsdom) + 15 browser tests (real Chromium)
 ```
 
@@ -440,10 +444,20 @@ krivostr/
 │   │   ├── Wire.hs                NIP-01 message ADTs, encodeClient / decodeRelay
 │   │   └── Nip/
 │   │       ├── Nip01.hs           Canonical bytes, event id, signing, verification
+│   │       ├── Nip11.hs           Relay info document (supported_nips)
+│   │       ├── Nip13.hs           Proof of work: difficulty, nonce tag, mining
+│   │       ├── Nip17.hs           Private DMs: kind 14 rumor, timestamp jitter
+│   │       ├── Nip40.hs           Expiration tag parsing and filtering
+│   │       ├── Nip42.hs           AUTH: kind 22242 build and validate
+│   │       ├── Nip44.hs           NIP-44 v2: HKDF, ChaCha20, HMAC, padding
+│   │       ├── Nip46.hs           nostr-connect: bunker URI, methods, requests
+│   │       ├── Nip49.hs           ncryptsec: scrypt + XChaCha20-Poly1305
+│   │       ├── Nip59.hs           Gift wrap: rumor, seal (13), wrap (1059)
 │   │       └── Nip65.hs           Relay hints
 │   └── test/
 │       ├── Spec.hs                hspec
-│       └── Bip340.hs              BIP-340 test vectors
+│       ├── Bip340.hs              BIP-340 test vectors
+│       └── Nip*Spec.hs            One spec module per NIP, official vectors
 ├── client/                        Effectful Haskell executable
 │   ├── app/
 │   │   └── Main.hs                Entry point (app/, not src/: see below)
@@ -529,7 +543,7 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
 - **Ingest does not verify signatures.** `Krivostr.Schnorr` verifies, and the BIP-340
   vectors in `core/test/Bip340.hs` test it, but the store's ingest path does not call it.
   Events are trusted on the way in.
-- **Backend test coverage is 35.7%**, against an 80% target. The cryptography is well
+- **Backend test coverage is 55.7%**, against an 80% target. The NIP modules are well
   covered; the relay pool, bridge, CLI, and HTTP API are not.
 - **The local signer keeps the secret in memory for the session only.** There is no
   at-rest encryption and nothing is written to disk, but there is also no keyring
@@ -550,19 +564,16 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
 
 - Verify signatures on ingest.
 - Tests for the IO layers, to move backend coverage off the floor.
-- **NIP-44 v2** — replace NIP-04 with ChaCha20-Poly1305 + HKDF in the NIP-46 transport.
 - **NIP-50** — a `search` field on the wire `Filter`.
 - **NIP-02** — parse and honour kind 3 follow lists.
-- **Proof of work** — inbound filter with configurable difficulty threshold.
+- **NIP-13** — inbound filter with configurable difficulty threshold.
+- **NIP-46** — wire the bunker signer into the UI picker.
 
 ### Medium-term
 
 - **NIP-02** — parse and honour kind 3 follow lists.
-- **NIP-44 + NIP-59 + NIP-17** — gift-wrap DMs so relays cannot correlate sender/recipient; private DMs with randomized timestamps.
-- **NIP-49** — `ncryptsec` (scrypt + XChaCha20-Poly1305) for encrypted private keys at rest.
-- **NIP-42** — auth with ephemeral kind 22242 for private relays.
-- **NIP-40** — expiration tag for deterministic purge.
-- **NIP-11** — relay capability discovery via `supported_nips`.
+- **NIP-17** — switch `dm` from NIP-04 to gift-wrapped kind 14.
+- **NIP-49** — encrypt the local signer's key at rest with `ncryptsec`.
 
 ---
 

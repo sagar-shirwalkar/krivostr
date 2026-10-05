@@ -94,6 +94,7 @@ The UI's `FilterSpec` presents tag filters as a `tags` record and
 | 02 | Follow list | ❌ not implemented |
 | 04 | Encrypted direct messages | ◐ CLI can send (NIP-04); UI cannot read incoming DMs |
 | 07 | `window.nostr` | ✅ full |
+| 13 | Proof of work | ✅ `nonce` tag, leading-zero-bit difficulty, committed target |
 | 19 | bech32 entities | ◐ Haskell does `npub` / `nsec` only; UI encodes all six |
 | 40 | Expiration timestamp | ✅ `expiration` tag for deterministic purge (bridge + UI) |
 | 42 | Authentication | ✅ NIP-42 challenge/response (ephemeral kind 22242, single-challenge queue) |
@@ -111,9 +112,14 @@ AES-256-CBC under an ECDH shared secret — before publishing, but nothing in th
 UI decrypts: no UI module imports a NIP-04 implementation at all. A DM stored
 by the bridge is unreadable in the browser today.
 
-**NIP-44 v2 is a core feature.** Both Haskell (`Krivostr.Nip.Nip44`) and
-TypeScript (`ui/src/nostr/nip44.ts`) implement the same ChaCha20-Poly1305 +
-HKDF-SHA256 construction with two security fixes over the reference spec:
+**NIP-44 v2 is a Haskell core feature.** `Krivostr.Nip.Nip44` implements the
+ChaCha20 + HMAC + HKDF-SHA256 construction with two security fixes over the
+reference spec. The TypeScript side has no NIP-44 module yet — `nip46Signer`
+takes its transport as an injected `{encrypt, decrypt}` pair and currently
+speaks NIP-04, so a NIP-44 implementation is a drop-in there.
+
+Two security fixes over the reference spec:
+
 1. **Short-ciphertext panic fix** — validates ciphertext length before indexing
    the 2-byte length prefix (the spec reads `buffer[0..2]` after HMAC passes,
    which panics on <2 bytes).
@@ -170,5 +176,6 @@ supports NIP-42, NIP-59, NIP-50, or PoW before sending traffic.
 - **NIP-50** search: **local only**. The bridge has an FTS5 index and
   `krivostr search` queries it, but no `search` field is ever placed on the
   wire, so filters are not forwarded to relays and no relay is asked to search.
-- **NIP-11** relay information: not requested, so the bridge reports no
-  software version.
+- **NIP-11** relay information: the document is parsed and `supported_nips` is
+  queryable, but nothing requests it on connect yet, so no relay's capabilities
+  are discovered in practice.
