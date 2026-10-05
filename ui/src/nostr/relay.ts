@@ -70,8 +70,14 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
     else pending.push(json);
   };
 
-  /** Outstanding COUNT requests by subscription id. */
-  const counting = new Map<string, (n: number) => void>();
+  /**
+   * Outstanding COUNT requests by subscription id. A `Map`, not a plain
+   * object: relay-controlled ids like `__proto__` must not resolve through
+   * a prototype chain, and `Map` keys never do. The id format is still
+   * checked at lookup (see below) so a foreign reply cannot settle a wait
+   * it was not issued for.
+   */
+  const counting = new Map<string, { resolve: (n: number) => void; reject: (e: Error) => void }>();
   let countSeq = 0;
 
   ws.onopen = () => {
@@ -101,16 +107,21 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
         break;
       }
       case 'COUNT': {
-        // NIP-45 answer: ["COUNT", <sub-id>, {"count": N}]. An id with no
-        // waiter is a late or foreign reply — dropped, not surfaced.
-        const cb = typeof data[1] === 'string' ? counting.get(data[1]) : undefined;
+        // NIP-45 answer: ["COUNT", <sub-id>, {"count": N}]. The id must be
+        // one this connection issued (`count-N`): anything else — a late
+        // reply, a foreign id, or a prototype-chain probe like
+        // `__proto__` — is dropped, not surfaced.
+        const subId = typeof data[1] === 'string' && /^count-\d+$/.test(data[1]) ? data[1] : undefined;
         const n =
           typeof data[2] === 'object' && data[2] !== null
             ? (data[2] as Record<string, unknown>).count
             : undefined;
-        if (cb && typeof n === 'number') {
-          counting.delete(data[1] as string);
-          cb(n);
+        if (subId !== undefined && typeof n === 'number') {
+          const waiter = counting.get(subId);
+          if (waiter) {
+            counting.delete(subId);
+            waiter.resolve(n);
+          }
         }
         break;
       }
@@ -147,7 +158,7 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
     count: (f: FilterSpec) =>
       new Promise<number>((resolve, reject) => {
         const id = `count-${countSeq++}`;
-        counting.set(id, resolve);
+        counting.set(id, { resolve, reject });
         setTimeout(() => {
           if (counting.delete(id)) reject(new Error('COUNT timed out'));
         }, 10_000);
@@ -158,6 +169,10 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
       for (const id of subs) send(['CLOSE', id]);
       subs.clear();
       pending.length = 0;
+      // Outstanding counts reject now rather than hanging until their
+      // timeout: the socket they were waiting on is gone.
+      for (const [, waiter] of counting) waiter.reject(new Error('connection closed'));
+      counting.clear();
       ws.close();
       set('closed');
     },

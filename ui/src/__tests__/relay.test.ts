@@ -260,3 +260,27 @@ describe('onEose', () => {
     expect(eosed).toEqual(['s1', 's2']);
   });
 });
+
+describe('count robustness', () => {
+  it('ignores prototype-probe and foreign ids without throwing', async () => {
+    const { handle, socket } = connectTo();
+    socket.open();
+    const p = handle.count({ kinds: [1] });
+    expect(() =>
+      socket.deliver(['COUNT', '__proto__', { count: 1 }]),
+    ).not.toThrow();
+    expect(() => socket.deliver(['COUNT', 'constructor', { count: 1 }])).not.toThrow();
+    expect(() => socket.deliver(['COUNT', 'count-0', { count: 'many' }])).not.toThrow();
+    socket.deliver(['COUNT', 'count-0', { count: 3 }]);
+    await expect(p).resolves.toBe(3);
+  });
+
+  it('rejects outstanding counts on close', async () => {
+    const { handle, socket } = connectTo();
+    socket.open();
+    const p = handle.count({ kinds: [1] });
+    const assertion = expect(p).rejects.toThrow('connection closed');
+    handle.close();
+    await assertion;
+  });
+});
