@@ -297,7 +297,7 @@ jobs:
         run: |
           set -eu
           # A Cabal version has a fourth component that a tag has no use for:
-          # client/package.yaml says 0.4.3.0, the tag is v0.4.3.
+          # client/package.yaml says 0.5.3.0, the tag is v0.5.3.
           tag_version="${RELEASE_TAG#v}"
           pkg=$(grep -m1 '^version:' client/package.yaml | awk '{print $2}')
           expected=$(printf '%s' "$pkg" | cut -d. -f1-3)

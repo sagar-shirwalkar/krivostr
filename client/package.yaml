@@ -1,5 +1,5 @@
 name: krivostr-client
-version: 0.4.3.0
+version: 0.5.3.0
 github: sagar-shirwalkar/krivostr
 license: AGPL-3.0-only
 author: you
@@ -38,6 +38,11 @@ dependencies:
   - base64-bytestring
   - base16-bytestring
   - process
+  # NIP-05 verification is an HTTPS fetch of /.well-known/nostr.json. Both
+  # are in the lts snapshot, so this adds no extra-deps -- just the TLS the
+  # spec's always-HTTPS rule requires.
+  - http-client
+  - http-client-tls
 
 executables:
   krivostr:

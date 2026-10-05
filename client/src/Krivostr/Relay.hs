@@ -15,6 +15,8 @@ module Krivostr.Relay
   , sendClient
   , close
   , parseUrl
+  , sendAuth
+  , currentChallenge
   ) where
 
 import Control.Concurrent.Async (Async, async, cancel)
@@ -27,6 +29,7 @@ import qualified Data.Aeson.Types as Aeson
 import Data.Char (isDigit)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Krivostr.Event
 import Krivostr.Logging
 import Krivostr.Wire
 import Network.Socket (PortNumber)
@@ -44,6 +47,13 @@ data RelayHandle = RelayHandle
   -- because the threads need the handle, so the handle cannot already contain
   -- them; 'connect' fills this in immediately after spawning them.
   , rhThreads :: !(TVar (Maybe (Async (), Async ())))
+  -- | The newest NIP-42 challenge this relay has sent, if any.
+  --
+  -- Only the newest is kept. A relay may issue a fresh challenge at any time --
+  -- on connect, or when a REQ is rejected -- and an older challenge is then
+  -- worthless: signing it proves nothing about the current connection. Keeping
+  -- the last one is what makes "sign whatever we are handed" safe.
+  , rhChallenge :: !(TVar (Maybe Text))
   }
 
 -- | Connect to a relay, start its reader and writer, and return a handle that
@@ -57,6 +67,7 @@ connect lg url = do
   inbox   <- newTQueueIO
   outbox  <- newTQueueIO
   threads <- newTVarIO Nothing
+  challenge <- newTVarIO Nothing
   let rh =
         RelayHandle
           { rhUrl = url
@@ -66,6 +77,7 @@ connect lg url = do
           , rhLogger = lg
           , rhCloser = closer
           , rhThreads = threads
+          , rhChallenge = challenge
           }
   reader <- async (readerLoop rh)
   writer <- async (writerLoop rh)
@@ -92,6 +104,13 @@ readerLoop rh = loop
             Left err -> emit lg Warn (rhUrl rh <> ": relay message: " <> T.pack err)
             Right msg -> do
               -- The delivery the old reader dropped.
+              case msg of
+                RChallenge c ->
+                  -- Overwrite, never accumulate: a stale challenge is worse
+                  -- than none, because it invites the client to sign something
+                  -- the relay has already forgotten.
+                  atomically $ writeTVar (rhChallenge rh) (Just c)
+                _ -> pure ()
               atomically $ writeTQueue (rhInbox rh) msg
               loop
 
@@ -113,6 +132,18 @@ writerLoop rh = loop
 
 sendClient :: RelayHandle -> ClientMessage -> IO ()
 sendClient rh cm = atomically $ writeTQueue (rhOutbox rh) cm
+
+-- | Answer the relay's outstanding NIP-42 challenge with a signed event.
+--
+-- The event is a kind 22242 with the relay's URL and the challenge string as
+-- tags, which is what the relay checks. It is not stored and not published: it
+-- exists only for the duration of this connection.
+sendAuth :: RelayHandle -> Event -> IO ()
+sendAuth rh ev = sendClient rh (CEvent ev)
+
+-- | The relay's current challenge, if it has sent one.
+currentChallenge :: RelayHandle -> IO (Maybe Text)
+currentChallenge rh = readTVarIO (rhChallenge rh)
 
 -- | Close the connection and stop the worker threads.
 close :: RelayHandle -> IO ()

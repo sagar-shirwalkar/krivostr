@@ -5,7 +5,7 @@ cabal-version: 2.2
 -- see: https://github.com/sol/hpack
 
 name:           krivostr-core
-version:        0.4.3.0
+version:        0.5.3.0
 category:       Network
 homepage:       https://github.com/sagar-shirwalkar/krivostr#readme
 bug-reports:    https://github.com/sagar-shirwalkar/krivostr/issues
@@ -25,6 +25,29 @@ library
       Krivostr.Key
       Krivostr.Logging
       Krivostr.Nip.Nip01
+      Krivostr.Nip.Nip05
+      Krivostr.Nip.Nip09
+      Krivostr.Nip.Nip10
+      Krivostr.Nip.Nip11
+      Krivostr.Nip.Nip13
+      Krivostr.Nip.Nip17
+      Krivostr.Nip.Nip18
+      Krivostr.Nip.Nip19
+      Krivostr.Nip.Nip21
+      Krivostr.Nip.Nip22
+      Krivostr.Nip.Nip23
+      Krivostr.Nip.Nip25
+      Krivostr.Nip.Nip27
+      Krivostr.Nip.Nip36
+      Krivostr.Nip.Nip40
+      Krivostr.Nip.Nip42
+      Krivostr.Nip.Nip44
+      Krivostr.Nip.Nip46
+      Krivostr.Nip.Nip47
+      Krivostr.Nip.Nip49
+      Krivostr.Nip.Nip51
+      Krivostr.Nip.Nip57
+      Krivostr.Nip.Nip59
       Krivostr.Nip.Nip65
       Krivostr.Schnorr
       Krivostr.Wire
@@ -43,6 +66,7 @@ library
     , bytestring
     , containers
     , cryptohash-sha256
+    , crypton
     , memory
     , mtl
     , scientific
@@ -57,6 +81,28 @@ test-suite spec
   main-is: Spec.hs
   other-modules:
       Bip340
+      Nip05Spec
+      Nip09Spec
+      Nip10Spec
+      Nip11Spec
+      Nip13Spec
+      Nip17Spec
+      Nip19Spec
+      Nip21Spec
+      Nip22Spec
+      Nip23Spec
+      Nip25Spec
+      Nip27Spec
+      Nip36Spec
+      Nip40Spec
+      Nip42Spec
+      Nip44Spec
+      Nip46Spec
+      Nip47Spec
+      Nip49Spec
+      Nip51Spec
+      Nip57Spec
+      Nip59Spec
       Paths_krivostr_core
   autogen-modules:
       Paths_krivostr_core
@@ -72,6 +118,7 @@ test-suite spec
     , bytestring
     , containers
     , cryptohash-sha256
+    , crypton
     , hspec
     , krivostr-core
     , memory

@@ -1,6 +1,8 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { Signer, SignerType, localSigner, nip07Signer, isNip07Available } from '../nostr/signer';
+import { Signer, SignerType, localSigner, nip07Signer, isNip07Available, nip46Signer, parseBunkerUrl } from '../nostr/signer';
+import { nip44Transport } from '../nostr/nip46';
+import { bytesToHex } from '@noble/hashes/utils';
 import { nsecDecode } from '../nostr/bech32';
 
 @customElement('krivostr-signer-picker')
@@ -107,6 +109,22 @@ export class KrivostrSignerPicker extends LitElement {
     this.showNip07Modal = false;
   }
 
+  private async confirmNip46(remotePubkey: string, relay: string, secret: string | undefined) {
+    try {
+      const localSecret = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+      const signer = await nip46Signer(
+        { remotePubkey, relay, secret },
+        localSecret,
+        nip44Transport(localSecret, remotePubkey),
+      );
+      this.dispatchEvent(
+        new CustomEvent('signer-chosen', { detail: { signer }, bubbles: true, composed: true }),
+      );
+    } catch (e) {
+      this.error = `bunker connect failed: ${String(e)}`;
+    }
+  }
+
   private confirm() {
     this.error = '';
     let signer: Signer | null = null;
@@ -126,7 +144,15 @@ export class KrivostrSignerPicker extends LitElement {
       }
       signer = nip07Signer();
     } else if (this.choice === 'nip46') {
-      this.error = 'NIP-46 setup is a follow-up; see docs/signers.md';
+      // Async path: parse the bunker URL, then connect over NIP-44. The
+      // local secret is a fresh one-time key identifying this session to the
+      // bunker — it is not the user's key, which never leaves the bunker.
+      const cfg = parseBunkerUrl(this.bunkerInput.trim());
+      if (cfg._tag === 'Err') {
+        this.error = `invalid bunker URL: ${cfg.error}`;
+        return;
+      }
+      this.confirmNip46(cfg.value.remotePubkey, cfg.value.relay, cfg.value.secret);
       return;
     }
 

@@ -7,6 +7,7 @@ module Krivostr.Store
   , closeStore
   , insertEvent
   , insertEvents
+  , InsertResult(..)
   , queryEvents
   , queryEventsWith
   , countEvents
@@ -18,6 +19,8 @@ module Krivostr.Store
   , searchEvents
   , searchQuery
   , searchAvailable
+  , countMatching
+  , countCap
   , searchCount
   , reindexEvents
   , reindexIfStale
@@ -39,6 +42,7 @@ import Database.SQLite.Simple.ToField (ToField(..))
 import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Logging
+import Krivostr.Nip.Nip01 (verifyEvent)
 import Data.Aeson (decode, encode)
 import qualified Data.ByteString.Lazy as BL
 
@@ -46,9 +50,10 @@ import qualified Data.ByteString.Lazy as BL
 defaultLimit :: Int
 defaultLimit = 500
 
--- | Kinds that are never evicted, regardless of age.
+-- | Kinds that are never evicted, regardless of age. Lists are user state,
+-- not traffic: evicting a mute list would unmute everyone on a schedule.
 persistentKinds :: [Int]
-persistentKinds = [0, 3, 4, 1059, 10002]
+persistentKinds = [0, 3, 4, 1059, 10000, 10001, 10002, 10003]
 
 -- | Default retention for ephemeral events (30 days).
 defaultRetentionDays :: NominalDiffTime
@@ -279,18 +284,39 @@ closeStore :: Store -> IO ()
 closeStore = close . stConn
 
 -- | Idempotent: INSERT OR IGNORE on the primary key.
-insertEvent :: Store -> Event -> IO Bool
-insertEvent st e = do
-  r <- try $ execute (stConn st)
-    "INSERT OR IGNORE INTO events \
-    \(id, pubkey, created_at, kind, tags, content, sig) \
-    \VALUES (?, ?, ?, ?, ?, ?, ?)"
-    (eventRow e)
-  case r of
-    Left (err :: SomeException) -> do
-      emit (stLogger st) Error ("store.insert: " <> T.pack (show err))
-      pure False
-    Right () -> pure True
+-- | What storing one event decided. 'Duplicate' is distinct from 'Inserted':
+-- the old 'Bool' conflated them, so callers could not tell a replay from a
+-- write and the "duplicate" debug line below could never fire.
+data InsertResult
+  = Inserted
+  | Duplicate
+  | InvalidSignature
+  deriving (Show, Eq)
+
+-- | Store one event, verifying its signature first. This is the choke point:
+-- every ingest path (bridge client events, bridge upstream events, CLI
+-- follows, CLI list saves) funnels through here, so a forged event has no
+-- path into SQLite that skips verification. Callers must not pre-verify to
+-- "help" -- one Schnorr check per event is enough, and two is a tax on
+-- every relay message.
+insertEvent :: Store -> Event -> IO InsertResult
+insertEvent st e
+  | not (verifyEvent e) = do
+      emit (stLogger st) Warn ("store.insert: rejected " <> evId e <> " (invalid signature)")
+      pure InvalidSignature
+  | otherwise = do
+      r <- try $ execute (stConn st)
+        "INSERT OR IGNORE INTO events \
+        \(id, pubkey, created_at, kind, tags, content, sig) \
+        \VALUES (?, ?, ?, ?, ?, ?, ?)"
+        (eventRow e)
+      case r of
+        Left (err :: SomeException) -> do
+          emit (stLogger st) Error ("store.insert: " <> T.pack (show err))
+          pure InvalidSignature
+        Right () -> do
+          n <- changes (stConn st)
+          pure (if n == 0 then Duplicate else Inserted)
 
 insertEvents :: Store -> [Event] -> IO Int
 insertEvents st es = do
@@ -299,26 +325,93 @@ insertEvents st es = do
 
 -- | Query by a filter. Everything happens in SQL for indexed fields,
 -- tag and content matching happens in Haskell (small N, cleaner).
+--
+-- A NIP-50 @search@ filter is answered from the FTS5 index instead of the
+-- row scan: the MATCH ranks by bm25, and 'matches' then applies the
+-- remaining predicates (ids, time bounds, tags, and the substring reading
+-- of the same search). Without an index the row scan still runs and
+-- 'matches' answers search as a substring, so the filter never fails -- it
+-- only gets slower.
 queryEvents :: Store -> Filter -> IO [Event]
-queryEvents st f = do
-  let (whereClause, params) = buildWhere f
-      lim = fromMaybe defaultLimit (fLimit f)
-      -- The limit is a bound parameter in the SQL rather than a Haskell `take`
-      -- afterwards: `take` still pulled every matching row out of SQLite
-      -- first, so a broad filter read the entire table to return 500 of them.
-      sql = "SELECT id, pubkey, created_at, kind, tags, content, sig \
-            \FROM events " <> whereClause <> " ORDER BY created_at DESC LIMIT ?"
-      allParams = params ++ [toField lim]
-  rows <- query (stConn st) (Query sql) allParams
-  -- Tag and content predicates still run in Haskell, so the limit can be
-  -- reached before enough rows pass; fetch the bounded page and let the caller
-  -- see what survived.
-  pure (filter (matches f) rows)
+queryEvents st f = case fSearch f of
+  Just q | not (T.null (T.strip q)) -> do
+    ok <- searchAvailable st
+    if not ok
+      then rowScan
+      else do
+        let lim = fromMaybe defaultLimit (fLimit f)
+            author = case fAuthors f of
+              Just [a] -> Just a
+              _        -> Nothing
+        evs <- searchEvents st q False (fKinds f) author (max 1 (lim * 4))
+        pure (take lim (filter (matches f) evs))
+  _ -> rowScan
+  where
+    rowScan = do
+      let (whereClause, params) = buildWhere f
+          lim = fromMaybe defaultLimit (fLimit f)
+          -- The limit is a bound parameter in the SQL rather than a Haskell
+          -- `take` afterwards: `take` still pulled every matching row out of
+          -- SQLite first, so a broad filter read the entire table to return
+          -- 500 of them.
+          sql = "SELECT id, pubkey, created_at, kind, tags, content, sig \
+                \FROM events " <> whereClause <> " ORDER BY created_at DESC LIMIT ?"
+          allParams = params ++ [toField lim]
+      rows <- query (stConn st) (Query sql) allParams
+      -- Tag and content predicates still run in Haskell, so the limit can be
+      -- reached before enough rows pass; fetch the bounded page and let the caller
+      -- see what survived.
+      pure (filter (matches f) rows)
 
 -- | Query with an ad-hoc SQL suffix (escape hatch for advanced callers).
 queryEventsWith :: Store -> Text -> [SQLData] -> IO [Event]
 queryEventsWith st sql params =
   query (stConn st) (Query sql) params
+
+-- | Row cap for the fetch fallback in 'countMatching'. High enough that a
+-- personal bridge never hits it; the exact-SQL path below handles the rest.
+countCap :: Int
+countCap = 100000
+
+-- | How many stored events match a filter. The limit is ignored -- NIP-45
+-- counts everything the filter matches, not the page size.
+--
+-- Indexed clauses (ids, authors, kinds, time bounds, and a search via an
+-- FTS5 subquery) count in SQL without touching a row. Tag predicates have
+-- no index, so a filter carrying #tags falls back to fetching and filtering
+-- in Haskell, bounded by 'countCap'. Either way the number answers from
+-- SQLite, which is what makes COUNT instant next to a REQ replay.
+countMatching :: Store -> Filter -> IO Int
+countMatching st f
+  | null (fTags f') = sqlCount
+  | otherwise = length . filter (matches f') <$> queryEvents st (f' { fLimit = Just countCap })
+  where
+    f' = f { fLimit = Nothing }
+    sqlCount = do
+      let (whereClause, params) = buildWhere (f' { fSearch = Nothing })
+          rest = if T.null whereClause then "" else " AND " <> T.drop 6 whereClause
+      (matchClause, matchParams, indexed) <- matchPart
+      if not indexed
+        then length . filter (matches f') <$> queryEvents st (f' { fLimit = Just countCap })
+        else do
+          [Only n] <- query (stConn st)
+            (Query ("SELECT COUNT(*) FROM events WHERE " <> matchClause <> rest))
+            (matchParams ++ params)
+          pure (fromIntegral (n :: Int64))
+    -- The search half of the count: an FTS subquery, or "matches nothing"
+    -- when the query has no searchable words. The third element says whether
+    -- the count can stay in SQL at all -- without an FTS index it cannot.
+    matchPart = case fSearch f' of
+      Just q | not (T.null (T.strip q)) -> case searchQuery False q of
+        Just expr -> do
+          ok <- searchAvailable st
+          pure
+            ( "id IN (SELECT event_id FROM events_fts WHERE events_fts MATCH ?)"
+            , [toField expr]
+            , ok
+            )
+        Nothing -> pure ("0 = 1", [], True)
+      _ -> pure ("1 = 1", [], True)
 
 -- | Turn a 'Filter' into a @WHERE@ fragment and its bound parameters.
 --

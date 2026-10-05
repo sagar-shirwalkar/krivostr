@@ -3,7 +3,29 @@
 module Main (main) where
 
 import Bip340 (bip340Spec)
-import Data.Aeson (Value, decode, encode, eitherDecodeStrict, toJSON)
+import Nip05Spec (nip05Spec)
+import Nip09Spec (nip09Spec)
+import Nip19Spec (nip19Spec)
+import Nip21Spec (nip21Spec)
+import Nip47Spec (nip47Spec)
+import Nip57Spec (nip57Spec)
+import Nip51Spec (nip51Spec)
+import Nip22Spec (nip22Spec)
+import Nip27Spec (nip27Spec)
+import Nip36Spec (nip36Spec)
+import Nip23Spec (nip23Spec)
+import Nip10Spec (nip10Spec)
+import Nip25Spec (nip25Spec)
+import Nip11Spec (nip11Spec)
+import Nip17Spec (nip17Spec)
+import Nip42Spec (nip42Spec)
+import Nip46Spec (nip46Spec)
+import Nip49Spec (nip49Spec)
+import Nip59Spec (nip59Spec)
+import Nip13Spec (nip13Spec)
+import Nip40Spec (nip40Spec)
+import Nip44Spec (nip44Spec)
+import Data.Aeson (Value, decode, encode, eitherDecodeStrict, object, toJSON, (.=))
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
@@ -57,6 +79,28 @@ hasPrefix p s = T.isPrefixOf p s
 main :: IO ()
 main = hspec $ do
   bip340Spec
+  nip05Spec
+  nip09Spec
+  nip19Spec
+  nip21Spec
+  nip47Spec
+  nip57Spec
+  nip51Spec
+  nip22Spec
+  nip27Spec
+  nip36Spec
+  nip23Spec
+  nip10Spec
+  nip25Spec
+  nip44Spec
+  nip13Spec
+  nip11Spec
+  nip17Spec
+  nip42Spec
+  nip46Spec
+  nip49Spec
+  nip59Spec
+  nip40Spec
 
   describe "NIP-01 canonical serialization" $ do
     it "is deterministic" $
@@ -220,8 +264,17 @@ main = hspec $ do
       matches (tagEq "p" ["carol"]) e `shouldBe` False
 
     it "round-trips through JSON" $ do
-      let f = Filter (Just ["a"]) (Just ["b"]) (Just [1, 2]) (Just 0) (Just 9) (Just 5) [("e", ["x"])]
+      let f = Filter (Just ["a"]) (Just ["b"]) (Just [1, 2]) (Just 0) (Just 9) (Just 5) [("e", ["x"])] (Just "hello")
       decode (encode f) `shouldBe` Just f
+
+    it "encodes search under its wire key" $
+      BL.toStrict (encode (empty { fSearch = Just "hello" }))
+        `shouldSatisfy` BS.isInfixOf "\"search\":\"hello\""
+
+    it "matches search as a case-insensitive substring" $ do
+      let f = empty { fSearch = Just "HELLO" }
+      matches f sampleEvent `shouldBe` True
+      matches (empty { fSearch = Just "goodbye" }) sampleEvent `shouldBe` False
 
     it "encodes tags under their #e keys" $
       BL.toStrict (encode (tagEq "p" ["bob"]))
@@ -300,6 +353,10 @@ main = hspec $ do
       BL.toStrict (encode (encodeClient (CClose "s1")))
         `shouldSatisfy` BS.isInfixOf "\"CLOSE\""
 
+    it "encodes COUNT with filters as trailing elements" $
+      BL.toStrict (encode (encodeClient (CCount "c1" [onlyKinds [1]])))
+        `shouldBe` "[\"COUNT\",\"c1\",{\"kinds\":[1]}]"
+
     it "decodes an EVENT relay message" $
       Aeson.parseEither decodeRelay (toJSON (["EVENT", "s1", toJSON sampleEvent] :: [Value]))
         `shouldSatisfy` isRight
@@ -313,6 +370,14 @@ main = hspec $ do
         `shouldSatisfy` isRight
       Aeson.parseEither decodeRelay (toJSON (["NOTICE", "hi"] :: [Value]))
         `shouldSatisfy` isRight
+
+    it "decodes a COUNT answer" $
+      Aeson.parseEither decodeRelay (toJSON (["COUNT", "c1", object ["count" .= (41 :: Int)]] :: [Value]))
+        `shouldBe` Right (RCount "c1" 41)
+
+    it "rejects a COUNT without a numeric count" $
+      Aeson.parseEither decodeRelay (toJSON (["COUNT", "c1", object ["count" .= ("many" :: Text)]] :: [Value]))
+        `shouldSatisfy` isLeft
 
     it "rejects an unknown relay message" $
       Aeson.parseEither decodeRelay (toJSON (["NOPE"] :: [Value]))

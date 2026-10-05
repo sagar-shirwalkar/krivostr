@@ -5,7 +5,7 @@ cabal-version: 2.2
 -- see: https://github.com/sol/hpack
 
 name:           krivostr-client
-version:        0.4.3.0
+version:        0.5.3.0
 category:       Network
 homepage:       https://github.com/sagar-shirwalkar/krivostr#readme
 bug-reports:    https://github.com/sagar-shirwalkar/krivostr/issues
@@ -26,6 +26,7 @@ executable krivostr
       Krivostr.Cli.Api
       Krivostr.Cli.Nostr
       Krivostr.Cli.Render
+      Krivostr.Cli.Wallet
       Krivostr.Pool
       Krivostr.Relay
       Krivostr.Store
@@ -48,6 +49,8 @@ executable krivostr
     , direct-sqlite
     , directory
     , filepath
+    , http-client
+    , http-client-tls
     , http-types
     , krivostr-core
     , monad-logger
@@ -77,6 +80,7 @@ test-suite spec
       Krivostr.Cli.Api
       Krivostr.Cli.Nostr
       Krivostr.Cli.Render
+      Krivostr.Cli.Wallet
       Krivostr.Pool
       Krivostr.Relay
       Krivostr.Store
@@ -101,6 +105,8 @@ test-suite spec
     , directory
     , filepath
     , hspec
+    , http-client
+    , http-client-tls
     , http-types
     , krivostr-core
     , monad-logger

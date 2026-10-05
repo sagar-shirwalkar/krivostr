@@ -23,9 +23,10 @@ Full-text search is implemented: `krivostr search <query>` and the bridge's
 lexical query when FTS5 is missing at build time. `krivostr reindex` rebuilds
 the index from `events`.
 
-**NIP-40 expiration:** Events with an `expiration` tag are purged deterministically
-by the retention job. The `expiration` tag (NIP-40) carries a unix timestamp;
-events past that timestamp are purged on the next retention run.
+**NIP-40 expiration:** `Krivostr.Nip.Nip40` parses the `expiration` tag and
+filters expired events. The store's retention job is time-based
+(`created_at` cutoff) and does not yet consult the tag, so an expired event
+lingers until it ages out.
 
 **Both `INSERT` and retention are per-id.** There is no replaceable-event logic:
 a newer kind 0 or kind 3 from the same author does not displace the older one,
@@ -53,10 +54,9 @@ no timer, no startup sweep. The browser cache grows until the user clears it.
 Wiring it into an hourly timer is a one-line change if you want the documented
 behaviour.
 
-**NIP-49 `ncryptsec`** — Private keys are stored encrypted in IndexedDB as
-`ncryptsec1...` bech32 strings (NIP-49: scrypt + XChaCha20-Poly1305). The
-passphrase is never stored; only the derived key is used to decrypt on unlock.
-The heap-allocated key buffer is zeroed on drop.
+**NIP-49 `ncryptsec`** — the core `Krivostr.Nip.Nip49` module encrypts
+private keys with scrypt + XChaCha20-Poly1305. The browser does not use it
+yet; IndexedDB holds keys in the clear.
 
 Kind 4 events are stored **encrypted**, because that is how they arrive over
 the wire — the relay or sender already encrypted them. krivostr does not

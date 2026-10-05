@@ -210,3 +210,77 @@ describe('publish and close', () => {
     expect(handle.state()).toBe('error');
   });
 });
+
+describe('count', () => {
+  it('sends COUNT and resolves the matching answer', async () => {
+    const { handle, socket } = connectTo();
+    socket.open();
+    const p = handle.count({ kinds: [1] });
+    expect(socket.parsed()[0]).toEqual(['COUNT', 'count-0', { kinds: [1] }]);
+    socket.deliver(['COUNT', 'count-0', { count: 41 }]);
+    await expect(p).resolves.toBe(41);
+  });
+
+  it('ignores COUNT answers for other ids', async () => {
+    const { handle, socket } = connectTo();
+    socket.open();
+    const p = handle.count({ kinds: [1] });
+    socket.deliver(['COUNT', 'count-99', { count: 1 }]);
+    socket.deliver(['COUNT', 'count-0', { count: 7 }]);
+    await expect(p).resolves.toBe(7);
+  });
+
+  it('rejects when nobody answers', async () => {
+    vi.useFakeTimers();
+    try {
+      const { handle, socket } = connectTo();
+      socket.open();
+      const p = handle.count({ kinds: [1] });
+      const assertion = expect(p).rejects.toThrow('COUNT timed out');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('onEose', () => {
+  it('routes EOSE sub ids to the handler', () => {
+    const eosed: string[] = [];
+    connect('wss://relay.example', {
+      onEvent: () => undefined,
+      onState: () => undefined,
+      onEose: (id) => eosed.push(id),
+    });
+    const socket = FakeSocket.instances.at(-1)!;
+    socket.open();
+    socket.deliver(['EOSE', 's1']);
+    socket.deliver(['EOSE', 's2']);
+    expect(eosed).toEqual(['s1', 's2']);
+  });
+});
+
+describe('count robustness', () => {
+  it('ignores prototype-probe and foreign ids without throwing', async () => {
+    const { handle, socket } = connectTo();
+    socket.open();
+    const p = handle.count({ kinds: [1] });
+    expect(() =>
+      socket.deliver(['COUNT', '__proto__', { count: 1 }]),
+    ).not.toThrow();
+    expect(() => socket.deliver(['COUNT', 'constructor', { count: 1 }])).not.toThrow();
+    expect(() => socket.deliver(['COUNT', 'count-0', { count: 'many' }])).not.toThrow();
+    socket.deliver(['COUNT', 'count-0', { count: 3 }]);
+    await expect(p).resolves.toBe(3);
+  });
+
+  it('rejects outstanding counts on close', async () => {
+    const { handle, socket } = connectTo();
+    socket.open();
+    const p = handle.count({ kinds: [1] });
+    const assertion = expect(p).rejects.toThrow('connection closed');
+    handle.close();
+    await assertion;
+  });
+});

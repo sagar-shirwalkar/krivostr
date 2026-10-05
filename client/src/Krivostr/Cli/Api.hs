@@ -27,7 +27,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Read as TR
 import Data.Streaming.Network.Internal (HostPreference (Host))
-import Krivostr.Filter (Filter (fAuthors, fIds, fKinds, fLimit, fSince, fTags, fUntil))
+import Krivostr.Filter (Filter (fAuthors, fIds, fKinds, fLimit, fSearch, fSince, fTags, fUntil))
 import qualified Krivostr.Filter as Filter
 import Krivostr.Logging
 import Krivostr.Store (StoreStats (ssByKind, ssNewest, ssOldest, ssTotal), Store, countEvents, getEventById, queryEvents, searchAvailable, searchEvents, storeStats)
@@ -160,6 +160,7 @@ filterOf qs = do
     , fUntil   = fmap fromIntegral untilEnd
     , fLimit   = fmap fromIntegral lim
     , fTags    = tagParams qs
+    , fSearch  = qtext qs "search"
     }
 
 -- | @?tag=e=&tag=p=&tag=t=bitcoin@: repeatable, values in the order given.

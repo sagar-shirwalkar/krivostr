@@ -8,7 +8,7 @@ import qualified Data.ByteString as BS
 import Control.Concurrent.STM
 import Control.Monad (forM_, replicateM)
 import Data.Either (isLeft, isRight)
-import Data.Aeson (eitherDecodeStrict, encode)
+import Data.Aeson (eitherDecodeStrict, encode, object, (.=))
 import Data.Aeson.Types (parseMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -29,15 +29,19 @@ import Krivostr.Cli
   , TimeSpec (..)
   )
 import Krivostr.Cli.Nostr (decryptNip04, encryptNip04)
+import Krivostr.Cli.Render (oneLine, relativeTime, renderEvent, renderEventBlock, shortHex)
 import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Key
 import Krivostr.Logging
 import Krivostr.Bridge (parseClient)
 import Krivostr.Nip.Nip01
+import Krivostr.Nip.Nip42
 import Krivostr.Relay (parseUrl)
 import Krivostr.Store
 import Krivostr.Wire
+import Data.Aeson (Value, toJSON)
+import Data.Aeson.Types (parseEither)
 
 -- ── Fixtures ───────────────────────────────────────────────────
 
@@ -71,21 +75,31 @@ main = hspec $ do
       st <- openMemoryStore lg
       sk <- generatePrivateKey
       let e = mkSigned sk 1 "hello"
-      ok <- insertEvent st e
-      ok `shouldBe` True
+      insertEvent st e `shouldReturn` Inserted
       fetched <- getEventById st (evId e)
       fetched `shouldSatisfy` (== Just e)
       closeStore st
 
-    it "is idempotent on duplicate ids" $ do
+    it "tells a duplicate from a write" $ do
       lg <- newLogger Error
       st <- openMemoryStore lg
       sk <- generatePrivateKey
       let e = mkSigned sk 1 "hello"
-      _ <- insertEvent st e
-      _ <- insertEvent st e
+      insertEvent st e `shouldReturn` Inserted
+      insertEvent st e `shouldReturn` Duplicate
       n <- countEvents st
       n `shouldBe` 1
+      closeStore st
+
+    it "refuses a forged event and stores nothing" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "hello"
+      insertEvent st e {evContent = "forged"} `shouldReturn` InvalidSignature
+      insertEvent st e {evSig = T.replicate 128 "0"} `shouldReturn` InvalidSignature
+      getEventById st (evId e) `shouldReturn` Nothing
+      countEvents st `shouldReturn` 0
       closeStore st
 
     it "filters by kind" $ do
@@ -201,6 +215,46 @@ main = hspec $ do
       let v = encodeClient (CClose "s1")
       show v `shouldContain` "CLOSE"
 
+  describe "NIP-42 AUTH" $ do
+    let sk = either (error "bad key") id (importHex "0000000000000000000000000000000000000000000000000000000000000003")
+        url = "wss://relay.example.com"
+        challenge = "krivostr-test-challenge"
+
+    it "decodes an AUTH frame into a challenge" $
+      parseEither decodeRelay (toJSON (["AUTH", challenge] :: [Text]))
+        `shouldBe` Right (RChallenge challenge)
+
+    it "decodes an AUTH frame with a non-string challenge as an error" $
+      parseEither decodeRelay (object ["AUTH" .= (7 :: Int)])
+        `shouldSatisfy` Data.Either.isLeft
+
+    it "builds an event the validator accepts" $ do
+      let ev = Krivostr.Nip.Nip42.buildAuthEvent sk url challenge 1700000000
+      Krivostr.Nip.Nip42.validateAuthEvent url challenge 1700000000 300 ev
+        `shouldBe` Right ()
+
+    it "rejects an event for a different relay" $ do
+      let ev = Krivostr.Nip.Nip42.buildAuthEvent sk url challenge 1700000000
+      Krivostr.Nip.Nip42.validateAuthEvent "wss://other.example" challenge 1700000000 300 ev
+        `shouldSatisfy` Data.Either.isLeft
+
+    it "rejects an event answering a different challenge" $ do
+      let ev = Krivostr.Nip.Nip42.buildAuthEvent sk url challenge 1700000000
+      Krivostr.Nip.Nip42.validateAuthEvent url "other-challenge" 1700000000 300 ev
+        `shouldSatisfy` Data.Either.isLeft
+
+    it "rejects an event that is too old" $ do
+      -- Built a thousand seconds in the past, validated against a ten second
+      -- window: the age is what must exceed the window, not the timestamp.
+      let ev = Krivostr.Nip.Nip42.buildAuthEvent sk url challenge 1700000000
+      Krivostr.Nip.Nip42.validateAuthEvent url challenge 1700001000 10 ev
+        `shouldSatisfy` Data.Either.isLeft
+
+    it "rejects an event with no signature" $ do
+      let ev = Krivostr.Nip.Nip42.buildAuthEvent sk url challenge 1700000000
+      Krivostr.Nip.Nip42.validateAuthEvent url challenge 1700000000 300 (ev {evSig = ""})
+        `shouldSatisfy` Data.Either.isLeft
+
   describe "Bridge protocol" $ do
     let parsed :: BS.ByteString -> Maybe ClientMessage
         parsed = either (const Nothing) (parseMaybe parseClient) . eitherDecodeStrict
@@ -223,6 +277,17 @@ main = hspec $ do
     it "parses CLOSE" $
       parsed "[\"CLOSE\",\"s1\"]" `shouldBe` Just (CClose "s1")
 
+    it "parses COUNT with filters as trailing elements" $
+      parsed "[\"COUNT\",\"c1\",{\"kinds\":[1]}]"
+        `shouldBe` Just (CCount "c1" [onlyKinds [1]])
+
+    it "round-trips its own COUNT encoding" $
+      parseMaybe parseClient (encodeClient (CCount "c1" [onlyKinds [1], tagEq "e" ["x"]]))
+        `shouldBe` Just (CCount "c1" [onlyKinds [1], tagEq "e" ["x"]])
+
+    it "rejects a COUNT with no filters" $
+      parsed "[\"COUNT\",\"c1\"]" `shouldBe` Nothing
+
   describe "Key" $ do
     it "generates distinct keys" $ do
       sk1 <- generatePrivateKey
@@ -235,6 +300,39 @@ main = hspec $ do
       importHex "0xDEADBEEF" `shouldSatisfy` isLeft
 
   describe "Store search (FTS5)" $ do
+    it "answers a search filter from the FTS index" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      insertEvent st (mkSigned sk 1 "the quick brown fox")
+      insertEvent st (mkSigned sk 1 "something unrelated")
+      hits <- queryEvents st (empty { fSearch = Just "brown fox" })
+      map evContent hits `shouldBe` ["the quick brown fox"]
+      closeStore st
+
+    it "combines search with kinds and limit" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      insertEvent st (mkSigned sk 1 "shared word one")
+      insertEvent st (mkSigned sk 7 "shared word two")
+      kinds <- queryEvents st (empty { fSearch = Just "shared", fKinds = Just [7] })
+      map evKind kinds `shouldBe` [7]
+      limited <- queryEvents st (empty { fSearch = Just "shared", fLimit = Just 1 })
+      length limited `shouldBe` 1
+      closeStore st
+
+    it "counts matches ignoring the limit" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      forM_ [1..5] $ \i -> insertEvent st (mkSigned sk 1 (T.pack ("counted " ++ show (i :: Int))))
+      insertEvent st (mkSigned sk 7 "counted reaction")
+      countMatching st (empty { fKinds = Just [1], fLimit = Just 2 }) `shouldReturn` 5
+      countMatching st (empty { fSearch = Just "counted" }) `shouldReturn` 6
+      countMatching st (empty { fKinds = Just [7], fTags = [("p", ["nobody"])] }) `shouldReturn` 0
+      closeStore st
+
     it "indexes what is inserted and finds it" $ do
       lg <- newLogger Error
       st <- openMemoryStore lg
@@ -439,6 +537,35 @@ main = hspec $ do
       let pk1 = derivePublicKey sk1
       r <- decryptNip04 sk1 pk1 "AAAA?iv=!!!"
       r `shouldSatisfy` isLeft
+
+  describe "Render" $ do
+    it "renders one line with age, kind, and author" $ do
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "hello world"
+      renderEvent False True 1700000001 e `shouldSatisfy` T.isInfixOf "hello world"
+      renderEvent False True 1700000001 e `shouldSatisfy` T.isInfixOf "#1"
+
+    it "hides sensitive content unless revealed" $ do
+      sk <- generatePrivateKey
+      let e = (mkSigned sk 1 "secret body") { evTags = [["content-warning", "nudity"]] }
+      renderEvent False False 1700000001 e `shouldSatisfy` T.isInfixOf "sensitive: nudity"
+      renderEvent False False 1700000001 e `shouldSatisfy` (not . T.isInfixOf "secret body")
+      renderEvent False True 1700000001 e `shouldSatisfy` T.isInfixOf "secret body"
+
+    it "hides sensitive bodies in block rendering" $ do
+      sk <- generatePrivateKey
+      let e = (mkSigned sk 1 "secret body") { evTags = [["content-warning"]] }
+      renderEventBlock False False 1700000001 e `shouldSatisfy` T.isInfixOf "[content hidden"
+      renderEventBlock False True 1700000001 e `shouldSatisfy` T.isInfixOf "secret body"
+
+    it "formats relative ages" $ do
+      relativeTime 1700000000 1699999990 `shouldBe` "now"
+      relativeTime 1700000000 1699999900 `shouldSatisfy` T.isPrefixOf "1m"
+      relativeTime 1700000000 1699913600 `shouldSatisfy` T.isPrefixOf "1d"
+
+    it "shortens hex and single-lines text" $ do
+      shortHex 8 (T.replicate 64 "a") `shouldSatisfy` T.isPrefixOf "aaaaaaaa"
+      oneLine 100 "a\nb" `shouldBe` "a b"
 
   describe "Cli helpers" $ do
     it "parses relative times" $ do

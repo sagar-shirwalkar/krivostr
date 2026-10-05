@@ -7,24 +7,23 @@ optimistic.
 
 ## The two real gaps (now fixed)
 
-**Ingest does not verify signatures.** `Krivostr.Schnorr.verifyEvent` exists and
-is tested, but nothing calls it on the way in. The bridge stores events on the
-`pubkey` they carry; the UI's `parseEvent` checks that fields are present and
-correctly typed, not that `id` hashes the content or that `sig` verifies. A
-malicious relay can serve events attributed to anyone. Nothing downstream
-notices.
+**Ingest verifies signatures.** `Store.insertEvent` is the choke point: it
+checks the Schnorr signature first and answers `Inserted`, `Duplicate`, or
+`InvalidSignature`, and every ingest path funnels through it — bridge client
+events (rejected with an `OK: false`), bridge upstream events (dropped with
+a warning), CLI follows, and CLI list saves. A forged event has no path
+into SQLite. The browser's IndexedDB gate matches: `cache.put` refuses
+events that fail `verifyEvent` (id hash plus signature), so unverified
+bytes do not survive a restart there either.
 
-**`krivostr serve` binds every interface.** [`Bridge.hs`](../client/src/Krivostr/Bridge.hs)
-calls `setPort` with no `setHost`, so Warp's default applies and the bridge
-listens on all interfaces, not just loopback — even though the startup log
-prints `listening on :8081` with no host. Anything on the local network can
-connect, read the store, and publish events as you.
+`parseEvent` stays structural on purpose: it is a decoder, not a trust
+boundary. Field presence and types belong in the decoder; authorship belongs
+at the store and cache gates above, which is where it now runs.
 
-This is worth fixing, and it is a small fix: mirror the API's `--host` option
-(defaulting to `127.0.0.1`) in `serveP`, and set `setHost` in `Bridge.hs`.
-
-The JSON API does not have this problem: `Cli/Api.hs` calls `setHost` from
-`apiHost`, which defaults to `127.0.0.1`.
+**`krivostr serve` binds loopback.** `serveP` mirrors the API's `--host`
+option, defaulting to `127.0.0.1`, and `Bridge.hs` passes it to `setHost`.
+The JSON API never had this problem: `Cli/Api.hs` calls `setHost` from
+`apiHost`, which also defaults to `127.0.0.1`.
 
 ## NIP-44 v2 security fixes
 
@@ -41,8 +40,8 @@ reference specification:
    implementation enforces a maximum base64 payload size BEFORE decoding
    (~88KB for 64KB plaintext + overhead), preventing resource exhaustion.
 
-Both the Haskell (`Krivostr.Nip.Nip44`) and TypeScript (`ui/src/nostr/nip44.ts`)
-implementations include these fixes.
+The Haskell `Krivostr.Nip.Nip44` module includes both fixes. The TypeScript
+`ui/src/nostr/nip44.ts` mirrors it, including the same two guards.
 
 ## Threat model
 
@@ -58,8 +57,9 @@ We assume:
 - **The bridge is trusted as far as the machine it runs on.** It holds event
   metadata, never keys.
 - **The local disk is partially trusted.** We assume it can be read by another
-  process on the same machine. Private keys are encrypted at rest via NIP-49
-  `ncryptsec` (scrypt + XChaCha20-Poly1305).
+  process on the same machine. NIP-49 `ncryptsec` (scrypt + XChaCha20-Poly1305)
+  exists in the Haskell core, but the UI's IndexedDB still holds keys in the
+  clear — at-rest encryption is not wired into the browser yet.
 
 We do **not** assume:
 
@@ -91,8 +91,8 @@ and the extension holds the private half. This is the recommended path.
 ### NIP-46
 
 The bunker holds the key and returns signatures over NIP-44-encrypted kind
-24133 DMs. Note that the UI cannot reach this path today: the signer picker
-does not construct `nip46Signer`. See [signers.md](signers.md).
+24133 DMs. The signer picker constructs `nip46Signer` with the NIP-44
+transport. See [signers.md](signers.md).
 
 ## Cached events
 
@@ -119,8 +119,10 @@ localhost; it follows from serving the page over plain HTTP, so do not serve
 krivostr that way on a shared network.
 
 **NIP-42 authentication** uses ephemeral kind 22242 events with a relay-supplied
-challenge. The bridge and CLI implement a single-challenge queue (a new
-challenge invalidates the previous one) to prevent challenge-queue exhaustion.
+challenge. The CLI answers challenges through the relay pool, which keeps only
+the newest challenge per relay (a new challenge overwrites the previous one)
+so a stale challenge can never be signed and replayed. The bridge does not
+require browser clients to authenticate.
 
 **NIP-42 on reads** — a relay that supports NIP-42 but never enforces it on
 reads offers no read privacy; a passive observer can harvest every encrypted

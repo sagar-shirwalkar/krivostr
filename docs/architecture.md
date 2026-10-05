@@ -107,39 +107,50 @@ directly, so the bridge is a drop-in stand-in for a direct relay connection.
 ## Data flow
 
 **Publishing.** The user types in `<nostr-compose>`, which bubbles a
-`publish-request` to `<krivostr-app>`. The app calls the selected `Signer`,
-then sends `["EVENT", …]` to the bridge. The bridge inserts it into SQLite,
-broadcasts it to the upstream pool, delivers it to other connected clients, and
-answers `OK`. The UI caches it in IndexedDB (NIP-49 `ncryptsec` at rest).
+`publish-request` (content, kind, tags) to `<krivostr-app>`. The app calls
+the selected `Signer`, then sends `["EVENT", …]` to the bridge. The bridge
+inserts it into SQLite, broadcasts it to the upstream pool, delivers it to
+other connected clients, and answers `OK`. The UI caches it in IndexedDB.
+Reply, react, and repost buttons on each note dispatch the same event with
+prebuilt tags, so one signer path serves every social action.
 
 **Subscribing.** The bridge answers a `REQ` from its own store first: it
 queries SQLite, replays the matching events, sends `EOSE`, and only then
 broadcasts the `REQ` upstream. So a client gets history immediately and live
-events afterwards, and the `EOSE` marks the seam between them.
+events afterwards, and the `EOSE` marks the seam between them. A `search`
+filter is answered from the FTS5 index on the same path — the bridge's
+instant search is this replay with a MATCH clause.
 
-**NIP-42 auth on the bridge.** The bridge requires NIP-42 auth for private
-operations. The handshake uses ephemeral kind 22242 events with a relay-supplied
-challenge. A single-challenge queue prevents challenge-queue exhaustion.
+**Counting.** A `COUNT` never leaves the bridge: it is answered from SQLite
+(one indexed `COUNT(*)`, FTS subquery for search) and overlapping filters
+union by id. Upstream relays answer for themselves when asked directly.
 
-**NIP-59 gift wrap on the bridge.** The bridge can serve and forward kind 1059
-gift wraps. The outer wrapper is signed by an ephemeral key; the inner rumor is
-encrypted with NIP-44. Relays see only the wrapper.
+**Deleting and muting.** A kind 5 removes the author's own rows from SQLite
+and publishes upstream; other clients hide cited targets by the same
+authorship rule. Mute lists (kind 10000) are retention-exempt user state;
+the UI filters on its own list locally, so muting needs no relay support.
 
-**NIP-17 private DMs.** The CLI `dm` command and the UI compose NIP-44 + NIP-59
-for private messages. A rumor (kind 14) is sealed with NIP-44, wrapped in a
-gift wrap (kind 1059) signed by an ephemeral key, with a randomized timestamp
-(±2 days) to defeat timing correlation.
+**Opening and zapping.** A clicked `nostr:` mention resolves to an event
+reader (one-shot fetch by id, newest version by address) or an author view
+(feed swap), never a page load. A zap signs a kind 9734 and sends it to the
+LNURL callback — it is never published — and the wallet pays out of band;
+kind-9735 receipts render as claims with invoice-decoded amounts.
 
-**NIP-49 `ncryptsec` at rest.** Private keys in IndexedDB are encrypted with
-scrypt + XChaCha20-Poly1305 (bech32 `ncryptsec1...`). The passphrase derives
-the key via scrypt on unlock; the heap-allocated key buffer is zeroed on drop.
+**NIP-42 auth on the CLI.** The relay pool answers a challenge with a kind
+22242 event signed by the loaded key, so `feed --follow` and `dm` work against
+`auth-required` relays. The bridge itself does not yet require browser clients
+to authenticate.
 
-**NIP-42 auth on the bridge.** The bridge requires NIP-42 auth for private
-operations. The handshake uses ephemeral kind 22242 events with a relay-supplied
-challenge. A single-challenge queue prevents challenge-queue exhaustion.
+**NIP-59 gift wrap and NIP-17 private DMs.** Both are implemented in `core`
+(`Krivostr.Nip.Nip59`, `Krivostr.Nip.Nip17`) and in the browser
+(`ui/src/nostr/nip59.ts`, `ui/src/nostr/nip17.ts`), each covered by tests —
+the TypeScript side opens the spec's published seal to the published rumor.
+Neither is wired into a send path yet: `dm` still sends NIP-04 kind 4, and
+the compose box publishes plaintext notes.
 
-**NIP-42 auth on the CLI.** The CLI `dm` and `feed --follow` commands implement
-the same NIP-42 handshake when connecting to authenticated relays.
+**NIP-49 `ncryptsec`.** The core `Krivostr.Nip.Nip49` module encrypts private
+keys with scrypt + XChaCha20-Poly1305. The UI does not use it yet — IndexedDB
+holds keys in the clear.
 
 ## The two sides mirror each other
 

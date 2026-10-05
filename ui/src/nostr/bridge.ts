@@ -59,6 +59,16 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
   ws.onclose = () => set('closed');
   ws.onerror = (e) => set('error', String(e));
 
+  /**
+   * Outstanding COUNT requests by subscription id. A `Map`, not a plain
+   * object: relay-controlled ids like `__proto__` must not resolve through
+   * a prototype chain, and `Map` keys never do. The id format is still
+   * checked at lookup so a foreign reply cannot settle a wait it was not
+   * issued for.
+   */
+  const counting = new Map<string, { resolve: (n: number) => void; reject: (e: Error) => void }>();
+  let countSeq = 0;
+
   ws.onmessage = (msg) => {
     try {
       const data = JSON.parse(msg.data) as unknown[];
@@ -68,6 +78,21 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
         if (ev._tag === 'Ok') h.onEvent(ev.value);
       } else if (data[0] === 'NOTICE') {
         h.onState('error', String(data[1]));
+      } else if (data[0] === 'EOSE') {
+        if (typeof data[1] === 'string') h.onEose?.(data[1]);
+      } else if (data[0] === 'COUNT') {
+        const subId = typeof data[1] === 'string' && /^count-\d+$/.test(data[1]) ? data[1] : undefined;
+        const n =
+          typeof data[2] === 'object' && data[2] !== null
+            ? (data[2] as Record<string, unknown>).count
+            : undefined;
+        if (subId !== undefined && typeof n === 'number') {
+          const waiter = counting.get(subId);
+          if (waiter) {
+            counting.delete(subId);
+            waiter.resolve(n);
+          }
+        }
       }
     } catch (e) {
       h.onState('error', String(e));
@@ -84,8 +109,22 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
     url: BRIDGE_URL,
     state: () => state,
     subscribe: (id, f) => send(['REQ', id, toWire(f)]),
+    unsubscribe: (id) => send(['CLOSE', id]),
+    count: (f) =>
+      new Promise<number>((resolve, reject) => {
+        const id = `count-${countSeq++}`;
+        counting.set(id, { resolve, reject });
+        setTimeout(() => {
+          if (counting.delete(id)) reject(new Error('COUNT timed out'));
+        }, 10_000);
+        send(['COUNT', id, toWire(f)]);
+      }),
     publish: (e) => send(['EVENT', e]),
-    close: () => ws.close(),
+    close: () => {
+      for (const [, waiter] of counting) waiter.reject(new Error('connection closed'));
+      counting.clear();
+      ws.close();
+    },
   };
 };
 

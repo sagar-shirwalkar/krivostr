@@ -40,6 +40,12 @@ describe('filter.compile', () => {
     expect(compile({ tags: { p: ['bob'] } }).test(ev)).toBe(true);
     expect(compile({ tags: { p: ['carol'] } }).test(ev)).toBe(false);
   });
+  it('search matches a case-insensitive substring of the content', () => {
+    const ev = e({ content: 'The Quick Brown Fox' });
+    expect(compile({ search: 'quick brown' }).test(ev)).toBe(true);
+    expect(compile({ search: 'QUICK' }).test(ev)).toBe(true);
+    expect(compile({ search: 'aardvark' }).test(ev)).toBe(false);
+  });
 });
 
 describe('filter.matches', () => {
@@ -56,5 +62,8 @@ describe('filter.toWire', () => {
     expect(toWire({ kinds: [1], limit: 10, since: 100 })).toEqual({
       kinds: [1], limit: 10, since: 100,
     });
+  });
+  it('sends search under its wire key', () => {
+    expect(toWire({ search: 'hello' })).toEqual({ search: 'hello' });
   });
 });

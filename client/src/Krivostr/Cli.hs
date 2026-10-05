@@ -30,7 +30,11 @@ import Control.Concurrent.MVar
 import Control.Concurrent.STM hiding (orElse)
 import Control.Exception (bracket, finally)
 import Control.Monad (forM_, forever, unless, void, when)
-import Data.Aeson (ToJSON, encode)
+import Data.Aeson (ToJSON, encode, object, (.=))
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as K
+import Data.Aeson.Types (parseEither)
+import Krivostr.Cli.Wallet (walletRequest)
 import Data.Char (toLower)
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Lazy.Char8 as BLC
@@ -51,7 +55,16 @@ import Krivostr.Filter
 import Krivostr.Key
 -- `info` is a log level here and a parser combinator in optparse-applicative.
 import Krivostr.Logging hiding (info)
-import Krivostr.Nip.Nip01 (verifyEvent)
+import Krivostr.Nip.Nip05 (parseIdentifier, verifyName, wellKnownUrl)
+import Krivostr.Nip.Nip09 (appliesTo, buildDeletionTags, parameterizedAddress)
+import Krivostr.Nip.Nip47 (Method (..), Request (..), Response (..), WalletConn (..), methodToText, parseWalletUri)
+import Krivostr.Nip.Nip51 (addEntry, bookmarkKind, bookmarkedAddresses, bookmarkedIds, muteKind, mutedPubkeys, pinKind, pinnedIds, removeEntry)
+import Krivostr.Nip.Nip22 (ItemRef (..), buildCommentTags)
+import Krivostr.Nip.Nip27 (Mention (..), MentionKind (..), findMentions)
+import Krivostr.Nip.Nip23 (buildArticleTags, slugify)
+import Krivostr.Nip.Nip10 (buildReplyTags, replyRoot)
+import Krivostr.Nip.Nip18 (buildQuoteTags, buildRepostTags, embedOriginal)
+import Krivostr.Nip.Nip25 (buildReactionTags)
 import Krivostr.Nip.Nip65 (RelayHint (..), RelayMode (..), parseRelayList)
 import Krivostr.Pool
 import Krivostr.Store
@@ -118,16 +131,28 @@ data FilterOpts = FilterOpts
   , foSince   :: Maybe TimeSpec
   , foUntil   :: Maybe TimeSpec
   , foLimit   :: Int
+  , foSearch  :: Maybe Text
   }
 
 emptyFilterOpts :: FilterOpts
-emptyFilterOpts = FilterOpts [] [] [] Nothing Nothing 100
+emptyFilterOpts = FilterOpts [] [] [] Nothing Nothing 100 Nothing
 
 data Command
   = CmdServe ServeOpts
   | CmdFeed FeedOpts
   | CmdSearch SearchOpts
   | CmdDm DmOpts
+  | CmdReply ReplyOpts
+  | CmdReact ReactOpts
+  | CmdRepost RepostOpts
+  | CmdVerify VerifyOpts
+  | CmdPublish PublishOpts
+  | CmdDelete DeleteOpts
+  | CmdResolve ResolveOpts
+  | CmdComment CommentOpts
+  | CmdList ListOpts
+  | CmdCount CountOpts
+  | CmdWallet WalletOpts
   | CmdExport ExportOpts
   | CmdWatch WatchOpts
   | CmdApi ApiOpts
@@ -148,6 +173,7 @@ data FeedOpts = FeedOpts
   , fdFollow :: Bool
   , fdIngest :: Bool
   , fdRelays :: [Text]
+  , fdReveal :: Bool
   }
 
 data SearchOpts = SearchOpts
@@ -164,6 +190,81 @@ data DmOpts = DmOpts
   , dmRelays    :: [Text]
   , dmTimeout   :: Int
   , dmLimit     :: Int
+  }
+
+data ReplyOpts = ReplyOpts
+  { rpParent  :: String
+  , rpMessage :: String
+  , rpRelays  :: [Text]
+  , rpTimeout :: Int
+  }
+
+data ReactOpts = ReactOpts
+  { raEvent   :: String
+  , raEmoji   :: String
+  , raRelays  :: [Text]
+  , raTimeout :: Int
+  }
+
+data RepostOpts = RepostOpts
+  { rsEvent   :: String
+  , rsQuote   :: Maybe String
+  , rsRelays  :: [Text]
+  , rsTimeout :: Int
+  }
+
+data VerifyOpts = VerifyOpts
+  { vfIdentifier :: String
+  , vfPubkey     :: Maybe String
+  }
+
+data PublishOpts = PublishOpts
+  { puFile    :: FilePath
+  , puTitle   :: String
+  , puSlug    :: Maybe String
+  , puSummary :: String
+  , puImage   :: String
+  , puRelays  :: [Text]
+  , puTimeout :: Int
+  }
+
+data DeleteOpts = DeleteOpts
+  { dlIds     :: [String]
+  , dlRelays  :: [Text]
+  , dlTimeout :: Int
+  }
+
+data ResolveOpts = ResolveOpts
+  { rsRef :: String
+  }
+
+data CommentOpts = CommentOpts
+  { coTarget  :: String
+  , coMessage :: String
+  , coRelays  :: [Text]
+  , coTimeout :: Int
+  }
+
+data ListOpts = ListOpts
+  { liList   :: String
+  , liAdd    :: [String]
+  , liDel    :: [String]
+  , liRelays :: [Text]
+  , liTimeout :: Int
+  }
+
+newtype CountOpts = CountOpts
+  { cnFilter :: FilterOpts
+  }
+
+data WalletAction
+  = WBalance
+  | WInfo
+  | WPay String
+  | WInvoice Int String
+
+data WalletOpts = WalletOpts
+  { woAction :: WalletAction
   }
 
 data ExportOpts = ExportOpts
@@ -208,7 +309,7 @@ runCLI = do
 -- client/package.yaml because hpack does not expose the package version to the
 -- source; the release workflow reads the tag, so the two are the same string.
 version :: String
-version = "0.4.3.0"
+version = "0.5.3.0"
 
 -- | @--version@ answers without needing a subcommand, so `krivostr --version`
 -- works in a script that knows nothing about the command set.
@@ -242,6 +343,17 @@ commandP = hsubparser
  <> command "feed"    (info (CmdFeed    <$> feedP)    (progDesc "Read the store; --follow streams live"))
  <> command "search"  (info (CmdSearch  <$> searchP)  (progDesc "Full-text search over the local store"))
  <> command "dm"      (info (CmdDm      <$> dmP)      (progDesc "Send a NIP-04 DM, or --inbox to read yours"))
+ <> command "reply"   (info (CmdReply   <$> replyP)   (progDesc "Reply to a note (NIP-10)"))
+ <> command "react"    (info (CmdReact   <$> reactP)    (progDesc "React to an event (NIP-25)"))
+ <> command "repost"   (info (CmdRepost  <$> repostP)   (progDesc "Repost or quote an event (NIP-18)"))
+ <> command "verify"   (info (CmdVerify  <$> verifyP)   (progDesc "Check a NIP-05 identifier against its domain"))
+ <> command "publish"  (info (CmdPublish <$> publishP)  (progDesc "Publish a Markdown file as a long-form article (NIP-23)"))
+ <> command "delete"   (info (CmdDelete  <$> deleteP)   (progDesc "Request deletion of your events (NIP-09)"))
+ <> command "resolve"  (info (CmdResolve <$> resolveP)  (progDesc "Resolve a nostr: reference, bech32, or hex (NIP-27)"))
+ <> command "comment"  (info (CmdComment <$> commentP)  (progDesc "Comment on a non-note event (NIP-22)"))
+ <> command "list"     (info (CmdList    <$> listP)     (progDesc "Show or edit a NIP-51 list: mute, pin, bookmark"))
+ <> command "count"    (info (CmdCount   <$> countP)    (progDesc "Count stored events matching a filter (NIP-45)"))
+ <> command "wallet"   (info (CmdWallet  <$> walletP)   (progDesc "Talk to a lightning wallet (NIP-47)"))
  <> command "export"  (info (CmdExport  <$> exportP)  (progDesc "Bulk export as nostr (ndjson), array or csv"))
  <> command "watch"   (info (CmdWatch   <$> watchP)   (progDesc "Notify on new events"))
  <> command "api"     (info (CmdApi     <$> apiP)     (progDesc "Run the JSON HTTP API on its own port"))
@@ -268,6 +380,7 @@ feedP = FeedOpts
   <*> switch (long "follow" <> short 'f' <> help "Stream live from relays instead of reading the store")
   <*> switch (long "ingest" <> help "With --follow, also store what arrives")
   <*> many (urlOption "relay" "Relay to stream from")
+  <*> switch (long "show-sensitive" <> help "Reveal content behind content-warning tags")
 
 searchP :: Parser SearchOpts
 searchP = SearchOpts
@@ -286,6 +399,96 @@ dmP = DmOpts
                 <> help "How long to wait for each relay's OK")
   <*> option auto (long "limit" <> short 'n' <> metavar "N" <> value 50 <> showDefault
                 <> help "How many to list with --inbox")
+
+replyP :: Parser ReplyOpts
+replyP = ReplyOpts
+  <$> argument str (metavar "EVENT-ID" <> help "Hex id of the note to answer")
+  <*> argument str (metavar "MESSAGE" <> help "Reply text")
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+reactP :: Parser ReactOpts
+reactP = ReactOpts
+  <$> argument str (metavar "EVENT-ID" <> help "Hex id of the event to react to")
+  <*> strOption (long "emoji" <> metavar "EMOJI" <> value "+" <> showDefault
+              <> help "Reaction content (+, -, or an emoji)")
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+repostP :: Parser RepostOpts
+repostP = RepostOpts
+  <$> argument str (metavar "EVENT-ID" <> help "Hex id of the event to repost")
+  <*> optional (strOption (long "quote" <> metavar "TEXT"
+              <> help "Quote instead of reposting, with this commentary"))
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+verifyP :: Parser VerifyOpts
+verifyP = VerifyOpts
+  <$> argument str (metavar "IDENTIFIER" <> help "alice@example.com, or a bare domain")
+  <*> optional (strOption (long "pubkey" <> metavar "KEY"
+              <> help "npub or hex to check (default: your KRIVOSTR_NSEC key)"))
+
+publishP :: Parser PublishOpts
+publishP = PublishOpts
+  <$> argument str (metavar "FILE" <> help "Markdown file for the article body")
+  <*> strOption (long "title" <> metavar "TITLE" <> help "Article title")
+  <*> optional (strOption (long "slug" <> metavar "SLUG"
+              <> help "Address slug (default: from the title)"))
+  <*> strOption (long "summary" <> metavar "TEXT" <> value "" <> showDefault
+              <> help "One-line summary")
+  <*> strOption (long "image" <> metavar "URL" <> value "" <> showDefault
+              <> help "Cover image URL")
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+deleteP :: Parser DeleteOpts
+deleteP = DeleteOpts
+  <$> some (argument str (metavar "EVENT-ID" <> help "Hex id of your event to delete"))
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+resolveP :: Parser ResolveOpts
+resolveP = ResolveOpts
+  <$> argument str (metavar "REF" <> help "nostr:npub… URL, bare bech32, or 64-char hex")
+
+commentP :: Parser CommentOpts
+commentP = CommentOpts
+  <$> argument str (metavar "TARGET" <> help "Hex event id, or kind:pubkey:slug address")
+  <*> argument str (metavar "MESSAGE" <> help "Comment text (plaintext)")
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+listP :: Parser ListOpts
+listP = ListOpts
+  <$> argument str (metavar "LIST" <> help "mute | pin | bookmark")
+  <*> many (strOption (long "add" <> metavar "VALUE" <> help "Add an entry (repeatable)"))
+  <*> many (strOption (long "del" <> metavar "VALUE" <> help "Remove an entry (repeatable)"))
+  <*> many (urlOption "relay" "Relay to publish to")
+  <*> option auto (long "timeout" <> metavar "SECONDS" <> value 15 <> showDefault
+                <> help "How long to wait for each relay's OK")
+
+countP :: Parser CountOpts
+countP = CountOpts <$> filterP
+
+walletP :: Parser WalletOpts
+walletP = WalletOpts <$> hsubparser
+  ( command "balance" (info (pure WBalance) (progDesc "Show the wallet balance"))
+ <> command "info"    (info (pure WInfo)    (progDesc "Show wallet metadata and methods"))
+ <> command "pay"     (info (WPay <$> argument str (metavar "INVOICE" <> help "bolt11 invoice to pay"))
+                       (progDesc "Pay a bolt11 invoice"))
+ <> command "invoice" (info (WInvoice
+                        <$> argument auto (metavar "MSATS" <> help "Amount in millisats")
+                        <*> strOption (long "description" <> metavar "TEXT" <> value "" <> showDefault
+                                     <> help "Invoice description"))
+                       (progDesc "Create a lightning invoice"))
+  )
 
 exportP :: Parser ExportOpts
 exportP = ExportOpts
@@ -329,6 +532,8 @@ filterP = FilterOpts
        <> help "Same forms as --since"))
   <*> option auto (long "limit" <> short 'n' <> metavar "N" <> value 100 <> showDefault
                 <> help "Maximum events")
+  <*> optional (T.pack <$> strOption (long "search" <> short 's' <> metavar "TEXT"
+                <> help "Full-text search (NIP-50); FTS5 locally, forwarded to relays"))
 
 -- ═══════════════════════════════════════════════════════════ value parsers
 
@@ -426,6 +631,7 @@ buildFilter fo = do
     , fUntil   = until'
     , fLimit   = Just (foLimit fo)
     , fTags    = groupTags (foTags fo)
+    , fSearch  = foSearch fo
     }
 
 -- | @--tag e=a --tag e=@ means @e@ matches either, not that @e@ must be both.
@@ -481,6 +687,17 @@ dispatch (Opts g cmd) = do
       CmdFeed o   -> cmdFeed lg' db colour o
       CmdSearch o -> cmdSearch lg' db colour o
       CmdDm o     -> cmdDm lg' db o
+      CmdReply o  -> cmdReply lg' db o
+      CmdReact o  -> cmdReact lg' db o
+      CmdRepost o -> cmdRepost lg' db o
+      CmdVerify o -> cmdVerify lg' o
+      CmdPublish o -> cmdPublish lg' db o
+      CmdDelete o -> cmdDelete lg' db o
+      CmdResolve o -> cmdResolve lg' db o
+      CmdComment o -> cmdComment lg' db o
+      CmdList o -> cmdList lg' db o
+      CmdCount o -> cmdCount lg' db o
+      CmdWallet o -> cmdWallet lg' o
       CmdExport o -> cmdExport lg' db o
       CmdWatch o  -> cmdWatch lg' db colour o
       CmdApi o    -> withStore lg' db $ \st -> do
@@ -583,7 +800,7 @@ cmdFeed lg db colour o
       f   <- buildFilter (fdFilter o)
       evs <- queryEvents st f
       now <- getPOSIXTime
-      forM_ evs (putEvent colour now (fdJson o) (fdLong o))
+      forM_ evs (putEvent colour now (fdJson o) (fdLong o) (fdReveal o))
       when (null evs) $
         TIO.hPutStrLn stderr "no events matched; try --limit 500, or --kind note"
   where
@@ -606,16 +823,17 @@ cmdFeed lg db colour o
       lock <- newMVar ()
       let onEvent e = withMVar lock $ \_ -> do
             now <- getPOSIXTime
-            putEvent colour now (fdJson o) (fdLong o) e
+            putEvent colour now (fdJson o) (fdLong o) (fdReveal o) e
             case store of
               Nothing -> pure ()
+              -- Verification lives in 'insertEvent': display shows what
+              -- arrived, storage keeps what verifies.
               Just st -> do
-                if verifyEvent e
-                  then do
-                    fresh <- insertEvent st e
-                    unless fresh $ emit lg Debug ("duplicate: " <> evId e)
-                  else
-                    emit lg Warn ("cli: rejected event " <> evId e <> " (invalid signature)")
+                stored <- insertEvent st e
+                case stored of
+                  Duplicate -> emit lg Debug ("duplicate: " <> evId e)
+                  InvalidSignature -> emit lg Warn ("cli: rejected event " <> evId e <> " (invalid signature)")
+                  Inserted -> pure ()
       emit lg Info ("streaming from " <> T.intercalate ", " relays)
       pool <- newPool lg onEvent
       forM_ relays (addRelay pool)
@@ -635,7 +853,7 @@ relayHints :: Store -> IO [Text]
 relayHints st = do
   evs <- queryEvents st Filter
     { fIds = Nothing, fAuthors = Nothing, fKinds = Just [10002]
-    , fSince = Nothing, fUntil = Nothing, fLimit = Just 20, fTags = [] }
+    , fSince = Nothing, fUntil = Nothing, fLimit = Just 20, fTags = [], fSearch = Nothing }
   pure $ case evs of
     []   -> []
     list -> [ rhUrl h | ev <- list, h <- parseRelayList ev, readable (rhMode h) ]
@@ -660,7 +878,7 @@ cmdSearch lg db colour o = withStore lg db $ \st -> do
          author
          (foLimit fo)
   now <- getPOSIXTime
-  forM_ evs (putEvent colour now (seJson o) False)
+  forM_ evs (putEvent colour now (seJson o) False False)
   TIO.hPutStrLn stderr
     (T.pack (show (length evs)) <> " match(es) for " <> seQuery o)
 
@@ -689,10 +907,10 @@ cmdDm lg db o
         evs <- queryEvents st Filter
           { fIds = Nothing, fAuthors = Nothing, fKinds = Just [4]
           , fSince = Nothing, fUntil = Nothing
-          , fLimit = Just (dmLimit o), fTags = [("p", [mine])] }
+          , fLimit = Just (dmLimit o), fTags = [("p", [mine])], fSearch = Nothing }
         now <- getPOSIXTime
         forM_ evs $ \e -> do
-          TIO.putStrLn (renderEvent False now e)
+          TIO.putStrLn (renderEvent False False now e)
           case senderOf e of
             "" -> pure ()
             v  -> case publicKeyFromHex v of
@@ -736,6 +954,349 @@ cmdDm lg db o
           Right ok -> "ok    " <> url <> ": " <> ok
           Left  e  -> "fail  " <> url <> ": " <> T.pack e
       unless (any (either (const False) (const True) . snd) results) exitFailure
+
+-- ═══════════════════════════════════════════════════════════ social sends
+
+-- | The secret key every send command needs. One place, so the missing-key
+-- error reads the same whether the user is replying, reacting or reposting.
+requireKey :: IO PrivateKey
+requireKey = do
+  env <- envText "KRIVOSTR_NSEC"
+  case env of
+    Nothing -> die "no secret key: set KRIVOSTR_NSEC=nsec1... (see: krivostr keygen)"
+    Just t  -> case importNsec t of
+      Right sk -> pure sk
+      Left e   -> die ("KRIVOSTR_NSEC is not an nsec: " ++ e)
+
+-- | Fetch an event from the store by hex id. Bech32 note ids arrive with
+-- NIP-27; until then hex is the input and anything else is a usage error,
+-- not a lookup miss.
+requireEvent :: Logger -> FilePath -> String -> IO Event
+requireEvent lg db raw = do
+  let eid = T.pack raw
+  unless (isHex64 eid) (die "event id must be 64 hex characters")
+  withStore lg db $ \st -> do
+    found <- getEventById st eid
+    case found of
+      Just e  -> pure e
+      Nothing -> die ("no event " ++ raw ++ " in the local store (try: krivostr feed first)")
+
+-- | Publish a signed event and report each relay's answer. Exits non-zero
+-- when every relay refused, so scripts can test the outcome.
+publishNote :: Logger -> FilePath -> Int -> Event -> [Text] -> Text -> IO ()
+publishNote lg db timeoutSecs ev relays what = do
+  targets <- case relays of
+    [] -> withStore lg db $ \st -> do
+      hinted <- relayHints st
+      pure (if null hinted then defaultRelays else hinted)
+    xs -> pure xs
+  emit lg Info (what <> " via " <> T.intercalate ", " targets)
+  results <- publishAll lg (timeoutSecs * 1000000) ev targets
+  forM_ results $ \(url, r) ->
+    -- The relay's own words matter more than our verdict, so print both and
+    -- let the relay explain itself.
+    TIO.putStrLn $ case r of
+      Right ok -> "ok    " <> url <> ": " <> ok
+      Left e   -> "fail  " <> url <> ": " <> T.pack e
+  unless (any (either (const False) (const True) . snd) results) exitFailure
+
+cmdReply :: Logger -> FilePath -> ReplyOpts -> IO ()
+cmdReply lg db o = do
+  sk <- requireKey
+  parent <- requireEvent lg db (rpParent o)
+  now <- getPOSIXTime
+  -- The root's author names the thread's p tag. When the root is not in the
+  -- store its author is unknown, and an empty p tag would be worse than a
+  -- missing one, so only tag authors we actually have.
+  let rootId = fromMaybe (evId parent) (replyRoot parent)
+  rootAuthor <- if rootId == evId parent
+    then pure (evPubkey parent)
+    else withStore lg db $ \st -> maybe "" evPubkey <$> getEventById st rootId
+  let tags = buildReplyTags rootId "" rootAuthor (evId parent) "" (evPubkey parent)
+      ev = signUnsigned sk UnsignedEvent
+        { uePubkey    = pubKeyHex (derivePublicKey sk)
+        , ueCreatedAt = now
+        , ueKind      = 1
+        , ueTags      = tags
+        , ueContent   = T.pack (rpMessage o)
+        }
+  publishNote lg db (rpTimeout o) ev (rpRelays o) "reply"
+
+cmdReact :: Logger -> FilePath -> ReactOpts -> IO ()
+cmdReact lg db o = do
+  sk <- requireKey
+  target <- requireEvent lg db (raEvent o)
+  now <- getPOSIXTime
+  let ev = signUnsigned sk UnsignedEvent
+        { uePubkey    = pubKeyHex (derivePublicKey sk)
+        , ueCreatedAt = now
+        , ueKind      = 7
+        , ueTags      = buildReactionTags (evId target) "" (evPubkey target) (evKind target)
+        , ueContent   = T.pack (raEmoji o)
+        }
+  publishNote lg db (raTimeout o) ev (raRelays o) "react"
+
+cmdRepost :: Logger -> FilePath -> RepostOpts -> IO ()
+cmdRepost lg db o = do
+  sk <- requireKey
+  target <- requireEvent lg db (rsEvent o)
+  now <- getPOSIXTime
+  let me = pubKeyHex (derivePublicKey sk)
+      ev = case rsQuote o of
+        -- A quote is a kind 1 with a q tag: commentary plus citation, and
+        -- deliberately no e tag, so it never joins the original's thread.
+        Just commentary -> signUnsigned sk UnsignedEvent
+          { uePubkey    = me
+          , ueCreatedAt = now
+          , ueKind      = 1
+          , ueTags      = buildQuoteTags (evId target) ""
+          , ueContent   = T.pack commentary
+          }
+        -- A repost embeds the original; kind 6 for notes, kind 16 for
+        -- anything else, with a k tag saying what it wraps.
+        Nothing -> signUnsigned sk UnsignedEvent
+          { uePubkey    = me
+          , ueCreatedAt = now
+          , ueKind      = if evKind target == 1 then 6 else 16
+          , ueTags      = buildRepostTags (evId target) "" (evPubkey target) (evKind target)
+          , ueContent   = embedOriginal target
+          }
+  publishNote lg db (rsTimeout o) ev (rsRelays o) "repost"
+
+cmdVerify :: Logger -> VerifyOpts -> IO ()
+cmdVerify lg o = do
+  (name, domain) <- either die pure (parseIdentifier (T.pack (vfIdentifier o)))
+  pubkey <- case vfPubkey o of
+    -- An explicit key wins: verification is a claim about a key, and the
+    -- flag states the claim out loud.
+    Just s -> case resolveAuthor s of
+      Right hex -> pure hex
+      Left e    -> die e
+    Nothing -> do
+      sk <- requireKey
+      pure (pubKeyHex (derivePublicKey sk))
+  emit lg Info ("verify: " <> name <> " at " <> wellKnownUrl name domain)
+  doc <- either die pure =<< fetchNip05Doc name domain
+  case verifyName name pubkey doc of
+    Right () -> TIO.putStrLn (T.pack (vfIdentifier o) <> " verifies for " <> pubkey)
+    Left e   -> die e
+
+cmdPublish :: Logger -> FilePath -> PublishOpts -> IO ()
+cmdPublish lg db o = do
+  sk <- requireKey
+  body <- TIO.readFile (puFile o)
+  when (T.null (T.strip body)) (die ("empty article: " ++ puFile o))
+  now <- getPOSIXTime
+  -- An empty slug would address nothing, so fall back to the title; an empty
+  -- title with no slug has no address at all and is a usage error.
+  let slug = case puSlug o of
+        Just s  -> T.pack s
+        Nothing -> slugify (T.pack (puTitle o))
+  when (T.null slug) (die "no slug: pass --title or --slug")
+  let ev = signUnsigned sk UnsignedEvent
+        { uePubkey    = pubKeyHex (derivePublicKey sk)
+        , ueCreatedAt = now
+        , ueKind      = 30023
+        , ueTags      = buildArticleTags slug (T.pack (puTitle o))
+                          (T.pack (puSummary o)) (T.pack (puImage o)) (Just now)
+        , ueContent   = body
+        }
+  publishNote lg db (puTimeout o) ev (puRelays o) "publish"
+  TIO.putStrLn ("address: 30023:" <> pubKeyHex (derivePublicKey sk) <> ":" <> slug)
+
+cmdDelete :: Logger -> FilePath -> DeleteOpts -> IO ()
+cmdDelete lg db o = do
+  sk <- requireKey
+  let mine = pubKeyHex (derivePublicKey sk)
+  targets <- mapM (requireEvent lg db) (dlIds o)
+  -- Deletion is self-service only. Refusing here beats publishing a request
+  -- every relay will ignore and then deleting a stranger's note locally.
+  forM_ targets $ \t ->
+    when (evPubkey t /= mine) (die ("not yours, refusing: " ++ T.unpack (evId t)))
+  now <- getPOSIXTime
+  let addrs = [a | Just a <- map parameterizedAddress targets]
+      ev = signUnsigned sk UnsignedEvent
+        { uePubkey    = mine
+        , ueCreatedAt = now
+        , ueKind      = 5
+        , ueTags      = buildDeletionTags (map evId targets) addrs
+        , ueContent   = ""
+        }
+  -- Sanity, not trust: the request we just built must apply to every target
+  -- by our own rule, or the tags are wrong and relays will ignore them.
+  unless (all (appliesTo ev) targets) (die "internal error: deletion does not apply to its targets")
+  publishNote lg db (dlTimeout o) ev (dlRelays o) "delete"
+  withStore lg db $ \st -> forM_ targets (deleteEvent st . evId)
+  TIO.putStrLn ("removed " <> T.pack (show (length targets)) <> " event(s) locally")
+
+cmdResolve :: Logger -> FilePath -> ResolveOpts -> IO ()
+cmdResolve lg db o = do
+  now <- getPOSIXTime
+  let raw = T.pack (rsRef o)
+      -- The input is (or contains) a nostr: reference; resolve the first
+      -- one. Text around it is ignored, so pasting a whole sentence works.
+      -- A bare bech32 without the scheme gets one added before scanning.
+      refs = case findMentions raw of
+        [] | "nostr:" `T.isPrefixOf` raw -> []
+           | otherwise -> findMentions ("nostr:" <> raw)
+        ms -> ms
+  case refs of
+    (Mention kind _ : _) -> case kind of
+      MentionPubkey hex -> TIO.putStrLn ("author " <> hex)
+      MentionEvent eid -> withStore lg db $ \st -> do
+        found <- getEventById st eid
+        case found of
+          Just e  -> TIO.putStrLn (renderEventBlock False True now e)
+          Nothing -> TIO.putStrLn ("event " <> eid <> " (not in the local store)")
+      MentionProfile hex relays -> do
+        TIO.putStrLn ("author " <> hex)
+        forM_ relays $ \r -> TIO.putStrLn ("relay " <> r)
+      MentionOpaque hrp ->
+        TIO.putStrLn (hrp <> " references resolve in phase 2.3 (nevent/naddr entities)")
+    -- No bech32 at all: a hex event id, or a hex pubkey.
+    [] -> withStore lg db $ \st -> do
+      found <- getEventById st raw
+      case found of
+        Just e  -> TIO.putStrLn (renderEventBlock False True now e)
+        Nothing -> case resolveAuthor (rsRef o) of
+          Right hex -> TIO.putStrLn ("author " <> hex)
+          Left _    -> die (rsRef o ++ " is not a nostr: reference, bech32, or hex")
+
+cmdComment :: Logger -> FilePath -> CommentOpts -> IO ()
+cmdComment lg db o = do
+  sk <- requireKey
+  target <- resolveTarget (coTarget o)
+  -- Kind 1 takes NIP-10 replies, not kind 1111: commenting on a note would
+  -- strand the thread where no reader looks for it.
+  when (evKind target == 1) (die "that is a kind 1 note: use reply, not comment")
+  now <- getPOSIXTime
+  let ref = ItemRef
+        { refId      = Just (evId target)
+        , refAddress = parameterizedAddress target
+        , refKind    = evKind target
+        , refAuthor  = evPubkey target
+        , refRelay   = ""
+        }
+      ev = signUnsigned sk UnsignedEvent
+        { uePubkey    = pubKeyHex (derivePublicKey sk)
+        , ueCreatedAt = now
+        , ueKind      = 1111
+        , ueTags      = buildCommentTags ref Nothing
+        , ueContent   = T.pack (coMessage o)
+        }
+  publishNote lg db (coTimeout o) ev (coRelays o) "comment"
+  where
+    -- An address names the article; the newest stored version is what the
+    -- comment's E tag pins, so readers see what the author saw.
+    resolveTarget raw
+      | isHex64 (T.pack raw) = requireEvent lg db raw
+      | otherwise = case T.splitOn ":" (T.pack raw) of
+          [kindT, pub, slug] -> withStore lg db $ \st -> do
+            kinds <- case reads (T.unpack kindT) of
+              [(n, "")] -> pure [n :: Int]
+              _         -> die "address must be kind:pubkey:slug"
+            cands <- queryEvents st Filter
+              { fIds = Nothing, fAuthors = Just [pub], fKinds = Just kinds
+              , fSince = Nothing, fUntil = Nothing, fLimit = Just 10
+              , fTags = [("d", [slug])], fSearch = Nothing }
+            case cands of
+              (e : _) -> pure e
+              []      -> die ("nothing at that address in the local store: " ++ raw)
+          _ -> die "target must be a hex event id or kind:pubkey:slug"
+
+cmdList :: Logger -> FilePath -> ListOpts -> IO ()
+cmdList lg db o = do
+  kind <- case liList o of
+    "mute"     -> pure muteKind
+    "pin"      -> pure pinKind
+    "bookmark" -> pure bookmarkKind
+    other      -> die ("unknown list: " ++ other ++ " (try mute, pin, bookmark)")
+  sk <- requireKey
+  let mine = pubKeyHex (derivePublicKey sk)
+  current <- withStore lg db $ \st -> do
+    evs <- queryEvents st Filter
+      { fIds = Nothing, fAuthors = Just [mine], fKinds = Just [kind]
+      , fSince = Nothing, fUntil = Nothing, fLimit = Just 1
+      , fTags = [], fSearch = Nothing }
+    pure (maybe [] evTags (listToMaybe' evs))
+  -- Values are interpreted per list: mute takes authors, pins take event
+  -- ids, bookmarks take either (an address cites with a, an id with e).
+  let entryOf v = case (kind, resolveAuthor v) of
+        (k, Right hex) | k == muteKind -> Right ("p", hex)
+        (_, _) | isHex64 (T.pack v) ->
+          Right (if kind == muteKind then ("p", T.pack v) else ("e", T.pack v))
+        (_, _) | kind == bookmarkKind && isAddress (T.pack v) -> Right ("a", T.pack v)
+        _ -> Left ("not a value for " ++ liList o ++ ": " ++ v)
+  adds <- mapM (either die pure . entryOf) (liAdd o)
+  dels <- mapM (either die pure . entryOf) (liDel o)
+  let tags = foldr (uncurry removeEntry) (foldr (uncurry addEntry) current adds) dels
+  -- Showing prints entries, not tags: the reader wants values.
+  if null adds && null dels
+    then printEntries kind (bareList kind current)
+    else do
+      now <- getPOSIXTime
+      let ev = signUnsigned sk UnsignedEvent
+            { uePubkey    = mine
+            , ueCreatedAt = now
+            , ueKind      = kind
+            , ueTags      = tags
+            , ueContent   = ""
+            }
+      publishNote lg db (liTimeout o) ev (liRelays o) ("list " <> T.pack (liList o))
+      withStore lg db $ \st -> void (insertEvent st ev)
+      TIO.putStrLn "saved locally"
+  where
+    bareList kind tags = Event "" "" 0 kind tags "" ""
+    isAddress t = length (T.splitOn ":" t) == 3
+    printEntries kind e
+      | kind == muteKind = mapM_ (TIO.putStrLn . ("muted " <>)) (mutedPubkeys e)
+      | kind == pinKind = mapM_ (TIO.putStrLn . ("pinned " <>)) (pinnedIds e)
+      | otherwise = do
+          mapM_ (TIO.putStrLn . ("saved " <>)) (bookmarkedIds e)
+          mapM_ (TIO.putStrLn . ("saved " <>)) (bookmarkedAddresses e)
+
+cmdCount :: Logger -> FilePath -> CountOpts -> IO ()
+cmdCount lg db o = withStore lg db $ \st -> do
+  f <- buildFilter (cnFilter o)
+  -- countMatching ignores the limit: NIP-45 counts everything the filter
+  -- matches, not the page size, so --limit only bounds feed output.
+  n <- countMatching st f
+  TIO.putStrLn (T.pack (show n))
+
+cmdWallet :: Logger -> WalletOpts -> IO ()
+cmdWallet lg o = do
+  raw <- envText "KRIVOSTR_NWC"
+  conn <- case raw of
+    Nothing -> die "no wallet: set KRIVOSTR_NWC=nostr+walletconnect://... (paste it from your wallet app)"
+    Just t  -> either die pure (parseWalletUri t)
+  let run = walletRequest lg conn
+  case woAction o of
+    WBalance -> do
+      res <- either die pure =<< run MGetBalance (object [])
+      n <- either die pure (atField res "balance" :: Either String Integer)
+      TIO.putStrLn (T.pack (show n) <> " msats (" <> T.pack (show (n `div` 1000)) <> " sats)")
+    WInfo -> do
+      res <- either die pure =<< run MGetInfo (object [])
+      TIO.putStrLn (describeInfo res)
+    WPay invoice -> do
+      res <- either die pure =<< run MPayInvoice (object ["invoice" .= invoice])
+      TIO.putStrLn ("paid, preimage: " <> (either (T.pack . ("wallet answered oddly: " ++)) id (atField res "preimage" :: Either String Text)))
+    WInvoice msats desc -> do
+      res <- either die pure =<< run MMakeInvoice
+        (object (["amount" .= msats] ++ ["description" .= desc | not (null desc)]))
+      TIO.putStrLn (either (T.pack . ("wallet answered oddly: " ++)) id (atField res "invoice" :: Either String Text))
+  where
+    -- One field out of a result object, with the method named on failure so
+    -- the user knows which answer disappointed them.
+    atField :: Aeson.FromJSON a => Response -> Text -> Either String a
+    atField res name = case resResult res of
+      Just v -> case parseEither (Aeson.withObject "result" (Aeson..: K.fromText name)) v of
+        Right a -> Right a
+        Left e  -> Left ("wallet answered without " ++ T.unpack name ++ ": " ++ e)
+      Nothing -> Left "wallet answered without a result"
+    describeInfo res = case resResult res of
+      Just v -> TE.decodeUtf8 (BLC.toStrict (encode v))
+      Nothing -> "{}"
 
 publicKeyFromHex :: Text -> Maybe PublicKey
 publicKeyFromHex t = do
@@ -831,7 +1392,7 @@ cmdWatch lg db colour o
   where
     announce e = do
       now <- getPOSIXTime
-      TIO.putStrLn (renderEventBlock colour now e)
+      TIO.putStrLn (renderEventBlock colour False now e)
       when (waBell o) (hFlush stdout >> putStr "\a" >> hFlush stdout)
       forM_ (waExec o) $ \cmd -> do
         (code, out, err) <-
@@ -887,7 +1448,9 @@ systemdUnit db o =
 
 -- ═══════════════════════════════════════════════════════════ output
 
-putEvent :: Bool -> POSIXTime -> Bool -> Bool -> Event -> IO ()
-putEvent _ _ True _ e = BLC.putStrLn (encode e)
-putEvent colour now _ True  e = TIO.putStrLn (renderEventBlock colour now e)
-putEvent colour now _ False e = TIO.putStrLn (renderEvent colour now e)
+-- | Print an event: JSON, long, or one line. The last 'Bool' is the
+-- @--show-sensitive@ reveal; JSON always carries the raw bytes.
+putEvent :: Bool -> POSIXTime -> Bool -> Bool -> Bool -> Event -> IO ()
+putEvent _ _ True _ _ e = BLC.putStrLn (encode e)
+putEvent colour now _ True reveal e = TIO.putStrLn (renderEventBlock colour reveal now e)
+putEvent colour now _ False reveal e = TIO.putStrLn (renderEvent colour reveal now e)

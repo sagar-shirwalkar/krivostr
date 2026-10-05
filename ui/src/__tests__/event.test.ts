@@ -62,3 +62,34 @@ describe('ageSeconds', () => {
     expect(ageSeconds(valid, 1700000100)).toBe(100);
   });
 });
+
+describe('verifyEvent', () => {
+  it('accepts a properly signed event', async () => {
+    const { verifyEvent } = await import('../nostr/event');
+    const { localSigner } = await import('../nostr/signer');
+    const signer = localSigner('00'.repeat(31) + '01');
+    const pk = await signer.pubkey();
+    if (pk._tag !== 'Ok') throw new Error('no pubkey');
+    const signed = await signer.signEvent({
+      pubkey: pk.value, created_at: 1700000000, kind: 1, tags: [], content: 'hello',
+    });
+    if (signed._tag !== 'Ok') throw new Error('not signed');
+    await expect(verifyEvent(signed.value)).resolves.toBe(true);
+  });
+
+  it('rejects tampered content, id, signature, and pubkey', async () => {
+    const { verifyEvent } = await import('../nostr/event');
+    const { localSigner } = await import('../nostr/signer');
+    const signer = localSigner('00'.repeat(31) + '01');
+    const pk = await signer.pubkey();
+    if (pk._tag !== 'Ok') throw new Error('no pubkey');
+    const signed = await signer.signEvent({
+      pubkey: pk.value, created_at: 1700000000, kind: 1, tags: [], content: 'hello',
+    });
+    if (signed._tag !== 'Ok') throw new Error('not signed');
+    const e = signed.value;
+    await expect(verifyEvent({ ...e, content: 'forged' })).resolves.toBe(false);
+    await expect(verifyEvent({ ...e, sig: '0'.repeat(128) })).resolves.toBe(false);
+    await expect(verifyEvent({ ...e, pubkey: 'ff'.repeat(32) })).resolves.toBe(false);
+  });
+});
