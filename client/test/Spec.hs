@@ -8,7 +8,7 @@ import qualified Data.ByteString as BS
 import Control.Concurrent.STM
 import Control.Monad (forM_, replicateM)
 import Data.Either (isLeft, isRight)
-import Data.Aeson (eitherDecodeStrict, encode)
+import Data.Aeson (eitherDecodeStrict, encode, object, (.=))
 import Data.Aeson.Types (parseMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -35,9 +35,12 @@ import Krivostr.Key
 import Krivostr.Logging
 import Krivostr.Bridge (parseClient)
 import Krivostr.Nip.Nip01
+import Krivostr.Nip.Nip42
 import Krivostr.Relay (parseUrl)
 import Krivostr.Store
 import Krivostr.Wire
+import Data.Aeson (Value, toJSON)
+import Data.Aeson.Types (parseEither)
 
 -- ── Fixtures ───────────────────────────────────────────────────
 
@@ -200,6 +203,46 @@ main = hspec $ do
     it "encodes CLOSE" $ do
       let v = encodeClient (CClose "s1")
       show v `shouldContain` "CLOSE"
+
+  describe "NIP-42 AUTH" $ do
+    let sk = either (error "bad key") id (importHex "0000000000000000000000000000000000000000000000000000000000000003")
+        url = "wss://relay.example.com"
+        challenge = "krivostr-test-challenge"
+
+    it "decodes an AUTH frame into a challenge" $
+      parseEither decodeRelay (toJSON (["AUTH", challenge] :: [Text]))
+        `shouldBe` Right (RChallenge challenge)
+
+    it "decodes an AUTH frame with a non-string challenge as an error" $
+      parseEither decodeRelay (object ["AUTH" .= (7 :: Int)])
+        `shouldSatisfy` Data.Either.isLeft
+
+    it "builds an event the validator accepts" $ do
+      let ev = Krivostr.Nip.Nip42.buildAuthEvent sk url challenge 1700000000
+      Krivostr.Nip.Nip42.validateAuthEvent url challenge 1700000000 300 ev
+        `shouldBe` Right ()
+
+    it "rejects an event for a different relay" $ do
+      let ev = Krivostr.Nip.Nip42.buildAuthEvent sk url challenge 1700000000
+      Krivostr.Nip.Nip42.validateAuthEvent "wss://other.example" challenge 1700000000 300 ev
+        `shouldSatisfy` Data.Either.isLeft
+
+    it "rejects an event answering a different challenge" $ do
+      let ev = Krivostr.Nip.Nip42.buildAuthEvent sk url challenge 1700000000
+      Krivostr.Nip.Nip42.validateAuthEvent url "other-challenge" 1700000000 300 ev
+        `shouldSatisfy` Data.Either.isLeft
+
+    it "rejects an event that is too old" $ do
+      -- Built a thousand seconds in the past, validated against a ten second
+      -- window: the age is what must exceed the window, not the timestamp.
+      let ev = Krivostr.Nip.Nip42.buildAuthEvent sk url challenge 1700000000
+      Krivostr.Nip.Nip42.validateAuthEvent url challenge 1700001000 10 ev
+        `shouldSatisfy` Data.Either.isLeft
+
+    it "rejects an event with no signature" $ do
+      let ev = Krivostr.Nip.Nip42.buildAuthEvent sk url challenge 1700000000
+      Krivostr.Nip.Nip42.validateAuthEvent url challenge 1700000000 300 (ev {evSig = ""})
+        `shouldSatisfy` Data.Either.isLeft
 
   describe "Bridge protocol" $ do
     let parsed :: BS.ByteString -> Maybe ClientMessage

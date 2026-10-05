@@ -27,11 +27,13 @@ library
       Krivostr.Nip.Nip01
       Krivostr.Nip.Nip11
       Krivostr.Nip.Nip13
+      Krivostr.Nip.Nip17
       Krivostr.Nip.Nip40
       Krivostr.Nip.Nip42
       Krivostr.Nip.Nip44
       Krivostr.Nip.Nip46
       Krivostr.Nip.Nip49
+      Krivostr.Nip.Nip59
       Krivostr.Nip.Nip65
       Krivostr.Schnorr
       Krivostr.Wire

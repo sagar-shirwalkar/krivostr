@@ -24,6 +24,9 @@ data RelayMessage
   | REose   Text
   | RNotice Text
   | RClosed Text Text
+  -- | NIP-42: the relay is asking the client to prove who it is. The payload is
+  -- the challenge string the client must echo inside a kind 22242 event.
+  | RChallenge Text
   deriving (Show, Eq)
 
 -- | Encode an outgoing client message.
@@ -44,6 +47,7 @@ decodeRelay = withArray "RelayMessage" $ \arr -> case toList arr of
   [String "EOSE", String sid]      -> pure (REose sid)
   [String "NOTICE", String msg]    -> pure (RNotice msg)
   [String "CLOSED", String sid, String msg] -> pure (RClosed sid msg)
+  [String "AUTH", String challenge]        -> pure (RChallenge challenge)
   _ -> fail "unknown relay message"
   where
     toList = foldr (:) []

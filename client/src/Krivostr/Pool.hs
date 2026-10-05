@@ -2,6 +2,7 @@
 module Krivostr.Pool
   ( Pool
   , newPool
+  , newPoolWithKey
   , addRelay
   , removeRelay
   , broadcast
@@ -18,10 +19,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Map.Strict as M
 import Krivostr.Event
+import Krivostr.Key
+import Krivostr.Nip.Nip42
 import Krivostr.Logging
 import Krivostr.Relay
 import Krivostr.Wire
 import qualified Krivostr.Filter
+import Data.Time.Clock.POSIX (getPOSIXTime)
 
 -- | A relay together with the thread draining its inbox.
 --
@@ -41,10 +45,22 @@ data Pool = Pool
   { plRelays  :: TVar (M.Map Text PoolEntry)
   , plLogger  :: !Logger
   , plHandler :: Event -> IO ()
+  -- | The key used to answer NIP-42 challenges, if the user has one loaded.
+  --
+  -- Optional because a bridge with no key is still useful: it can read public
+  -- relays, and a relay that demands AUTH will simply refuse its writes. When a
+  -- key is present the pool answers every challenge as it arrives, which is
+  -- what "auth-required" relays expect -- they issue the challenge on connect
+  -- and reject everything until it is answered.
+  , plKey     :: !(Maybe PrivateKey)
   }
 
 newPool :: Logger -> (Event -> IO ()) -> IO Pool
-newPool lg h = Pool <$> newTVarIO M.empty <*> pure lg <*> pure h
+newPool lg h = Pool <$> newTVarIO M.empty <*> pure lg <*> pure h <*> pure Nothing
+
+-- | 'newPool' with a key, so the pool can answer NIP-42 challenges.
+newPoolWithKey :: Logger -> (Event -> IO ()) -> PrivateKey -> IO Pool
+newPoolWithKey lg h k = Pool <$> newTVarIO M.empty <*> pure lg <*> pure h <*> pure (Just k)
 
 -- | Connect to a relay unless it is already connected.
 --
@@ -100,6 +116,26 @@ drain p rh = forever $ do
     RClosed s t -> emit (plLogger p) Warn  ("closed " <> s <> ": " <> t)
     ROk _ _ m   -> emit (plLogger p) Debug ("ok: " <> m)
     REose s     -> emit (plLogger p) Debug ("eose: " <> s)
+    RChallenge c -> do
+      emit (plLogger p) Info ("auth challenge: " <> c)
+      case plKey p of
+        Nothing ->
+          -- Without a key there is nothing to answer with. Say so once rather
+          -- than on every challenge, and leave the relay to refuse.
+          emit (plLogger p) Warn "no key loaded: cannot answer auth challenge"
+        Just k -> do
+          -- Build the kind 22242 event and send it. The relay checks the
+          -- signature, that the relay tag names it, and that the challenge
+          -- matches the one it issued, so all three come from the relay's own
+          -- message rather than from anything we guess.
+          now <- getPOSIXTime
+          let ev =
+                Krivostr.Nip.Nip42.buildAuthEvent
+                  k
+                  (rhUrl rh)
+                  c
+                  now
+          sendAuth rh ev
 
 broadcast :: Pool -> ClientMessage -> IO ()
 broadcast p cm = do
