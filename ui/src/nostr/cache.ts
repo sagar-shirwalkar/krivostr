@@ -9,7 +9,7 @@
  * public events, and never evict the kinds that carry durable private state.
  */
 
-import { NostrEvent } from './event';
+import { NostrEvent, verifyEvent } from './event';
 
 const DB_NAME = 'krivostr';
 const DB_VERSION = 1;
@@ -98,11 +98,18 @@ const tx = async <T>(
   return result;
 };
 
-/** Insert or replace by id. */
-export const put = (e: NostrEvent): Promise<void> =>
-  tx('readwrite', async (store) => {
+/**
+ * Insert or replace by id — but only for whole events. A forged event is
+ * refused (false) rather than stored: the cache is the browser's durable
+ * memory, and unverified bytes must not survive a restart in it.
+ */
+export const put = async (e: NostrEvent): Promise<boolean> => {
+  if (!(await verifyEvent(e))) return false;
+  await tx('readwrite', async (store) => {
     await promisify(store.put(e));
   });
+  return true;
+};
 
 /** The event with this id, or undefined. */
 export const get = async (id: string): Promise<NostrEvent | undefined> => {

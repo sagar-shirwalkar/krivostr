@@ -26,6 +26,7 @@ executable krivostr
       Krivostr.Cli.Api
       Krivostr.Cli.Nostr
       Krivostr.Cli.Render
+      Krivostr.Cli.Wallet
       Krivostr.Pool
       Krivostr.Relay
       Krivostr.Store
@@ -79,6 +80,7 @@ test-suite spec
       Krivostr.Cli.Api
       Krivostr.Cli.Nostr
       Krivostr.Cli.Render
+      Krivostr.Cli.Wallet
       Krivostr.Pool
       Krivostr.Relay
       Krivostr.Store

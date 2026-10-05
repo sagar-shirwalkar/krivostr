@@ -8,6 +8,7 @@
  * Mirrors `Krivostr.Event` and `Krivostr.Nip.Nip01` on the Haskell side.
  */
 
+import { schnorr } from '@noble/curves/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { Result, Ok, Err } from '../fp/result';
@@ -132,3 +133,18 @@ export const ageSeconds = (
  */
 export const verifyId = async (e: NostrEvent): Promise<boolean> =>
   (await computeId(e)) === e.id;
+
+/**
+ * Confirm the event is whole: the id hashes the content AND the Schnorr
+ * signature verifies against the claimed pubkey. This is the ingest gate —
+ * the cache refuses events that fail it, so a malicious relay cannot plant
+ * events attributed to anyone in local storage.
+ */
+export const verifyEvent = async (e: NostrEvent): Promise<boolean> => {
+  try {
+    if ((await computeId(e)) !== e.id) return false;
+    return schnorr.verify(e.sig, e.id, e.pubkey);
+  } catch {
+    return false;
+  }
+};

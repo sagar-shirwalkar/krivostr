@@ -11,7 +11,7 @@ that also exists in the repo is a copy that goes stale.
 
 ```bash
 stack build --fast     # build
- stack test             # 608 examples: 540 core, 68 client
+ stack test             # 625 examples: 551 core, 74 client
 stack ghci krivostr-core   # REPL against the pure layer
 ```
 
@@ -26,7 +26,7 @@ cd ui
 pnpm install --frozen-lockfile
 pnpm dev              # Vite dev server
 pnpm typecheck        # tsc --noEmit
-pnpm test             # 279 unit tests (jsdom)
+pnpm test             # 290 unit tests (jsdom)
 pnpm test:browser     # 16 browser tests (real Chromium)
 pnpm coverage         # v8, thresholds at 80
 ```
@@ -66,23 +66,21 @@ The two sides behave differently, and the difference is worth understanding.
 **UI coverage is a working gate.** `pnpm coverage` enforces v8 thresholds of 80
 across the board and passes.
 
-**Backend coverage is a gate that currently fails.** `.hpc-threshold` requires
-80%; the measured total is **55.7%** (546 of 980), so `make coverage-backend`
-exits non-zero. That is intentional and unchanged — the threshold is the goal,
-not the current state. The report is written to `coverage.txt` *before* the
-gate runs, so a red run still leaves you numbers to read.
+**Backend coverage is a ratchet.** `.hpc-threshold` pins the measured total
+— currently **54%** (767 of 1420) — and `scripts/check-coverage.sh` fails
+the build when coverage drops below it. The threshold is a floor, not a
+goal: when new tests raise the measured number, raise the pin in the same
+change. Never lower it to make the build green.
 
 The NIP modules are well covered; the IO layers (Store,
 Pool, Relay, Bridge, Cli) are not. CI does not run coverage at all, so this
-gate is local-only for now.
+gate is local-only for now. The report is written to `coverage.txt`
+*before* the gate runs, so a red run still leaves numbers to read.
 
 Two notes on the tooling, both learned the hard way: `hpc report` cannot run
 here at all (Stack leaves no `.mix` files, and `hpc 0.7` has no `--all` or
 `--coverage` flags), so [`scripts/hpc-coverage.py`](../scripts/hpc-coverage.py)
 parses the combined HTML index that `stack test --coverage` does write.
-
-Do not lower `.hpc-threshold` to make the build green without discussing it.
-Ratcheting it up as coverage improves is the point.
 
 ## CI
 

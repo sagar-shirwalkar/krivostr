@@ -21,6 +21,7 @@ import {
   profileLud,
   requestInvoice,
 } from '../nostr/zap';
+import { parseWalletUri, walletCall } from '../nostr/nip47';
 import { articleAddress } from '../nostr/article';
 
 @customElement('krivostr-app')
@@ -200,6 +201,9 @@ export class KrivostrApp extends LitElement {
     minSats: number;
     maxSats: number;
     invoice?: string;
+    /** Pasted wallet-connect URI, session-only: never stored anywhere. */
+    nwc: string;
+    paidPreimage?: string;
     error?: string;
     busy: boolean;
   } | null = null;
@@ -437,7 +441,7 @@ export class KrivostrApp extends LitElement {
     if (!this.signer) return;
     const target = e.detail.event;
     this.zapping = {
-      target, lud: '', sats: '21', comment: '',
+      target, lud: '', sats: '21', comment: '', nwc: '',
       minSats: 1, maxSats: 21_000_000, busy: true,
     };
     const status = this.relayStatus();
@@ -532,10 +536,38 @@ export class KrivostrApp extends LitElement {
     if (this.zapping?.invoice) void navigator.clipboard.writeText(this.zapping.invoice);
   }
 
+  /**
+   * Pay the displayed invoice through a wallet-connect connection (NIP-47).
+   * The URI is pasted per session and never stored — not in state that
+   * survives, not in storage, nowhere. The wallet pays; the preimage ends
+   * the dialog.
+   */
+  private async payWithWallet() {
+    const draft = this.zapping;
+    if (!draft || !draft.invoice || draft.busy) return;
+    const conn = parseWalletUri(draft.nwc.trim());
+    if (conn._tag === 'Err') {
+      this.zapping = { ...draft, error: conn.error };
+      return;
+    }
+    this.zapping = { ...draft, busy: true, error: undefined };
+    const res = await walletCall(conn.value, 'pay_invoice', { invoice: draft.invoice });
+    if (res._tag === 'Err') {
+      this.zapping = { ...this.zapping!, busy: false, error: res.error };
+      return;
+    }
+    const preimage = (res.value.result as Record<string, unknown> | undefined)?.preimage;
+    this.zapping = {
+      ...this.zapping!,
+      busy: false,
+      paidPreimage: typeof preimage === 'string' ? preimage : 'paid',
+    };
+  }
+
   private renderZap() {
     const z = this.zapping;
     if (!z) return '';
-    const set = (k: 'lud' | 'sats' | 'comment') => (e: Event) => {
+    const set = (k: 'lud' | 'sats' | 'comment' | 'nwc') => (e: Event) => {
       this.zapping = { ...z, [k]: (e.target as HTMLInputElement).value };
     };
     return html`
@@ -543,18 +575,24 @@ export class KrivostrApp extends LitElement {
         <div class="sheet" @click=${(e: Event) => e.stopPropagation()}>
           <button class="close" @click=${this.closeZap}>close ×</button>
           <div class="zaphead">⚡ zap ${z.target.pubkey.slice(0, 8)}…</div>
-          ${z.busy
+          ${z.busy && !z.invoice
             ? html`<div class="empty">contacting lightning endpoint…</div>`
-            : z.invoice
-              ? html`<div class="body">pay this invoice in your wallet:</div>
-                <div class="invoice">${z.invoice}</div>
-                <div class="row"><button @click=${this.copyInvoice}>copy invoice</button></div>`
-              : html`
-                <label>to (lightning address)<input .value=${z.lud} @input=${set('lud')} placeholder="name@domain" /></label>
-                <label>amount (sats, ${z.minSats}–${z.maxSats})
-                  <input .value=${z.sats} @input=${set('sats')} inputmode="numeric" /></label>
-                <label>comment (optional)<input .value=${z.comment} @input=${set('comment')} /></label>
-                <div class="row"><button @click=${() => void this.confirmZap()}>get invoice</button></div>`}
+            : z.paidPreimage
+              ? html`<div class="body">paid ✓</div>
+                <div class="invoice">${z.paidPreimage}</div>`
+              : z.invoice
+                ? html`<div class="body">pay this invoice in your wallet:</div>
+                  <div class="invoice">${z.invoice}</div>
+                  <div class="row"><button @click=${this.copyInvoice}>copy invoice</button></div>
+                  <label>or pay now with wallet connect (NIP-47, never stored)
+                    <input .value=${z.nwc} @input=${set('nwc')} placeholder="nostr+walletconnect://…" /></label>
+                  <div class="row"><button @click=${() => void this.payWithWallet()}>pay with wallet</button></div>`
+                : html`
+                  <label>to (lightning address)<input .value=${z.lud} @input=${set('lud')} placeholder="name@domain" /></label>
+                  <label>amount (sats, ${z.minSats}–${z.maxSats})
+                    <input .value=${z.sats} @input=${set('sats')} inputmode="numeric" /></label>
+                  <label>comment (optional)<input .value=${z.comment} @input=${set('comment')} /></label>
+                  <div class="row"><button @click=${() => void this.confirmZap()}>get invoice</button></div>`}
           ${z.error ? html`<div class="warn">${z.error}</div>` : ''}
         </div>
       </div>

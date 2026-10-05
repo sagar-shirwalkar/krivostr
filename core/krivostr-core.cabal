@@ -43,6 +43,7 @@ library
       Krivostr.Nip.Nip42
       Krivostr.Nip.Nip44
       Krivostr.Nip.Nip46
+      Krivostr.Nip.Nip47
       Krivostr.Nip.Nip49
       Krivostr.Nip.Nip51
       Krivostr.Nip.Nip57
@@ -97,6 +98,7 @@ test-suite spec
       Nip42Spec
       Nip44Spec
       Nip46Spec
+      Nip47Spec
       Nip49Spec
       Nip51Spec
       Nip57Spec

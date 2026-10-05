@@ -29,6 +29,7 @@ import Krivostr.Cli
   , TimeSpec (..)
   )
 import Krivostr.Cli.Nostr (decryptNip04, encryptNip04)
+import Krivostr.Cli.Render (oneLine, relativeTime, renderEvent, renderEventBlock, shortHex)
 import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Key
@@ -74,21 +75,31 @@ main = hspec $ do
       st <- openMemoryStore lg
       sk <- generatePrivateKey
       let e = mkSigned sk 1 "hello"
-      ok <- insertEvent st e
-      ok `shouldBe` True
+      insertEvent st e `shouldReturn` Inserted
       fetched <- getEventById st (evId e)
       fetched `shouldSatisfy` (== Just e)
       closeStore st
 
-    it "is idempotent on duplicate ids" $ do
+    it "tells a duplicate from a write" $ do
       lg <- newLogger Error
       st <- openMemoryStore lg
       sk <- generatePrivateKey
       let e = mkSigned sk 1 "hello"
-      _ <- insertEvent st e
-      _ <- insertEvent st e
+      insertEvent st e `shouldReturn` Inserted
+      insertEvent st e `shouldReturn` Duplicate
       n <- countEvents st
       n `shouldBe` 1
+      closeStore st
+
+    it "refuses a forged event and stores nothing" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "hello"
+      insertEvent st e {evContent = "forged"} `shouldReturn` InvalidSignature
+      insertEvent st e {evSig = T.replicate 128 "0"} `shouldReturn` InvalidSignature
+      getEventById st (evId e) `shouldReturn` Nothing
+      countEvents st `shouldReturn` 0
       closeStore st
 
     it "filters by kind" $ do
@@ -526,6 +537,35 @@ main = hspec $ do
       let pk1 = derivePublicKey sk1
       r <- decryptNip04 sk1 pk1 "AAAA?iv=!!!"
       r `shouldSatisfy` isLeft
+
+  describe "Render" $ do
+    it "renders one line with age, kind, and author" $ do
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "hello world"
+      renderEvent False True 1700000001 e `shouldSatisfy` T.isInfixOf "hello world"
+      renderEvent False True 1700000001 e `shouldSatisfy` T.isInfixOf "#1"
+
+    it "hides sensitive content unless revealed" $ do
+      sk <- generatePrivateKey
+      let e = (mkSigned sk 1 "secret body") { evTags = [["content-warning", "nudity"]] }
+      renderEvent False False 1700000001 e `shouldSatisfy` T.isInfixOf "sensitive: nudity"
+      renderEvent False False 1700000001 e `shouldSatisfy` (not . T.isInfixOf "secret body")
+      renderEvent False True 1700000001 e `shouldSatisfy` T.isInfixOf "secret body"
+
+    it "hides sensitive bodies in block rendering" $ do
+      sk <- generatePrivateKey
+      let e = (mkSigned sk 1 "secret body") { evTags = [["content-warning"]] }
+      renderEventBlock False False 1700000001 e `shouldSatisfy` T.isInfixOf "[content hidden"
+      renderEventBlock False True 1700000001 e `shouldSatisfy` T.isInfixOf "secret body"
+
+    it "formats relative ages" $ do
+      relativeTime 1700000000 1699999990 `shouldBe` "now"
+      relativeTime 1700000000 1699999900 `shouldSatisfy` T.isPrefixOf "1m"
+      relativeTime 1700000000 1699913600 `shouldSatisfy` T.isPrefixOf "1d"
+
+    it "shortens hex and single-lines text" $ do
+      shortHex 8 (T.replicate 64 "a") `shouldSatisfy` T.isPrefixOf "aaaaaaaa"
+      oneLine 100 "a\nb" `shouldBe` "a b"
 
   describe "Cli helpers" $ do
     it "parses relative times" $ do

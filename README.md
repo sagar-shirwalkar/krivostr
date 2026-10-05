@@ -34,10 +34,10 @@ reachable from the command line. Relays forget; your store does not. The name is
 portmanteau of **Nostr** and **Krivine**, the call-by-name abstract machine that evaluates
 lambda terms through a stack of closures.
 
-- **One binary, nineteen subcommands** — `serve`, `feed`, `search`, `dm`, `reply`,
+- **One binary, twenty subcommands** — `serve`, `feed`, `search`, `dm`, `reply`,
   `react`, `repost`, `verify`, `publish`, `delete`, `resolve`, `comment`, `list`,
-  `count`, `export`, `watch`, `api`, `reindex`, `keygen`. SQLite and FTS5 are linked
-  in; no runtime to install.
+  `count`, `wallet`, `export`, `watch`, `api`, `reindex`, `keygen`. SQLite and FTS5
+  are linked in; no runtime to install.
 - **A store that outlives the browser** — events in SQLite with a 30-day retention
   window, indexed on `pubkey`, `created_at`, and `kind`, plus an FTS5 index for search.
 - **A relay-shaped WebSocket bridge** — the browser speaks ordinary Nostr to `krivostr
@@ -204,6 +204,7 @@ Global flags come before the subcommand:
 | `comment` | Comment on a non-note event by id or address (NIP-22) |
 | `list` | Show or edit a NIP-51 list: `mute`, `pin`, `bookmark` |
 | `count` | Count stored events matching a filter (NIP-45) |
+| `wallet` | Talk to a lightning wallet: `balance`, `info`, `pay`, `invoice` (NIP-47) |
 | `export` | Bulk export as `nostr` (ndjson), `array`, or `csv` |
 | `watch` | Notify on new events |
 | `api` | Run the JSON HTTP API on its own port |
@@ -270,6 +271,7 @@ krivostr keygen
 | `KRIVOSTR_STATIC_DIR` | `./ui/dist` | Static asset directory |
 | `KRIVOSTR_API_HOST` | `127.0.0.1` | Interface for `api` |
 | `KRIVOSTR_NSEC` | — | Secret key for `dm` |
+| `KRIVOSTR_NWC` | — | Wallet connection URI for `wallet` (NIP-47) |
 
 UI variables are read by Vite at build time, so they must be set before `pnpm build`:
 
@@ -301,7 +303,7 @@ flowchart LR
         POOL["Pool<br/>relay multiplexer<br/>one drain thread per relay"]
         STORE[("Store<br/>SQLite + FTS5<br/>30-day retention")]
         BRIDGE["Bridge<br/>WebSocket + static files<br/>hourly GC thread"]
-        CLI["Cli<br/>nineteen subcommands"]
+        CLI["Cli<br/>twenty subcommands"]
         API["Cli.Api<br/>JSON on :8090"]
     end
 
@@ -366,7 +368,7 @@ than the `Rule` algebra — see [docs/architecture.md](docs/architecture.md).)
   NIP-59 gift wrap, NIP-17 private DMs, NIP-11 relay info, NIP-65 relay hints,
   filter predicates, wire ADTs, `Writer`-based logging.
 - **`client/`** — effectful Haskell: relay pool, SQLite store (FTS5),
-  WebSocket bridge, HTTP API, CLI (19 subcommands).
+  WebSocket bridge, HTTP API, CLI (20 subcommands).
 - **`ui/`** — browser: Lit 3, hand-rolled `Maybe` / `Result` / `IO` / `Rule`, IndexedDB
   cache, signer plug-ins (NIP-07, NIP-46 modal).
 
@@ -399,6 +401,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 | 44 | Versioned encryption | ✅ NIP-44 v2 — ChaCha20 + HMAC, official vectors |
 | 45 | Counting results | ✅ wire `COUNT`, bridge SQLite answer, `krivostr count` |
 | 46 | Remote signer | ✅ bunker over NIP-44, wired into the signer picker |
+| 47 | Wallet connect | ✅ NIP-44 requests/responses, `krivostr wallet`, UI zap payment path |
 | 49 | Private-key encryption | ✅ `ncryptsec` — scrypt + XChaCha20-Poly1305 |
 | 50 | Search | ✅ wire `search` filter; bridge FTS5, CLI `--search`, UI search box |
 | 51 | Lists | ✅ mute/pin/bookmark, `krivostr list`, UI mute filtering |
@@ -414,7 +417,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 608 hspec examples across core and client
+make test-backend  # 625 hspec examples across core and client
 make test-ui       # 126 unit tests (jsdom) + 15 browser tests (real Chromium)
 ```
 
@@ -491,6 +494,7 @@ krivostr/
 │   │       ├── Nip42.hs           AUTH: kind 22242 build and validate
 │   │       ├── Nip44.hs           NIP-44 v2: HKDF, ChaCha20, HMAC, padding
 │   │       ├── Nip46.hs           nostr-connect: bunker URI, methods, requests
+│   │       ├── Nip47.hs           wallet connect: NWC URI, methods, codecs
 │   │       ├── Nip49.hs           ncryptsec: scrypt + XChaCha20-Poly1305
 │   │       ├── Nip51.hs           Lists: mute, pins, bookmarks
 │   │       ├── Nip57.hs           Zaps: kind 9734/9735, invoice amounts
@@ -582,11 +586,11 @@ make clean             # remove build artifacts
 
 Worth stating plainly, because the rest of this README is otherwise optimistic.
 
-- **Ingest does not verify signatures.** `Krivostr.Schnorr` verifies, and the BIP-340
-  vectors in `core/test/Bip340.hs` test it, but the store's ingest path does not call it.
-  Events are trusted on the way in.
-- **Backend test coverage is 55.7%**, against an 80% target. The NIP modules are well
-  covered; the relay pool, bridge, CLI, and HTTP API are not.
+- **Ingest trusts nothing.** `Store.insertEvent` verifies every signature and answers
+  `Inserted` / `Duplicate` / `InvalidSignature`; the browser cache refuses forgeries too.
+- **Backend test coverage is 54%**, pinned by a ratchet (`.hpc-threshold`): the build
+  fails when coverage drops. The NIP modules are well covered; the relay pool, bridge,
+  CLI, and HTTP API are not.
 - **The local signer keeps the secret in memory for the session only.** There is no
   at-rest encryption and nothing is written to disk, but there is also no keyring
   integration.
@@ -604,7 +608,6 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
 
 ### Near-term
 
-- Verify signatures on ingest.
 - Tests for the IO layers, to move backend coverage off the floor.
 - **NIP-02** — parse and honour kind 3 follow lists.
 - **NIP-13** — inbound filter with configurable difficulty threshold.

@@ -45,7 +45,6 @@ import Krivostr.Event (Event, evId)
 import Krivostr.Filter (Filter (fLimit))
 import qualified Krivostr.Filter as Filter
 import Krivostr.Logging
-import Krivostr.Nip.Nip01 (verifyEvent)
 import Krivostr.Pool
 import Krivostr.Store
 import Krivostr.Wire
@@ -211,18 +210,21 @@ handleClientMsg bst cs v = case parseMaybe parseClient v of
     enqueue (csOutbox cs) (eoseMsg sid)
     broadcast (bsPool bst) (CReq sid filters)
 
+  -- Verification lives in 'insertEvent': a stored event is a verified
+  -- event by construction, and every ingest path funnels through it.
   Just (CEvent e) -> do
     let lg = bsLogger bst
-    if verifyEvent e
-      then do
-        _ <- insertEvent (bsStore bst) e
+    stored <- insertEvent (bsStore bst) e
+    case stored of
+      InvalidSignature -> do
+        emit lg Warn ("bridge: rejected event " <> evId e <> " (invalid signature)")
+        enqueue (csOutbox cs) (okMsg (evId e) False "invalid signature")
+      Duplicate -> enqueue (csOutbox cs) (okMsg (evId e) True "duplicate")
+      Inserted -> do
         broadcast (bsPool bst) (CEvent e)
         -- Other local clients watching the same kinds should see this too.
         deliverEvent bst e
         enqueue (csOutbox cs) (okMsg (evId e) True "")
-      else do
-        emit lg Warn ("bridge: rejected event " <> evId e <> " (invalid signature)")
-        enqueue (csOutbox cs) (okMsg (evId e) False "invalid signature")
 
   Just (CClose sid) -> do
     atomically $ modifyTVar' (csSubs cs) (M.delete sid)
@@ -251,18 +253,18 @@ deliverEvent bst e = do
 -- it to the local clients that asked for it.
 onUpstreamEvent :: Logger -> TVar (M.Map Int ClientState) -> Store -> Event -> IO ()
 onUpstreamEvent lg clientsVar store e = do
-  if verifyEvent e
-    then do
-      inserted <- insertEvent store e
-      when inserted $ do
-        emit lg Debug ("bridge: cached " <> evId e)
-        clients <- readTVarIO clientsVar
-        forM_ (M.elems clients) $ \cs -> do
-          subs <- readTVarIO (csSubs cs)
-          forM_ (M.toList subs) $ \(sid, filters) ->
-            when (any (\f -> Filter.matches f e) filters) $
-              enqueue (csOutbox cs) (eventMsg sid e)
-    else
+  stored <- insertEvent store e
+  case stored of
+    Inserted -> do
+      emit lg Debug ("bridge: cached " <> evId e)
+      clients <- readTVarIO clientsVar
+      forM_ (M.elems clients) $ \cs -> do
+        subs <- readTVarIO (csSubs cs)
+        forM_ (M.toList subs) $ \(sid, filters) ->
+          when (any (\f -> Filter.matches f e) filters) $
+            enqueue (csOutbox cs) (eventMsg sid e)
+    Duplicate -> pure ()
+    InvalidSignature -> do
       emit lg Warn ("bridge: rejected upstream event " <> evId e <> " (invalid signature)")
 
 -- | Distinct events by id, keeping first-seen order. A REQ with overlapping

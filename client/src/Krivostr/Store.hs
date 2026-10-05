@@ -7,6 +7,7 @@ module Krivostr.Store
   , closeStore
   , insertEvent
   , insertEvents
+  , InsertResult(..)
   , queryEvents
   , queryEventsWith
   , countEvents
@@ -41,6 +42,7 @@ import Database.SQLite.Simple.ToField (ToField(..))
 import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Logging
+import Krivostr.Nip.Nip01 (verifyEvent)
 import Data.Aeson (decode, encode)
 import qualified Data.ByteString.Lazy as BL
 
@@ -282,18 +284,39 @@ closeStore :: Store -> IO ()
 closeStore = close . stConn
 
 -- | Idempotent: INSERT OR IGNORE on the primary key.
-insertEvent :: Store -> Event -> IO Bool
-insertEvent st e = do
-  r <- try $ execute (stConn st)
-    "INSERT OR IGNORE INTO events \
-    \(id, pubkey, created_at, kind, tags, content, sig) \
-    \VALUES (?, ?, ?, ?, ?, ?, ?)"
-    (eventRow e)
-  case r of
-    Left (err :: SomeException) -> do
-      emit (stLogger st) Error ("store.insert: " <> T.pack (show err))
-      pure False
-    Right () -> pure True
+-- | What storing one event decided. 'Duplicate' is distinct from 'Inserted':
+-- the old 'Bool' conflated them, so callers could not tell a replay from a
+-- write and the "duplicate" debug line below could never fire.
+data InsertResult
+  = Inserted
+  | Duplicate
+  | InvalidSignature
+  deriving (Show, Eq)
+
+-- | Store one event, verifying its signature first. This is the choke point:
+-- every ingest path (bridge client events, bridge upstream events, CLI
+-- follows, CLI list saves) funnels through here, so a forged event has no
+-- path into SQLite that skips verification. Callers must not pre-verify to
+-- "help" -- one Schnorr check per event is enough, and two is a tax on
+-- every relay message.
+insertEvent :: Store -> Event -> IO InsertResult
+insertEvent st e
+  | not (verifyEvent e) = do
+      emit (stLogger st) Warn ("store.insert: rejected " <> evId e <> " (invalid signature)")
+      pure InvalidSignature
+  | otherwise = do
+      r <- try $ execute (stConn st)
+        "INSERT OR IGNORE INTO events \
+        \(id, pubkey, created_at, kind, tags, content, sig) \
+        \VALUES (?, ?, ?, ?, ?, ?, ?)"
+        (eventRow e)
+      case r of
+        Left (err :: SomeException) -> do
+          emit (stLogger st) Error ("store.insert: " <> T.pack (show err))
+          pure InvalidSignature
+        Right () -> do
+          n <- changes (stConn st)
+          pure (if n == 0 then Duplicate else Inserted)
 
 insertEvents :: Store -> [Event] -> IO Int
 insertEvents st es = do

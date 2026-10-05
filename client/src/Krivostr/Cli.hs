@@ -30,7 +30,11 @@ import Control.Concurrent.MVar
 import Control.Concurrent.STM hiding (orElse)
 import Control.Exception (bracket, finally)
 import Control.Monad (forM_, forever, unless, void, when)
-import Data.Aeson (ToJSON, encode)
+import Data.Aeson (ToJSON, encode, object, (.=))
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as K
+import Data.Aeson.Types (parseEither)
+import Krivostr.Cli.Wallet (walletRequest)
 import Data.Char (toLower)
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Lazy.Char8 as BLC
@@ -51,9 +55,9 @@ import Krivostr.Filter
 import Krivostr.Key
 -- `info` is a log level here and a parser combinator in optparse-applicative.
 import Krivostr.Logging hiding (info)
-import Krivostr.Nip.Nip01 (verifyEvent)
 import Krivostr.Nip.Nip05 (parseIdentifier, verifyName, wellKnownUrl)
 import Krivostr.Nip.Nip09 (appliesTo, buildDeletionTags, parameterizedAddress)
+import Krivostr.Nip.Nip47 (Method (..), Request (..), Response (..), WalletConn (..), methodToText, parseWalletUri)
 import Krivostr.Nip.Nip51 (addEntry, bookmarkKind, bookmarkedAddresses, bookmarkedIds, muteKind, mutedPubkeys, pinKind, pinnedIds, removeEntry)
 import Krivostr.Nip.Nip22 (ItemRef (..), buildCommentTags)
 import Krivostr.Nip.Nip27 (Mention (..), MentionKind (..), findMentions)
@@ -148,6 +152,7 @@ data Command
   | CmdComment CommentOpts
   | CmdList ListOpts
   | CmdCount CountOpts
+  | CmdWallet WalletOpts
   | CmdExport ExportOpts
   | CmdWatch WatchOpts
   | CmdApi ApiOpts
@@ -252,6 +257,16 @@ newtype CountOpts = CountOpts
   { cnFilter :: FilterOpts
   }
 
+data WalletAction
+  = WBalance
+  | WInfo
+  | WPay String
+  | WInvoice Int String
+
+data WalletOpts = WalletOpts
+  { woAction :: WalletAction
+  }
+
 data ExportOpts = ExportOpts
   { exFilter :: FilterOpts
   , exFormat :: String
@@ -338,6 +353,7 @@ commandP = hsubparser
  <> command "comment"  (info (CmdComment <$> commentP)  (progDesc "Comment on a non-note event (NIP-22)"))
  <> command "list"     (info (CmdList    <$> listP)     (progDesc "Show or edit a NIP-51 list: mute, pin, bookmark"))
  <> command "count"    (info (CmdCount   <$> countP)    (progDesc "Count stored events matching a filter (NIP-45)"))
+ <> command "wallet"   (info (CmdWallet  <$> walletP)   (progDesc "Talk to a lightning wallet (NIP-47)"))
  <> command "export"  (info (CmdExport  <$> exportP)  (progDesc "Bulk export as nostr (ndjson), array or csv"))
  <> command "watch"   (info (CmdWatch   <$> watchP)   (progDesc "Notify on new events"))
  <> command "api"     (info (CmdApi     <$> apiP)     (progDesc "Run the JSON HTTP API on its own port"))
@@ -460,6 +476,19 @@ listP = ListOpts
 
 countP :: Parser CountOpts
 countP = CountOpts <$> filterP
+
+walletP :: Parser WalletOpts
+walletP = WalletOpts <$> hsubparser
+  ( command "balance" (info (pure WBalance) (progDesc "Show the wallet balance"))
+ <> command "info"    (info (pure WInfo)    (progDesc "Show wallet metadata and methods"))
+ <> command "pay"     (info (WPay <$> argument str (metavar "INVOICE" <> help "bolt11 invoice to pay"))
+                       (progDesc "Pay a bolt11 invoice"))
+ <> command "invoice" (info (WInvoice
+                        <$> argument auto (metavar "MSATS" <> help "Amount in millisats")
+                        <*> strOption (long "description" <> metavar "TEXT" <> value "" <> showDefault
+                                     <> help "Invoice description"))
+                       (progDesc "Create a lightning invoice"))
+  )
 
 exportP :: Parser ExportOpts
 exportP = ExportOpts
@@ -668,6 +697,7 @@ dispatch (Opts g cmd) = do
       CmdComment o -> cmdComment lg' db o
       CmdList o -> cmdList lg' db o
       CmdCount o -> cmdCount lg' db o
+      CmdWallet o -> cmdWallet lg' o
       CmdExport o -> cmdExport lg' db o
       CmdWatch o  -> cmdWatch lg' db colour o
       CmdApi o    -> withStore lg' db $ \st -> do
@@ -796,13 +826,14 @@ cmdFeed lg db colour o
             putEvent colour now (fdJson o) (fdLong o) (fdReveal o) e
             case store of
               Nothing -> pure ()
+              -- Verification lives in 'insertEvent': display shows what
+              -- arrived, storage keeps what verifies.
               Just st -> do
-                if verifyEvent e
-                  then do
-                    fresh <- insertEvent st e
-                    unless fresh $ emit lg Debug ("duplicate: " <> evId e)
-                  else
-                    emit lg Warn ("cli: rejected event " <> evId e <> " (invalid signature)")
+                stored <- insertEvent st e
+                case stored of
+                  Duplicate -> emit lg Debug ("duplicate: " <> evId e)
+                  InvalidSignature -> emit lg Warn ("cli: rejected event " <> evId e <> " (invalid signature)")
+                  Inserted -> pure ()
       emit lg Info ("streaming from " <> T.intercalate ", " relays)
       pool <- newPool lg onEvent
       forM_ relays (addRelay pool)
@@ -1231,6 +1262,41 @@ cmdCount lg db o = withStore lg db $ \st -> do
   -- matches, not the page size, so --limit only bounds feed output.
   n <- countMatching st f
   TIO.putStrLn (T.pack (show n))
+
+cmdWallet :: Logger -> WalletOpts -> IO ()
+cmdWallet lg o = do
+  raw <- envText "KRIVOSTR_NWC"
+  conn <- case raw of
+    Nothing -> die "no wallet: set KRIVOSTR_NWC=nostr+walletconnect://... (paste it from your wallet app)"
+    Just t  -> either die pure (parseWalletUri t)
+  let run = walletRequest lg conn
+  case woAction o of
+    WBalance -> do
+      res <- either die pure =<< run MGetBalance (object [])
+      n <- either die pure (atField res "balance" :: Either String Integer)
+      TIO.putStrLn (T.pack (show n) <> " msats (" <> T.pack (show (n `div` 1000)) <> " sats)")
+    WInfo -> do
+      res <- either die pure =<< run MGetInfo (object [])
+      TIO.putStrLn (describeInfo res)
+    WPay invoice -> do
+      res <- either die pure =<< run MPayInvoice (object ["invoice" .= invoice])
+      TIO.putStrLn ("paid, preimage: " <> (either (T.pack . ("wallet answered oddly: " ++)) id (atField res "preimage" :: Either String Text)))
+    WInvoice msats desc -> do
+      res <- either die pure =<< run MMakeInvoice
+        (object (["amount" .= msats] ++ ["description" .= desc | not (null desc)]))
+      TIO.putStrLn (either (T.pack . ("wallet answered oddly: " ++)) id (atField res "invoice" :: Either String Text))
+  where
+    -- One field out of a result object, with the method named on failure so
+    -- the user knows which answer disappointed them.
+    atField :: Aeson.FromJSON a => Response -> Text -> Either String a
+    atField res name = case resResult res of
+      Just v -> case parseEither (Aeson.withObject "result" (Aeson..: K.fromText name)) v of
+        Right a -> Right a
+        Left e  -> Left ("wallet answered without " ++ T.unpack name ++ ": " ++ e)
+      Nothing -> Left "wallet answered without a result"
+    describeInfo res = case resResult res of
+      Just v -> TE.decodeUtf8 (BLC.toStrict (encode v))
+      Nothing -> "{}"
 
 publicKeyFromHex :: Text -> Maybe PublicKey
 publicKeyFromHex t = do

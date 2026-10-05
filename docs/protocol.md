@@ -24,14 +24,17 @@ The canonical serialization for the id is
 
 ### Signature verification
 
-`Krivostr.Schnorr.verifyEvent` exists and is tested, but **ingest does not call
-it.** Events are stored on their `id` and `pubkey` without checking that the
-signature matches. Anything arriving from a relay or the bridge is therefore
-unverified by the time it is stored or rendered.
+Every stored event is signature-checked on the way in. On the backend,
+`Store.insertEvent` verifies first and answers `Inserted`, `Duplicate`, or
+`InvalidSignature` — bridge client events, bridge upstream events, CLI
+follows, and CLI saves all funnel through it, so a forged event has no path
+into SQLite. In the browser, `cache.put` refuses events that fail
+`verifyEvent`, so unverified bytes do not survive a restart in IndexedDB
+either.
 
-The UI's `parseEvent` is likewise structural: it checks that the fields are
-present and correctly typed, not that `id` is the hash of the content. This is a
-known gap, called out in [security.md](security.md).
+The UI's `parseEvent` stays structural on purpose: it checks that the fields
+are present and correctly typed, not that `id` really is the hash of the
+content. Decoding is not the trust boundary; the store and cache gates are.
 
 ## Wire messages
 
@@ -268,6 +271,16 @@ needed.
 forwards; overlapping filters union by id. `krivostr count` prints the
 number; the UI `count()` backs the search result line, bridge-slot only,
 because cross-relay sums would double-count.
+
+**NIP-47 wallet connect** is client-only: no wallet service ships here. The
+URI (`nostr+walletconnect://pubkey?relay=…&secret=…`) parses in core and UI;
+requests (kind 23194, `encryption` + `p` tags, NIP-44 payload) and responses
+(kind 23195) share codecs on both sides reusing the one NIP-44 implementation.
+`krivostr wallet` (`KRIVOSTR_NWC`) does `balance`, `info`, `pay`, and
+`invoice` as single-flight relay calls; the zap dialog pays through a pasted
+URI that lives in dialog state and dies with the tab. NIP-04 legacy mode is
+not implemented — a service speaking only it yields undecryptable payloads,
+not a silent downgrade.
 
 ## Not implemented
 
