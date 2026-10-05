@@ -48,6 +48,9 @@ describe('splitSegments / mentionLabel', () => {
   });
 });
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 9d5e0b9 (NIP 19 21 57 and ui)
 
 describe('entities', () => {
   it('decodes nevent to its id and naddr to its coordinate', async () => {
@@ -63,5 +66,8 @@ describe('entities', () => {
     ]);
   });
 });
+<<<<<<< HEAD
 =======
 >>>>>>> 1c7941b (NIP 09 22 27 36 51)
+=======
+>>>>>>> 9d5e0b9 (NIP 19 21 57 and ui)

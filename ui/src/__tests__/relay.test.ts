@@ -245,6 +245,9 @@ describe('count', () => {
   });
 });
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 9d5e0b9 (NIP 19 21 57 and ui)
 
 describe('onEose', () => {
   it('routes EOSE sub ids to the handler', () => {
@@ -261,6 +264,7 @@ describe('onEose', () => {
     expect(eosed).toEqual(['s1', 's2']);
   });
 });
+<<<<<<< HEAD
 
 describe('count robustness', () => {
   it('ignores prototype-probe and foreign ids without throwing', async () => {
@@ -287,3 +291,5 @@ describe('count robustness', () => {
 });
 =======
 >>>>>>> 1c7941b (NIP 09 22 27 36 51)
+=======
+>>>>>>> 9d5e0b9 (NIP 19 21 57 and ui)

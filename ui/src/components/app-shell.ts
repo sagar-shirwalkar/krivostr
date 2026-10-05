@@ -615,10 +615,13 @@ export class KrivostrApp extends LitElement {
     const q = this.searching.trim();
     this.feedEl()?.clear();
     this.resultLine = '';
+    this.reading = null;
     if (q === '') {
       status.clearSearch();
+      status.clearAuthor();
       return;
     }
+    status.clearAuthor();
     status.searchAll(q);
     const counted = status.countBridge({ search: q, limit: 1 });
     if (counted) {
@@ -627,6 +630,186 @@ export class KrivostrApp extends LitElement {
         () => undefined,
       );
     }
+  }
+
+  /**
+   * Open a clicked mention in the client (NIP-21). Notes and addresses
+   * fetch into the reader overlay; authors replace the feed with their
+   * notes. Anything unresolvable closes nothing and opens nothing — the
+   * span was inert by construction.
+   */
+  private async handleMentionOpen(e: CustomEvent<{ raw: string }>) {
+    const mention = parseNostrUri(e.detail.raw);
+    if (!mention) return;
+    const target = resolveTarget(mention);
+    if (!target) return;
+    const status = this.relayStatus();
+    if (!status) return;
+    if (target.view === 'author') {
+      this.feedEl()?.clear();
+      this.reading = null;
+      this.resultLine = `showing notes by @${target.pubkey.slice(0, 8)}…`;
+      status.clearSearch();
+      status.showAuthor(target.pubkey);
+      return;
+    }
+    if (target.view === 'event') {
+      const found = await status.fetchOnce({ ids: [target.id], limit: 1 });
+      this.reading = found.length > 0 ? found : 'missing';
+      return;
+    }
+    const [kindRaw, pubkey, ...dParts] = target.coordinate.split(':');
+    const kind = /^\d+$/.test(kindRaw) ? parseInt(kindRaw, 10) : NaN;
+    if (!Number.isInteger(kind) || pubkey === '' || dParts.length === 0) {
+      this.reading = 'missing';
+      return;
+    }
+    const found = await status.fetchOnce({
+      kinds: [kind],
+      authors: [pubkey],
+      tags: { d: [dParts.join(':')] },
+      limit: 5,
+    });
+    const newest = found.sort((a, b) => b.created_at - a.created_at)[0];
+    this.reading = newest ? [newest] : 'missing';
+  }
+
+  private closeReading() {
+    this.reading = null;
+  }
+
+  /**
+   * Open the zap dialog for a note or article. The recipient's lightning
+   * address comes from their kind-0 profile when the relays have it;
+   * otherwise the field waits for a pasted address. Bounds come from the
+   * LNURL endpoint; until they load, sane defaults stand in.
+   */
+  private async handleZapOf(e: CustomEvent<{ event: NostrEvent }>) {
+    if (!this.signer) return;
+    const target = e.detail.event;
+    this.zapping = {
+      target, lud: '', sats: '21', comment: '',
+      minSats: 1, maxSats: 21_000_000, busy: true,
+    };
+    const status = this.relayStatus();
+    try {
+      const profiles = status ? await status.fetchOnce({ kinds: [0], authors: [target.pubkey], limit: 1 }) : [];
+      const lud = profiles.length > 0 ? profileLud(profiles[0].content) : undefined;
+      if (!lud) {
+        this.zapping = { ...this.zapping!, busy: false, error: 'no lightning address found — paste one below' };
+        return;
+      }
+      const url = lnurlPayUrl(lud);
+      if (url._tag === 'Err') {
+        this.zapping = { ...this.zapping!, lud, busy: false, error: url.error };
+        return;
+      }
+      const params = await fetchPayParams(url.value);
+      if (params._tag === 'Err') {
+        this.zapping = { ...this.zapping!, lud, busy: false, error: params.error };
+        return;
+      }
+      this.zapping = {
+        ...this.zapping!,
+        lud,
+        callback: params.value.callback,
+        minSats: Math.max(1, Math.ceil(params.value.minSendable / 1000)),
+        maxSats: Math.floor(params.value.maxSendable / 1000),
+        busy: false,
+      };
+    } catch (err) {
+      this.zapping = { ...this.zapping!, busy: false, error: String(err) };
+    }
+  }
+
+  private closeZap() {
+    this.zapping = null;
+  }
+
+  /**
+   * Sign the zap request and ask the LNURL callback for an invoice. The
+   * request is sent, never published; the invoice renders for the wallet
+   * to pay, and the receipt arrives later as a kind 9735.
+   */
+  private async confirmZap() {
+    const draft = this.zapping;
+    if (!draft || !this.signer || !this.myPubkey || draft.busy) return;
+    const sats = /^\d+$/.test(draft.sats) ? parseInt(draft.sats, 10) : NaN;
+    if (!Number.isInteger(sats) || sats < draft.minSats || sats > draft.maxSats) {
+      this.zapping = { ...draft, error: `amount must be ${draft.minSats}–${draft.maxSats} sats` };
+      return;
+    }
+    const url = lnurlPayUrl(draft.lud.trim());
+    if (url._tag === 'Err') {
+      this.zapping = { ...draft, error: url.error };
+      return;
+    }
+    this.zapping = { ...draft, busy: true, error: undefined };
+    try {
+      const params = await fetchPayParams(url.value);
+      if (params._tag === 'Err') throw new Error(params.error);
+      const msats = sats * 1000;
+      if (msats < params.value.minSendable || msats > params.value.maxSendable) {
+        throw new Error(`endpoint allows ${Math.ceil(params.value.minSendable / 1000)}–${Math.floor(params.value.maxSendable / 1000)} sats`);
+      }
+      const addr = draft.target.kind >= 30000 && draft.target.kind <= 39999
+        ? articleAddress(draft.target)
+        : undefined;
+      const unsigned = {
+        pubkey: this.myPubkey,
+        created_at: Math.floor(Date.now() / 1000),
+        kind: 9734,
+        tags: buildZapRequestTags(
+          draft.target.pubkey,
+          msats,
+          (this.relayStatus()?.connectedUrls ?? []).filter((u) => u.startsWith('wss://')),
+          draft.lud.trim().startsWith('lnurl') ? draft.lud.trim() : undefined,
+          draft.target.kind === 1 ? draft.target.id : undefined,
+          addr,
+        ),
+        content: draft.comment,
+      };
+      const signed = await this.signer.signEvent(unsigned);
+      if (signed._tag === 'Err') throw new Error(signed.error);
+      const invoice = await requestInvoice(params.value.callback, msats, JSON.stringify(signed.value));
+      if (invoice._tag === 'Err') throw new Error(invoice.error);
+      this.zapping = { ...this.zapping!, busy: false, invoice: invoice.value };
+    } catch (err) {
+      this.zapping = { ...this.zapping!, busy: false, error: String(err) };
+    }
+  }
+
+  private copyInvoice() {
+    if (this.zapping?.invoice) void navigator.clipboard.writeText(this.zapping.invoice);
+  }
+
+  private renderZap() {
+    const z = this.zapping;
+    if (!z) return '';
+    const set = (k: 'lud' | 'sats' | 'comment') => (e: Event) => {
+      this.zapping = { ...z, [k]: (e.target as HTMLInputElement).value };
+    };
+    return html`
+      <div class="reader" @click=${this.closeZap}>
+        <div class="sheet" @click=${(e: Event) => e.stopPropagation()}>
+          <button class="close" @click=${this.closeZap}>close ×</button>
+          <div class="zaphead">⚡ zap ${z.target.pubkey.slice(0, 8)}…</div>
+          ${z.busy
+            ? html`<div class="empty">contacting lightning endpoint…</div>`
+            : z.invoice
+              ? html`<div class="body">pay this invoice in your wallet:</div>
+                <div class="invoice">${z.invoice}</div>
+                <div class="row"><button @click=${this.copyInvoice}>copy invoice</button></div>`
+              : html`
+                <label>to (lightning address)<input .value=${z.lud} @input=${set('lud')} placeholder="name@domain" /></label>
+                <label>amount (sats, ${z.minSats}–${z.maxSats})
+                  <input .value=${z.sats} @input=${set('sats')} inputmode="numeric" /></label>
+                <label>comment (optional)<input .value=${z.comment} @input=${set('comment')} /></label>
+                <div class="row"><button @click=${() => void this.confirmZap()}>get invoice</button></div>`}
+          ${z.error ? html`<div class="warn">${z.error}</div>` : ''}
+        </div>
+      </div>
+    `;
   }
 
   override render() {
