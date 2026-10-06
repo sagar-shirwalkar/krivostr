@@ -79,7 +79,7 @@ account. Extract and run; the archive mirrors the repo layout (`ui/dist`), so
 `serve` finds the UI with zero flags:
 
 ```bash
-mkdir krivostr && tar -xzf krivostr-0.5.3-linux-amd64.tar.gz -C krivostr
+mkdir krivostr && tar -xzf krivostr-0.5.5-linux-amd64.tar.gz -C krivostr
 cd krivostr
 ./krivostr serve
 ```
