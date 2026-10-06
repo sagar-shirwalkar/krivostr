@@ -2,15 +2,16 @@
 
 <p align="center"><code>K = Y (λM. λ⟨t,π,ρ⟩. t ρ @ π ▷ M)</code></p>
 
-<p align="center"><strong>The local-first Nostr engine.</strong></p>
+<p align="center"><strong>Blazing-fast Nostr client and bridge for people who follow way too many people.</strong></p>
 
 <div align="center">
 
 [![Haskell](https://img.shields.io/badge/Haskell-5D4F85?style=for-the-badge&logo=haskell&logoColor=white)](https://haskell.org)
 [![Lit](https://img.shields.io/badge/lit-324FFF?style=for-the-badge&logo=lit&logoColor=white)](https://lit.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![Tailwind](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 [![License](https://img.shields.io/badge/AGPL--3.0-red?style=for-the-badge)](LICENSE)
-![GitHub Release](https://img.shields.io/github/v/release/sagar-shirwalkar/krivostr?display_name=release&style=for-the-badge&labelColor=black)
+![GitHub Tag](https://img.shields.io/github/v/tag/sagar-shirwalkar/krivostr?style=for-the-badge&labelColor=black)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/sagar-shirwalkar/krivostr/ci.yml?branch=main&style=for-the-badge&labelColor=%23404040&color=%232d9e37)
 
 </div>
@@ -33,18 +34,17 @@ reachable from the command line. Relays forget; your store does not. The name is
 portmanteau of **Nostr** and **Krivine**, the call-by-name abstract machine that evaluates
 lambda terms through a stack of closures.
 
-- **An offline-capable archive** — events in SQLite with a 30-day retention
+- **One binary, twenty-one subcommands** — `serve`, `feed`, `search`, `dm`, `reply`,
+  `react`, `repost`, `verify`, `publish`, `delete`, `resolve`, `comment`, `list`,
+  `count`, `wallet`, `relay`, `export`, `watch`, `api`, `reindex`, `keygen`. SQLite
+  and FTS5 are linked in; no runtime to install.
+- **A store that outlives the browser** — events in SQLite with a 30-day retention
   window, indexed on `pubkey`, `created_at`, and `kind`, plus an FTS5 index for search.
-  Read your timeline on a flight; your follows, mutes, and DMs persist.
-- **A multiplexing bridge** — the browser speaks ordinary Nostr to `krivostr
-  serve`, which answers from the local store and fans out to upstream relays.
-- **A headless CLI** — twenty-one subcommands over the same store: `serve`, `feed`,
-  `search`, `dm`, `reply`, `react`, `repost`, `verify`, `publish`, `delete`, `resolve`,
-  `comment`, `list`, `count`, `wallet`, `relay`, `export`, `watch`, `api`, `reindex`,
-  `keygen`. SQLite and FTS5 are linked in; no runtime to install.
-- **Signers at the boundary** — NIP-07 browser extension or NIP-46 remote bunker for
-  real identities (the picker nudges you there); pasted local `nsec` is gated behind
-  an explicit risk acknowledgment and meant for testing and burner keys.
+- **A relay-shaped WebSocket bridge** — the browser speaks ordinary Nostr to `krivostr
+  serve`, which answers from the local store and can fan out to upstream relays.
+- **Signers at the boundary** — local `nsec` (NIP-49 `ncryptsec` encrypted at rest),
+  NIP-07 browser extension, or NIP-46 remote bunker. The picker opens a modal
+  with install links (Alby, nos2x, Flamingo) when NIP-07 is unavailable.
 - **A pure core** — canonical serialization, signing, verification, and filter matching
   are pure Haskell with no IO in `krivostr-core`; SQLite, WebSockets, and HTTP live in
   `krivostr-client`.
@@ -60,6 +60,7 @@ lambda terms through a stack of closures.
 - [Architecture](#architecture)
 - [Protocol support](#protocol-support)
 - [Testing and coverage](#testing-and-coverage)
+- [Project structure](#project-structure)
 - [Development](#development)
 - [Design decisions](#design-decisions)
 - [Known limitations](#known-limitations)
@@ -107,7 +108,7 @@ stack exec krivostr serve
 ```
 info  store: opened .krivostr/events.db
 info  bridge: 3 upstream relays
-info  bridge: listening on http://127.0.0.1:8081
+info  bridge: listening on :8081
 info  connected: wss://relay.damus.io
 info  connected: wss://nos.lol
 info  connected: wss://relay.primal.net
@@ -412,17 +413,15 @@ no cross-language FFI. (Filter *matching* is a hand-rolled predicate on both sid
 than the `Rule` algebra — see [docs/architecture.md](docs/architecture.md).)
 
 - **`core/`** — pure Haskell: NIP-01 serialization/signing/verification, NIP-05
-  identifiers, NIP-09 deletion, NIP-10 replies, NIP-13 proof of work, NIP-17
-  private DMs, NIP-18 reposts, NIP-19 entities, NIP-21 URIs, NIP-22 comments,
-  NIP-23 articles, NIP-25 reactions, NIP-27 references, NIP-36 content warnings,
-  NIP-40 expiration, NIP-42 AUTH, NIP-44 v2 encryption, NIP-46 nostr-connect,
-  NIP-47 wallet connect, NIP-49 `ncryptsec`, NIP-50 search filter, NIP-51 lists,
-  NIP-57 zaps, NIP-59 gift wrap, NIP-11 relay info, NIP-65 relay hints,
+  identifiers, NIP-10 replies, NIP-13 proof of work, NIP-18 reposts, NIP-23
+  articles, NIP-25 reactions, NIP-40 expiration, NIP-42 AUTH, NIP-44 v2
+  encryption, NIP-46 nostr-connect, NIP-49 `ncryptsec`, NIP-50 search filter,
+  NIP-59 gift wrap, NIP-17 private DMs, NIP-11 relay info, NIP-65 relay hints,
   filter predicates, wire ADTs, `Writer`-based logging.
 - **`client/`** — effectful Haskell: relay pool, SQLite store (FTS5),
   WebSocket bridge, HTTP API, CLI (21 subcommands).
 - **`ui/`** — browser: Lit 3, hand-rolled `Maybe` / `Result` / `IO` / `Rule`, IndexedDB
-  cache, signer picker (NIP-07 modal, NIP-46 bunker, risk-gated local `nsec`).
+  cache, signer plug-ins (NIP-07, NIP-46 modal).
 
 See [docs/architecture.md](docs/architecture.md) for more detail.
 
@@ -470,7 +469,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
 make test-backend  # 631 hspec examples across core and client
-make test-ui       # 292 unit tests (jsdom) + 25 browser tests (real Chromium)
+make test-ui       # 126 unit tests (jsdom) + 15 browser tests (real Chromium)
 ```
 
 Browser tests run through `@vitest/browser` and Playwright against real Chromium. They
@@ -493,25 +492,105 @@ coverage index: .stack-work/install/…/9.10.3/hpc/combined/all/hpc_index.html
 module                  covered / total
 Krivostr.Schnorr             16 / 16     100.0%
 Krivostr.Nip.Nip01            4 / 4      100.0%
-Krivostr.Store               39 / 52      75.0%
+Krivostr.Store               29 / 38      76.3%
 Krivostr.Key                 22 / 30      73.3%
-Krivostr.Filter              17 / 28      60.7%
+Krivostr.Filter              16 / 27      59.3%
 …
-TOTAL                      794 / 1447     54.9%
+TOTAL                      164 / 460     35.7%
 ```
 
 That is the honest number, and it is lower than you would like. The cryptography and the
-NIP modules are well covered; the IO layers — the relay pool, the bridge, the CLI, and
-the HTTP API — dominate the total and are mostly untested. `.hpc-threshold` pins the
-measured total as a ratchet (currently `min: 54`): coverage may rise, and `make coverage`
-fails if it drops. If your change raises the measured number, raise the pin in the same
-change; never lower it.
+NIP-01 layer are fully covered; the IO layers — the relay pool, the bridge, the CLI, and
+the HTTP API — are not yet, and they dominate the total. `.hpc-threshold` sets the target
+at 80%, so `make coverage` fails today by design: the gap is visible rather than hidden.
 
 UI coverage is a different story, because the vitest config measures the pure logic
 (`src/fp` and `src/nostr`, excluding the bridge transport):
 
 ```
 All files    |   95.73 |    93.27 |   89.13 |   95.73 |
+```
+
+---
+
+## Project structure
+
+```
+krivostr/
+├── core/                          Pure Haskell library
+│   ├── src/Krivostr/
+│   │   ├── Event.hs               Event ADT and accessors
+│   │   ├── Filter.hs              onlyKinds / byAuthors / tagEq / matches
+│   │   ├── Key.hs                 x-only keys, NIP-19 npub + nsec
+│   │   ├── Logging.hs             Writer logger
+│   │   ├── Schnorr.hs             BIP-340 in pure Haskell
+│   │   ├── Wire.hs                NIP-01 + NIP-45 message ADTs, encodeClient / decodeRelay
+│   │   └── Nip/
+│   │       ├── Nip01.hs           Canonical bytes, event id, signing, verification
+│   │       ├── Nip05.hs           DNS identifiers: parse, well-known URL, verify
+│   │       ├── Nip09.hs           Deletion: kind 5, authorship, addresses
+│   │       ├── Nip10.hs           Replies: marked/positional e tags, thread refs
+│   │       ├── Nip11.hs           Relay info document (supported_nips)
+│   │       ├── Nip13.hs           Proof of work: difficulty, nonce tag, mining
+│   │       ├── Nip17.hs           Private DMs: kind 14 rumor, timestamp jitter
+│   │       ├── Nip18.hs           Reposts (6/16) and q-tag quotes
+│   │       ├── Nip19.hs           Entities: nevent/naddr TLV pointers
+│   │       ├── Nip21.hs           nostr: URIs: single-reference parse
+│   │       ├── Nip22.hs           Comments: kind 1111 root/parent scopes
+│   │       ├── Nip23.hs           Long-form: slug, header tags, address
+│   │       ├── Nip25.hs           Reactions: kind 7, counts
+│   │       ├── Nip27.hs           Text references: nostr: scanning, TLV
+│   │       ├── Nip36.hs           Sensitive content: content-warning tag
+│   │       ├── Nip40.hs           Expiration tag parsing and filtering
+│   │       ├── Nip42.hs           AUTH: kind 22242 build and validate
+│   │       ├── Nip44.hs           NIP-44 v2: HKDF, ChaCha20, HMAC, padding
+│   │       ├── Nip46.hs           nostr-connect: bunker URI, methods, requests
+│   │       ├── Nip47.hs           wallet connect: NWC URI, methods, codecs
+│   │       ├── Nip49.hs           ncryptsec: scrypt + XChaCha20-Poly1305
+│   │       ├── Nip51.hs           Lists: mute, pins, bookmarks
+│   │       ├── Nip57.hs           Zaps: kind 9734/9735, invoice amounts
+│   │       ├── Nip59.hs           Gift wrap: rumor, seal (13), wrap (1059)
+│   │       └── Nip65.hs           Relay hints
+│   └── test/
+│       ├── Spec.hs                hspec
+│       ├── Bip340.hs              BIP-340 test vectors
+│       └── Nip*Spec.hs            One spec module per NIP, official vectors
+├── client/                        Effectful Haskell executable
+│   ├── app/
+│   │   └── Main.hs                Entry point (app/, not src/: see below)
+│   ├── src/
+│   │   └── Krivostr/
+│   │       ├── Bridge.hs          WebSocket bridge + static files (NIP-42 auth)
+│   │       ├── Cli.hs             optparse-applicative command surface
+│   │       ├── Cli/
+│   │       │   ├── Api.hs         JSON HTTP API
+│   │       │   ├── Nostr.hs       Network commands: dm, publish, relay defaults
+│   │       │   └── Render.hs      Terminal rendering
+│   │       ├── Pool.hs            Relay multiplexer
+│   │       ├── Relay.hs           One relay connection
+│   │       └── Store.hs           SQLite, FTS5
+│   └── test/Spec.hs
+├── ui/                            Lit 3 + TypeScript
+│   ├── public/_headers            Cloudflare Pages CSP and cache rules
+│   ├── src/
+│   │   ├── fp/                    Hand-rolled Maybe / Result / IO / Rule
+│   │   ├── nostr/
+│   │   │   ├── signer.ts          Signer interface (local, NIP-07, NIP-46)
+│   │   │   └── cache.ts           IndexedDB
+│   │   └── components/
+│   │       ├── app-shell.ts       View switcher (landing ↔ app)
+│   │       ├── krivostr-landing.ts  Landing with clickable logo, Nostr link, Paul Revere quote
+│   │       ├── krivostr-signer-picker.ts  Modal for NIP-07 extensions
+│   │       └── ...                Compose, feed, relay status
+│   └── src/__tests__/             Vitest unit + browser projects
+├── scripts/
+│   ├── check-coverage.sh          Enforces .hpc-threshold
+│   └── hpc-coverage.py            Coverage report from the HPC HTML index
+├── docs/                          Architecture, protocol, security, storage
+├── docker/                        Dockerfile, Dockerfile.linux, compose
+├── .github/workflows/             ci.yml, ui.yml, release.yml
+├── Makefile
+└── stack.yaml
 ```
 
 ---
@@ -546,10 +625,8 @@ make clean             # remove build artifacts
 - **Retention is a policy, not a default.** Ordinary events expire after 30 days;
   persistent kinds — DMs, follows, metadata, and relay lists — never do. The policy
   lives in `Store.hs` and `cache.ts` and is applied identically on both sides.
-- **Ingest is idempotent and verified.** Events are inserted with `INSERT OR IGNORE`
-  on the event id, so re-streaming the same relay changes nothing — and every insert
-  first verifies the Schnorr signature, answering `Inserted` / `Duplicate` /
-  `InvalidSignature`, so forgeries never reach the store.
+- **Ingest is idempotent.** Events are inserted with `INSERT OR IGNORE` on the event id,
+  so re-streaming the same relay changes nothing.
 - **The UI re-expresses the algebra.** Fallible operations are `Result`s and effects are
   `IO`s. The `Rule`/`Predicate` combinators in `fp/algebra.ts` exist but nothing in the
   app uses them yet; only the algebra's own test imports that module.
@@ -573,7 +650,8 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
   relays without NIP-50 ignore the `search` key and return unfiltered matches.
 - **`_headers` applies to Cloudflare Pages only.** `krivostr serve` serves the same files
   without the CSP.
-- **`dm @alice` is not accepted**; pass an `npub` or hex key.
+- **`export --filter` takes positional flags**, and `dm @alice` is not accepted; pass an
+  `npub` or hex key.
 
 ---
 
