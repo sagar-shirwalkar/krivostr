@@ -117,6 +117,7 @@ The UI's `FilterSpec` presents tag filters as a `tags` record and
 | 44 | Versioned encryption | ✅ NIP-44 v2 (ChaCha20 + HMAC + HKDF) with short-ciphertext panic fix and payload-size guard |
 | 45 | Counting results | ✅ wire `COUNT`, bridge answers from SQLite, `krivostr count`, UI `count()` |
 | 46 | Remote signer | ✅ bunker over NIP-44, wired into the signer picker |
+| 47 | Wallet connect | ✅ NIP-44 requests/responses, `krivostr wallet`, UI zap payment path |
 | 49 | Private-key encryption | ✅ NIP-49 `ncryptsec` (scrypt + XChaCha20-Poly1305, bech32 `ncryptsec1...`) |
 | 50 | Search | ✅ wire `search` filter; bridge answers from FTS5, CLI `--search`, UI search box |
 | 51 | Lists | ✅ mute / pin / bookmark, `krivostr list`, UI mute filtering |

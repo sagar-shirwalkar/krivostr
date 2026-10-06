@@ -10,6 +10,9 @@
 #     that are uploaded;
 #   * SLSA build-provenance attestations over every archive and SHA256SUMS,
 #     so releases are signed and Scorecard's Signed-Releases check passes.
+#   * Keyless Sigstore (Cosign) signatures beside every archive (`.sig` plus
+#     the `.pem` signing certificate), so each file verifies on its own
+#     without trusting the checksum file first.
 #
 # The Linux binaries are built by docker/Dockerfile.linux and need glibc >= 2.34
 # (what GHC 9.10.3 links against), libgmp and zlib; the compiler support
@@ -364,6 +367,33 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: archives/*.tar.gz, archives/*.zip, archives/SHA256SUMS
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign release artifacts
+        # Keyless Sigstore signatures (Fulcio + Rekor) over every archive, so
+        # each file carries its own cryptographic signature alongside the
+        # SLSA attestation above. No GPG keys to manage or rotate. The .pem
+        # signing certificate ships too — without it, nobody could verify.
+        # `id-token: write` on this job is what makes keyless issuance work.
+        run: |
+          set -eu
+          cd archives
+          shopt -s nullglob
+          files=(./*.tar.gz ./*.zip)
+          shopt -u nullglob
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no archives found — nothing to sign"
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            cosign sign-blob --yes \
+              --output-signature "$f.sig" \
+              --output-certificate "$f.pem" \
+              "$f"
+          done
+          ls -l
 
       - name: Publish
         env:

@@ -229,6 +229,7 @@ This is a small project maintained in spare time. The timings above are
 what can be met reliably, not what would be ideal. If a report is
 time-sensitive — an actively exploited vulnerability, a live key
 compromise — say so in the report and it will be handled first.
+```
 
 ## What is in scope
 
@@ -255,6 +256,18 @@ Verify before you trust a download:
 
 ```bash
 gh attestation verify krivostr-*.tar.gz --repo sagar-shirwalkar/krivostr
+```
+
+Each archive also ships a keyless Sigstore signature (`.sig`) and its
+signing certificate (`.pem`), verifiable without GitHub:
+
+```bash
+cosign verify-blob \
+  --signature krivostr-0.6.2-linux-amd64.tar.gz.sig \
+  --certificate krivostr-0.6.2-linux-amd64.tar.gz.pem \
+  --certificate-identity-regexp 'https://github.com/sagar-shirwalkar/krivostr/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  krivostr-0.6.2-linux-amd64.tar.gz
 ```
 
 A missing or failing attestation means the file did not come from this
