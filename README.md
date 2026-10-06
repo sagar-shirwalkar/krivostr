@@ -417,7 +417,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 625 hspec examples across core and client
+make test-backend  # 629 hspec examples across core and client
 make test-ui       # 126 unit tests (jsdom) + 15 browser tests (real Chromium)
 ```
 

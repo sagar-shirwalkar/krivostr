@@ -21,6 +21,10 @@ module Krivostr.Store
   , searchAvailable
   , countMatching
   , countCap
+  , enqueueOutbox
+  , dequeueOutbox
+  , removeOutbox
+  , outboxCount
   , searchCount
   , reindexEvents
   , reindexIfStale
@@ -29,9 +33,9 @@ module Krivostr.Store
   ) where
 
 import Control.Exception (SomeException, try)
-import Control.Monad (forM_, void, when)
+import Control.Monad (forM, forM_, void, when)
 import Data.Int (Int64)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -139,6 +143,15 @@ initialise conn = do
   execute_ conn "CREATE INDEX IF NOT EXISTS idx_pubkey     ON events(pubkey)"
   execute_ conn "CREATE INDEX IF NOT EXISTS idx_created_at ON events(created_at)"
   execute_ conn "CREATE INDEX IF NOT EXISTS idx_kind       ON events(kind)"
+  -- The offline outbox: events the bridge accepted locally but has not yet
+  -- forwarded upstream. A plain table, not FTS: it is a FIFO work queue, and
+  -- rows leave it the moment a relay confirms them.
+  execute_ conn
+    "CREATE TABLE IF NOT EXISTS outbox (\
+    \  id        TEXT PRIMARY KEY,\
+    \  body      TEXT NOT NULL,\
+    \  queued_at INTEGER NOT NULL\
+    \)"
   _ <- initialiseSearch conn
   execute_ conn "PRAGMA journal_mode = WAL"
   execute_ conn "PRAGMA synchronous  = NORMAL"
@@ -372,6 +385,44 @@ queryEventsWith st sql params =
 -- personal bridge never hits it; the exact-SQL path below handles the rest.
 countCap :: Int
 countCap = 100000
+
+-- | Queue an event for upstream delivery. Idempotent: re-queueing what is
+-- already queued changes nothing, so a retry loop cannot duplicate the queue
+-- itself (relays dedupe the redeliveries by id anyway).
+enqueueOutbox :: Store -> Event -> IO ()
+enqueueOutbox st e = do
+  now <- getPOSIXTime
+  execute (stConn st)
+    "INSERT OR IGNORE INTO outbox (id, body, queued_at) VALUES (?, ?, ?)"
+    (evId e, TE.decodeUtf8 (BL.toStrict (encode e)) :: Text, floor now :: Int64)
+
+-- | The oldest queued events, up to a limit. Rows that no longer decode are
+-- dropped on sight: a poison row must not wedge the flusher forever, and the
+-- event itself is safe in the main table -- the outbox holds a copy, never
+-- the original.
+dequeueOutbox :: Store -> Int -> IO [Event]
+dequeueOutbox st lim = do
+  rows <- query (stConn st)
+    "SELECT id, body FROM outbox ORDER BY rowid ASC LIMIT ?"
+    (Only (max 1 lim)) :: IO [(Text, Text)]
+  fmap catMaybes . forM rows $ \(eid, body) ->
+    case decode (BL.fromStrict (TE.encodeUtf8 body)) of
+      Just e  -> pure (Just e)
+      Nothing -> do
+        emit (stLogger st) Warn ("store.outbox: dropping undecodable row " <> eid)
+        execute (stConn st) "DELETE FROM outbox WHERE id = ?" (Only eid)
+        pure Nothing
+
+-- | Drop a queued event, after a relay confirmed it.
+removeOutbox :: Store -> Text -> IO ()
+removeOutbox st eid =
+  execute (stConn st) "DELETE FROM outbox WHERE id = ?" (Only eid)
+
+-- | How many events are waiting for delivery.
+outboxCount :: Store -> IO Int
+outboxCount st = do
+  [Only n] <- query_ (stConn st) "SELECT COUNT(*) FROM outbox" :: IO [Only Int64]
+  pure (fromIntegral n)
 
 -- | How many stored events match a filter. The limit is ignored -- NIP-45
 -- counts everything the filter matches, not the page size.

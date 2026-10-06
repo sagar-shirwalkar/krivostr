@@ -130,6 +130,14 @@ and publishes upstream; other clients hide cited targets by the same
 authorship rule. Mute lists (kind 10000) are retention-exempt user state;
 the UI filters on its own list locally, so muting needs no relay support.
 
+**Publishing off-grid.** The browser always gets an accepting OK for a valid
+event — the bridge took it — while upstream forwarding settles separately.
+`Pool.broadcastEvent` waits for the first accepting OK (a fast refusal never
+masks a slower accept); anything unconfirmed waits in the SQLite `outbox`,
+and each 30s relay pass flushes it oldest-first, removing rows relays
+confirm. The queue survives restarts, redeliveries dedupe by id upstream,
+and refusals are final rather than retried.
+
 **Opening and zapping.** A clicked `nostr:` mention resolves to an event
 reader (one-shot fetch by id, newest version by address) or an author view
 (feed swap), never a page load. A zap signs a kind 9734 and sends it to the
