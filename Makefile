@@ -4,7 +4,7 @@
 
 VERSION := $(shell sed -n 's/^version:[[:space:]]*//p' client/package.yaml | head -1)
 # A Cabal version carries a fourth component that a release tag has no use for:
-# 0.5.5.0 is packaged, v0.5.5 is the tag.
+# 0.6.2.0 is packaged, v0.6.2 is the tag.
 RELEASE_VERSION := $(word 1,$(subst ., ,$(VERSION))).$(word 2,$(subst ., ,$(VERSION))).$(word 3,$(subst ., ,$(VERSION)))
 
 all: build

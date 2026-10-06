@@ -34,10 +34,10 @@ reachable from the command line. Relays forget; your store does not. The name is
 portmanteau of **Nostr** and **Krivine**, the call-by-name abstract machine that evaluates
 lambda terms through a stack of closures.
 
-- **One binary, twenty subcommands** — `serve`, `feed`, `search`, `dm`, `reply`,
+- **One binary, twenty-one subcommands** — `serve`, `feed`, `search`, `dm`, `reply`,
   `react`, `repost`, `verify`, `publish`, `delete`, `resolve`, `comment`, `list`,
-  `count`, `wallet`, `export`, `watch`, `api`, `reindex`, `keygen`. SQLite and FTS5
-  are linked in; no runtime to install.
+  `count`, `wallet`, `relay`, `export`, `watch`, `api`, `reindex`, `keygen`. SQLite
+  and FTS5 are linked in; no runtime to install.
 - **A store that outlives the browser** — events in SQLite with a 30-day retention
   window, indexed on `pubkey`, `created_at`, and `kind`, plus an FTS5 index for search.
 - **A relay-shaped WebSocket bridge** — the browser speaks ordinary Nostr to `krivostr
@@ -79,7 +79,7 @@ account. Extract and run; the archive mirrors the repo layout (`ui/dist`), so
 `serve` finds the UI with zero flags:
 
 ```bash
-mkdir krivostr && tar -xzf krivostr-0.5.5-linux-amd64.tar.gz -C krivostr
+mkdir krivostr && tar -xzf krivostr-0.6.2-linux-amd64.tar.gz -C krivostr
 cd krivostr
 ./krivostr serve
 ```
@@ -223,6 +223,7 @@ Global flags come before the subcommand:
 | `list` | Show or edit a NIP-51 list: `mute`, `pin`, `bookmark` |
 | `count` | Count stored events matching a filter (NIP-45) |
 | `wallet` | Talk to a lightning wallet: `balance`, `info`, `pay`, `invoice` (NIP-47) |
+| `relay` | List, add, or remove bridge upstream relays |
 | `export` | Bulk export as `nostr` (ndjson), `array`, or `csv` |
 | `watch` | Notify on new events |
 | `api` | Run the JSON HTTP API on its own port |
@@ -265,6 +266,38 @@ DMs are NIP-04 (AES-256-CBC under an ECDH shared secret). NIP-04 is deprecated i
 of NIP-44; see [Known limitations](#known-limitations). The NIP-17 stack — kind 14
 rumor, NIP-44 seal, gift wrap — is implemented and tested in Haskell and
 TypeScript, but `dm` still sends kind 4.
+
+### `relay`, upstreams, and the bridge control channel
+
+Upstream relays resolve in three layers: `--upstream` flags first, then the
+`relay_config` table, then the compiled-in defaults. Flags and the table union
+rather than override, so a flag adds a relay for one run without disturbing the
+saved set:
+
+```bash
+krivostr relay list                        # what serve will connect to
+krivostr relay add wss://my-relay.example  # remembered in SQLite
+krivostr relay remove wss://relay.damus.io # forgotten (pool drops it live if connected)
+krivostr serve                             # flags ∪ table, else defaults
+```
+
+This is the bridge's own upstream set — where *your daemon* connects — not your
+published NIP-65 read/write hints, which is what other clients read. The two
+overlap in practice and differ on purpose.
+
+The running bridge exposes the same control over HTTP on its own port
+(same origin as the UI, so no extra service and no CORS):
+
+```bash
+curl localhost:8081/relays                                          # {connected, configured}
+curl -X POST localhost:8081/relays -d '{"url":"wss://x.example"}'   # connect + remember
+curl -X DELETE localhost:8081/relays -d '{"url":"wss://x.example"}' # disconnect + forget
+```
+
+A newly connected relay immediately receives every live client subscription,
+so it joins the feed instead of sitting silent. In the UI, the relay form
+under the status dots drives this endpoint on a local bridge; on the hosted
+demo (direct relays) the same form opens session-only connections instead.
 
 ### `export`, `watch`, `api`, `reindex`, `keygen`
 
@@ -321,7 +354,7 @@ flowchart LR
         POOL["Pool<br/>relay multiplexer<br/>one drain thread per relay"]
         STORE[("Store<br/>SQLite + FTS5<br/>30-day retention")]
         BRIDGE["Bridge<br/>WebSocket + static files<br/>hourly GC thread"]
-        CLI["Cli<br/>twenty subcommands"]
+        CLI["Cli<br/>twenty-one subcommands"]
         API["Cli.Api<br/>JSON on :8090"]
     end
 
@@ -386,7 +419,7 @@ than the `Rule` algebra — see [docs/architecture.md](docs/architecture.md).)
   NIP-59 gift wrap, NIP-17 private DMs, NIP-11 relay info, NIP-65 relay hints,
   filter predicates, wire ADTs, `Writer`-based logging.
 - **`client/`** — effectful Haskell: relay pool, SQLite store (FTS5),
-  WebSocket bridge, HTTP API, CLI (20 subcommands).
+  WebSocket bridge, HTTP API, CLI (21 subcommands).
 - **`ui/`** — browser: Lit 3, hand-rolled `Maybe` / `Result` / `IO` / `Rule`, IndexedDB
   cache, signer plug-ins (NIP-07, NIP-46 modal).
 
@@ -435,7 +468,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 629 hspec examples across core and client
+make test-backend  # 631 hspec examples across core and client
 make test-ui       # 126 unit tests (jsdom) + 15 browser tests (real Chromium)
 ```
 

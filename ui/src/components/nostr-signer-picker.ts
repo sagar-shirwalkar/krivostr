@@ -16,6 +16,10 @@ export class KrivostrSignerPicker extends LitElement {
       padding: var(--s-5);
     }
     h3 { font-size: var(--step-1); margin-bottom: var(--s-4); }
+    .info {
+      color: var(--amber); font-size: var(--step-0); cursor: help;
+      margin-left: var(--s-2); vertical-align: middle;
+    }
     .row { display: flex; gap: var(--s-3); margin-bottom: var(--s-3); }
     .opt {
       flex: 1;
@@ -95,6 +99,13 @@ export class KrivostrSignerPicker extends LitElement {
   @state() private error = '';
   @state() private nip07Available = false;
   @state() private showNip07Modal = false;
+  /**
+   * Whether the user has acknowledged the local-key risk. Session-only:
+   * a fresh picker (reload, revisit) asks again, because the key it would
+   * protect is pasted anew each time too.
+   */
+  @state() private localAck = false;
+  @state() private showLocalWarning = false;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -107,6 +118,16 @@ export class KrivostrSignerPicker extends LitElement {
 
   private closeNip07Modal() {
     this.showNip07Modal = false;
+  }
+
+  private ackLocalRisk() {
+    this.localAck = true;
+    this.showLocalWarning = false;
+    this.confirm();
+  }
+
+  private cancelLocalWarning() {
+    this.showLocalWarning = false;
   }
 
   private async confirmNip46(remotePubkey: string, relay: string, secret: string | undefined) {
@@ -130,6 +151,15 @@ export class KrivostrSignerPicker extends LitElement {
     let signer: Signer | null = null;
 
     if (this.choice === 'local') {
+      // Pasting a key into a remote page decrypts it into that page's
+      // memory. Fine for a burner, wrong for a main identity — so the
+      // first continue shows the risk and stops, and only an explicit
+      // acknowledgment proceeds.
+      if (!this.localAck) {
+        if (this.nsecInput.trim() !== '') this.showLocalWarning = true;
+        else this.error = 'paste an nsec first';
+        return;
+      }
       try {
         const hex = nsecDecode(this.nsecInput.trim());
         signer = localSigner(hex);
@@ -168,7 +198,9 @@ export class KrivostrSignerPicker extends LitElement {
   override render() {
     return html`
       <div class="card">
-        <h3>Choose a signer to publish</h3>
+        <h3>Choose a signer to publish
+          <span class="info" title="For your main identity, prefer the bunker: your key never enters this page. Local nsec is for testing and burner keys.">ⓘ</span>
+        </h3>
         <div class="row">
           <button class="opt" aria-pressed=${this.choice === 'local'}
                   @click=${() => (this.choice = 'local')}>
@@ -179,6 +211,7 @@ export class KrivostrSignerPicker extends LitElement {
             extension (NIP-07)
           </button>
           <button class="opt" aria-pressed=${this.choice === 'nip46'}
+                  title="Get this URL from a secure signing app — Amber, nsec.app, or a hardware wallet interface. Your key stays on that device."
                   @click=${() => (this.choice = 'nip46')}>
             bunker (NIP-46)
           </button>
@@ -189,10 +222,32 @@ export class KrivostrSignerPicker extends LitElement {
           : ''}
         ${this.choice === 'nip46'
           ? html`<input placeholder="bunker://..." .value=${this.bunkerInput}
-                         @input=${(e: Event) => (this.bunkerInput = (e.target as HTMLInputElement).value)} />`
+                         @input=${(e: Event) => (this.bunkerInput = (e.target as HTMLInputElement).value)} />
+              <div class="hint">Paste the URL from Amber, nsec.app, or your hardware wallet's companion app — the key never leaves that device.</div>`
           : ''}
         ${this.error ? html`<div class="err">${this.error}</div>` : ''}
         <button class="go" @click=${this.confirm}>continue</button>
+
+        ${this.showLocalWarning
+          ? html`
+            <div class="modal-overlay" @click=${this.cancelLocalWarning}>
+              <div class="modal" @click=${(e: Event) => e.stopPropagation()}>
+                <h3>Pasting a key decrypts it here</h3>
+                <p style="color: var(--text-dim); margin-bottom: var(--s-4);">
+                  This page will hold your private key in memory for the
+                  session. That is fine for testing or a burner key, but on a
+                  hosted page it is the wrong place for your main identity —
+                  use the bunker option (Amber, nsec.app, hardware wallet)
+                  or run the UI locally instead.
+                </p>
+                <button class="go" @click=${this.ackLocalRisk} style="width: 100%;">
+                  I understand — use this key
+                </button>
+                <button class="go close" @click=${this.cancelLocalWarning} style="width: 100%;">cancel</button>
+              </div>
+            </div>
+          `
+          : ''}
 
         ${this.showNip07Modal
           ? html`

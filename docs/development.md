@@ -11,7 +11,7 @@ that also exists in the repo is a copy that goes stale.
 
 ```bash
 stack build --fast     # build
- stack test             # 629 examples: 551 core, 78 client
+ stack test             # 631 examples: 551 core, 80 client
 stack ghci krivostr-core   # REPL against the pure layer
 ```
 
@@ -26,8 +26,8 @@ cd ui
 pnpm install --frozen-lockfile
 pnpm dev              # Vite dev server
 pnpm typecheck        # tsc --noEmit
-pnpm test             # 290 unit tests (jsdom)
-pnpm test:browser     # 16 browser tests (real Chromium)
+pnpm test             # 292 unit tests (jsdom)
+pnpm test:browser     # 25 browser tests (real Chromium)
 pnpm coverage         # v8, thresholds at 80
 ```
 
@@ -53,7 +53,7 @@ Running `pnpm dev` needs `VITE_BRIDGE_URL` pointing at a running bridge, or
 | `make test` | `test-backend` + `test-ui` (unit **and** browser). |
 | `make coverage` | Backend report plus the UI v8 report. |
 | `make linux-binary` | Release binary via Docker — needs Docker. |
-| `make verify-version TAG=v0.5.5` | Fails if the tag disagrees with `client/package.yaml`. |
+| `make verify-version TAG=v0.6.2` | Fails if the tag disagrees with `client/package.yaml`. |
 | `make docker` / `make docker-down` | Image build, compose teardown. |
 | `make clean` | Build trees, `dist`, `ui/dist`, coverage output. |
 
@@ -67,7 +67,7 @@ The two sides behave differently, and the difference is worth understanding.
 across the board and passes.
 
 **Backend coverage is a ratchet.** `.hpc-threshold` pins the measured total
-— currently **54%** (767 of 1420) — and `scripts/check-coverage.sh` fails
+— currently **54%** (794 of 1447) — and `scripts/check-coverage.sh` fails
 the build when coverage drops below it. The threshold is a floor, not a
 goal: when new tests raise the measured number, raise the pin in the same
 change. Never lower it to make the build green.
@@ -103,8 +103,8 @@ nothing is pushed to a registry, and there is no `CHANGELOG.md` to update.
 
 1. Bump `version` in [`client/package.yaml`](../client/package.yaml). It is the
    single source of truth: a Cabal version carries a fourth component, so
-   `0.5.5.0` in the package file is released as the tag `v0.5.5`.
-2. Check the tag before pushing it: `make verify-version TAG=v0.5.5`.
+   `0.6.2.0` in the package file is released as the tag `v0.6.2`.
+2. Check the tag before pushing it: `make verify-version TAG=v0.6.2`.
 3. Tag and push. The tag is what triggers the release.
 
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on a

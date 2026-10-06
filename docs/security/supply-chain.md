@@ -247,6 +247,19 @@ The krivostr client, bridge, and core library:
 - **The build and release pipeline.** Workflow permissions, artifact
   integrity, the SHA pinning policy.
 
+## Release provenance
+
+Every release archive ships with SLSA build provenance
+(`actions/attest-build-provenance` over each archive and `SHA256SUMS`).
+Verify before you trust a download:
+
+```bash
+gh attestation verify krivostr-*.tar.gz --repo sagar-shirwalkar/krivostr
+```
+
+A missing or failing attestation means the file did not come from this
+repository's release workflow — do not run it, report it instead.
+
 ## What is not in scope
 
 - **The Nostr protocol itself.** NIP-level issues belong in the
