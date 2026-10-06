@@ -1,5 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
 import { NostrEvent, tagValue } from '../nostr/event';
 import { threadOf } from '../nostr/thread';
 import { countReactions, isReaction, reactionOf } from '../nostr/reaction';
@@ -127,6 +128,7 @@ export class NostrFeed extends LitElement {
     }
     .actions button:hover:not(:disabled) { color: var(--text); border-color: var(--amber-dim); }
     .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .tombstone { border-top: 1px solid var(--border); }
   `;
 
   @state() events: NostrEvent[] = [];
@@ -139,6 +141,21 @@ export class NostrFeed extends LitElement {
 
   @property({ attribute: false }) signer: Signer | null = null;
 
+  /**
+   * Ids currently pruned to tombstones. Unknown ids render full: a note
+   * must be measured by the browser at least once before it can be
+   * replaced by a same-height placeholder.
+   */
+  private pruned = new Set<string>();
+
+  /** Measured row heights by event id, for exact-height tombstones. */
+  private heights = new Map<string, number>();
+
+  /** Fallback height before a row is ever measured. */
+  private static readonly ESTIMATE = 140;
+
+  private observer: IntersectionObserver | null = null;
+
   push(e: NostrEvent) {
     if (this.events.some((x) => x.id === e.id)) return;
     this.events = [e, ...this.events];
@@ -148,6 +165,64 @@ export class NostrFeed extends LitElement {
    * `push` deduplicates by id, so refilling is safe. */
   clear() {
     this.events = [];
+    this.pruned.clear();
+  }
+
+  override disconnectedCallback(): void {
+    this.observer?.disconnect();
+    this.observer = null;
+    super.disconnectedCallback();
+  }
+
+  /**
+   * After every render: measure what is on screen and (re)observe every
+   * row. Observing is idempotent per element, and disconnecting first
+   * releases rows that left, so this stays proportional to the visible
+   * set rather than the feed's full history.
+   */
+  protected override updated(): void {
+    if (typeof IntersectionObserver === 'undefined') return;
+    if (!this.observer) {
+      this.observer = new IntersectionObserver(
+        (entries) => this.onVisibility(entries),
+        // Two screens of margin: prune far, never near. Flapping at the
+        // boundary would remount components on every small scroll.
+        { rootMargin: '2000px 0px' },
+      );
+    }
+    this.observer.disconnect();
+    for (const row of this.renderRoot.querySelectorAll('.feedrow')) {
+      const id = (row as HTMLElement).dataset.eid;
+      if (!id) continue;
+      // Measure full rows only: re-measuring a tombstone would lock in
+      // the estimate over the real height. Tombstones stay observed —
+      // an unobserved tombstone could never report re-entry.
+      if (!row.querySelector('.tombstone')) {
+        this.heights.set(id, (row as HTMLElement).offsetHeight || NostrFeed.ESTIMATE);
+      }
+      this.observer.observe(row);
+    }
+  }
+
+  /**
+   * Prune rows that left the margin, restore rows that entered it. One
+   * update per batch, and only when membership actually changed — the
+   * observer fires per row, and a render per row would thrash the list
+   * the pattern exists to protect.
+   */
+  private onVisibility(entries: IntersectionObserverEntry[]): void {
+    let changed = false;
+    for (const entry of entries) {
+      const id = (entry.target as HTMLElement).dataset.eid;
+      if (!id) continue;
+      if (entry.isIntersecting) {
+        if (this.pruned.delete(id)) changed = true;
+      } else if (!this.pruned.has(id)) {
+        this.pruned.add(id);
+        changed = true;
+      }
+    }
+    if (changed) this.requestUpdate();
   }
 
   /**
@@ -374,6 +449,18 @@ export class NostrFeed extends LitElement {
     if (visible.length === 0) {
       return html`<div class="empty">// no events yet — waiting on relays</div>`;
     }
-    return html`${visible.map((e) => this.renderEvent(e))}`;
+    // Keyed by id: growing the array appends rows instead of rebuilding
+    // the list, which is what keeps thousand-note feeds scrollable.
+    // Far rows render as measured-height tombstones (see `updated`).
+    return html`${repeat(
+      visible,
+      (e) => e.id,
+      (e) =>
+        this.pruned.has(e.id)
+          ? html`<div class="feedrow" data-eid=${e.id}>
+              <div class="tombstone" style="height:${this.heights.get(e.id) ?? NostrFeed.ESTIMATE}px"></div>
+            </div>`
+          : html`<div class="feedrow" data-eid=${e.id}>${this.renderEvent(e)}</div>`,
+    )}`;
   }
 }

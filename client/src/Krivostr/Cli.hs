@@ -38,7 +38,7 @@ import Krivostr.Cli.Wallet (walletRequest)
 import Data.Char (toLower)
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Lazy.Char8 as BLC
-import Data.List (dropWhileEnd)
+import Data.List (dropWhileEnd, nub)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -153,6 +153,7 @@ data Command
   | CmdList ListOpts
   | CmdCount CountOpts
   | CmdWallet WalletOpts
+  | CmdRelay RelayOpts
   | CmdExport ExportOpts
   | CmdWatch WatchOpts
   | CmdApi ApiOpts
@@ -267,6 +268,15 @@ data WalletOpts = WalletOpts
   { woAction :: WalletAction
   }
 
+data RelayAction
+  = RList
+  | RAdd Text
+  | RRemove Text
+
+newtype RelayOpts = RelayOpts
+  { roAction :: RelayAction
+  }
+
 data ExportOpts = ExportOpts
   { exFilter :: FilterOpts
   , exFormat :: String
@@ -309,7 +319,7 @@ runCLI = do
 -- client/package.yaml because hpack does not expose the package version to the
 -- source; the release workflow reads the tag, so the two are the same string.
 version :: String
-version = "0.5.5.0"
+version = "0.6.2.0"
 
 -- | @--version@ answers without needing a subcommand, so `krivostr --version`
 -- works in a script that knows nothing about the command set.
@@ -354,6 +364,7 @@ commandP = hsubparser
  <> command "list"     (info (CmdList    <$> listP)     (progDesc "Show or edit a NIP-51 list: mute, pin, bookmark"))
  <> command "count"    (info (CmdCount   <$> countP)    (progDesc "Count stored events matching a filter (NIP-45)"))
  <> command "wallet"   (info (CmdWallet  <$> walletP)   (progDesc "Talk to a lightning wallet (NIP-47)"))
+ <> command "relay"    (info (CmdRelay   <$> relayP)    (progDesc "List, add, or remove bridge upstream relays"))
  <> command "export"  (info (CmdExport  <$> exportP)  (progDesc "Bulk export as nostr (ndjson), array or csv"))
  <> command "watch"   (info (CmdWatch   <$> watchP)   (progDesc "Notify on new events"))
  <> command "api"     (info (CmdApi     <$> apiP)     (progDesc "Run the JSON HTTP API on its own port"))
@@ -370,7 +381,7 @@ serveP = ServeOpts
         <> help "Interface to bind (env: KRIVOSTR_BRIDGE_HOST)"))
   <*> optional (strOption (long "static" <> metavar "DIR"
         <> help "Static UI directory (env: KRIVOSTR_STATIC_DIR, default ./ui/dist)"))
-  <*> (withDefaults defaultRelays <$> many (urlOption "upstream" "Upstream relay"))
+  <*> many (urlOption "upstream" "Upstream relay (repeatable; defaults come from `relay list`, then built-ins)")
 
 feedP :: Parser FeedOpts
 feedP = FeedOpts
@@ -476,6 +487,15 @@ listP = ListOpts
 
 countP :: Parser CountOpts
 countP = CountOpts <$> filterP
+
+relayP :: Parser RelayOpts
+relayP = RelayOpts <$> hsubparser
+  ( command "list"   (info (pure RList)   (progDesc "Show configured upstream relays"))
+ <> command "add"    (info (RAdd    <$> relayUrlArg) (progDesc "Remember an upstream relay"))
+ <> command "remove" (info (RRemove <$> relayUrlArg) (progDesc "Forget an upstream relay"))
+  )
+  where
+    relayUrlArg = T.pack <$> argument str (metavar "URL" <> help "wss:// relay URL")
 
 walletP :: Parser WalletOpts
 walletP = WalletOpts <$> hsubparser
@@ -682,7 +702,7 @@ dispatch (Opts g cmd) = do
   lg     <- newLogger level
   withStderrLog lg $ \lg' -> case cmd of
       CmdServe o  -> do
-                       cfg <- bridgeConfig o
+                       cfg <- bridgeConfig lg' db o
                        withStore lg' db $ \st -> runBridge lg' cfg st
       CmdFeed o   -> cmdFeed lg' db colour o
       CmdSearch o -> cmdSearch lg' db colour o
@@ -698,6 +718,7 @@ dispatch (Opts g cmd) = do
       CmdList o -> cmdList lg' db o
       CmdCount o -> cmdCount lg' db o
       CmdWallet o -> cmdWallet lg' o
+      CmdRelay o -> cmdRelay lg' db o
       CmdExport o -> cmdExport lg' db o
       CmdWatch o  -> cmdWatch lg' db colour o
       CmdApi o    -> withStore lg' db $ \st -> do
@@ -714,17 +735,26 @@ dispatch (Opts g cmd) = do
     -- --port and --static each name an environment variable in their help text,
     -- so both are read here; a container sets them once instead of passing a
     -- command line to an image whose CMD it cannot see.
-    bridgeConfig o = do
+    -- Upstream relays resolve in three layers: --upstream flags first, then
+    -- the `relay_config` table (`krivostr relay add`), then the compiled-in
+    -- defaults. Flags and table union rather than override, so a flag adds a
+    -- relay for one run without disturbing the saved set; removing a default
+    -- means adding everything else to the table, which is explicit on purpose.
+    bridgeConfig lg' db o = do
       port   <- maybe (envPort 8081 "KRIVOSTR_PORT")    pure (soPort o)
       host   <- case soHost o of
                   Just h  -> pure h
                   Nothing -> fromMaybe "127.0.0.1" <$> envText "KRIVOSTR_BRIDGE_HOST"
       static <- maybe (envPath "./ui/dist" "KRIVOSTR_STATIC_DIR") pure (soStatic o)
+      saved <- withStore lg' db getRelayConfig
+      let upstreams = case nub (soUpstream o <> saved) of
+            [] -> defaultRelays
+            xs -> xs
       pure BridgeConfig
         { bcPort = port
         , bcHost = host
         , bcStaticDir = static
-        , bcUpstreams = soUpstream o
+        , bcUpstreams = upstreams
         }
 
 resolveDb :: Global -> IO FilePath
@@ -1297,6 +1327,26 @@ cmdWallet lg o = do
     describeInfo res = case resResult res of
       Just v -> TE.decodeUtf8 (BLC.toStrict (encode v))
       Nothing -> "{}"
+
+cmdRelay :: Logger -> FilePath -> RelayOpts -> IO ()
+cmdRelay lg db o = withStore lg db $ \st -> case roAction o of
+  RList -> mapM_ TIO.putStrLn =<< getRelayConfig st
+  RAdd url -> do
+    valid <- either die pure (checkRelayUrl url)
+    addRelayConfig st valid
+    TIO.putStrLn ("remembered " <> valid)
+  RRemove url -> do
+    removeRelayConfig st url
+    TIO.putStrLn ("forgot " <> url)
+  where
+    -- Upstream relays are wss:// (or ws:// on loopback, for tests). Anything
+    -- else is a typo that would fail at connect time with a confusing error,
+    -- so it fails here with a clear one instead.
+    checkRelayUrl u
+      | "wss://" `T.isPrefixOf` u = Right u
+      | "ws://localhost" `T.isPrefixOf` u = Right u
+      | "ws://127.0.0.1" `T.isPrefixOf` u = Right u
+      | otherwise = Left ("not a relay URL: " ++ T.unpack u ++ " (try wss://…)")
 
 publicKeyFromHex :: Text -> Maybe PublicKey
 publicKeyFromHex t = do

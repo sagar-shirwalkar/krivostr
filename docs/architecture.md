@@ -130,13 +130,30 @@ and publishes upstream; other clients hide cited targets by the same
 authorship rule. Mute lists (kind 10000) are retention-exempt user state;
 the UI filters on its own list locally, so muting needs no relay support.
 
+**Relay membership.** Upstreams resolve as flags ∪ `relay_config` table,
+else compiled-in defaults. The UI form and `krivostr relay` share the
+table through the bridge's `/relays` endpoint (same origin, no extra port);
+a newly connected relay is replayed every live client subscription so it
+joins the feed immediately. Direct-relay mode (hosted demo) adds
+session-only slots instead — nothing persists there.
+
 **Publishing off-grid.** The browser always gets an accepting OK for a valid
 event — the bridge took it — while upstream forwarding settles separately.
 `Pool.broadcastEvent` waits for the first accepting OK (a fast refusal never
 masks a slower accept); anything unconfirmed waits in the SQLite `outbox`,
 and each 30s relay pass flushes it oldest-first, removing rows relays
 confirm. The queue survives restarts, redeliveries dedupe by id upstream,
-and refusals are final rather than retried.
+and refusals are final rather than retried. Failed dials never reach the
+`relay_config` table: they ride an ephemeral retry set (twelve passes,
+roughly six minutes) and are dropped with a warning, so dead URLs cannot
+accumulate on disk no matter how often they are posted.
+
+**Reading without crashing.** The feed keeps every event in memory but only
+mounts rows near the viewport: an `IntersectionObserver` with a 2000px
+margin prunes far rows to same-height tombstones (heights measured by the
+browser before pruning) and restores them on scroll-back. Lists stay keyed
+by id, so growth appends instead of rebuilding. No virtualization library —
+native observer APIs, same as everywhere else in the UI.
 
 **Opening and zapping.** A clicked `nostr:` mention resolves to an event
 reader (one-shot fetch by id, newest version by address) or an author view

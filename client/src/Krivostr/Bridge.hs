@@ -20,6 +20,8 @@ module Krivostr.Bridge
   , BridgeState(..)
   , ClientState(..)
   , handleClientMsg
+  , retryRelays
+  , maxRetries
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -27,14 +29,15 @@ import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, finally, try)
 import Control.Monad (forever, forM_, void, when)
-import Data.Aeson (Value (String), encode, eitherDecode, object, parseJSON, toJSON, withArray, (.=))
+import Data.Aeson (Value (String), encode, eitherDecode, object, parseJSON, toJSON, withArray, withObject, (.:), (.=))
 import qualified Data.ByteString.Lazy as BL
 import Data.Aeson.Types (Parser, parseMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Map.Strict as M
-import Network.HTTP.Types (hContentType, status200, status400, status404)
+import Network.HTTP.Types (hContentType, methodDelete, methodGet, methodPost, status200, status400, status404, status405)
 import Network.Wai
+import qualified Network.Wai as Wai
 import Network.Wai.Handler.Warp
   ( defaultSettings
   , runSettings
@@ -78,6 +81,11 @@ data BridgeState = BridgeState
   , bsStore   :: !Store
   , bsClients :: !(TVar (M.Map Int ClientState))
   , bsNextId  :: !(TVar Int)
+  -- | Upstreams that failed to dial and are being retried, with attempt
+  -- counts. Ephemeral by design: entries that never connect are dropped
+  -- after 'maxRetries', so a pool of retry to-dos cannot grow without
+  -- bound no matter how many dead URLs arrive.
+  , bsRetries :: !(TVar (M.Map Text Int))
   }
 
 -- | Run the bridge: HTTP static file server + /ws WebSocket endpoint.
@@ -85,8 +93,9 @@ runBridge :: Logger -> BridgeConfig -> Store -> IO ()
 runBridge lg cfg store = do
   clients <- newTVarIO M.empty
   nextId  <- newTVarIO 0
+  retries <- newTVarIO M.empty
   pool    <- newPool lg (onUpstreamEvent lg clients store)
-  let bst = BridgeState lg pool store clients nextId
+  let bst = BridgeState lg pool store clients nextId retries
 
   -- Background GC thread: evict expired events every hour.
   _ <- async $ forever $ do
@@ -96,8 +105,7 @@ runBridge lg cfg store = do
   -- Background relay thread: connect the upstream set now, then re-offer it
   -- every half minute. 'addRelay' skips relays that are already connected, so
   -- the repeat brings back any that were unreachable or have since dropped.
-  -- Each pass also flushes the outbox: queued events ride the fresh
-  -- connections, and anything still unconfirmed waits for the next pass.
+  -- Each pass also flushes the outbox and retries failed dials.
   --
   -- This runs in the background on purpose. Connecting first meant a relay on a
   -- network that blackholes packets delayed the point where the HTTP listener
@@ -105,6 +113,7 @@ runBridge lg cfg store = do
   -- serving the UI and reporting the relay as unavailable.
   _ <- async $ forever $ do
     forM_ (bcUpstreams cfg) (addRelay pool)
+    retryRelays bst
     flushOutbox bst
     threadDelay (30 * 1000000)
   emit lg Info
@@ -126,8 +135,8 @@ runBridge lg cfg store = do
       websocketsOr
         defaultConnectionOptions
         (wsApp bst')
-        (fallback cfg')
-    fallback cfg' req respond
+        (fallback bst' cfg')
+    fallback bst' cfg' req respond
       | pathInfo req == ["ws"] =
           respond (responseLBS status400 [] "expected a websocket upgrade")
       -- A browser asks for a bare "/" first, and wai-app-static answers that
@@ -140,8 +149,87 @@ runBridge lg cfg store = do
           respond $ case loaded of
             Left _    -> responseLBS status404 [] "index.html not found"
             Right html -> responseLBS status200 [(hContentType, "text/html; charset=utf-8")] html
+      -- The relay control channel: the UI relay form manages upstream relays
+      -- here (same origin, no extra port). Static files never live at /relays,
+      -- so this match costs nothing when the UI is served.
+      | pathInfo req == ["relays"] = relaysRoute bst' req >>= respond
       | otherwise =
           staticApp (defaultWebAppSettings (bcStaticDir cfg')) req respond
+
+-- | @GET@ lists connected and configured relays; @POST {"url"}@ connects
+-- and remembers; @DELETE {"url"}@ disconnects and forgets. Anything else is
+-- a 405: the method list is the contract, not a suggestion.
+relaysRoute :: BridgeState -> Wai.Request -> IO Wai.Response
+relaysRoute bst req = case requestMethod req of
+  m | m == methodGet -> do
+    connected <- poolRelays (bsPool bst)
+    configured <- getRelayConfig (bsStore bst)
+    json status200 (object ["connected" .= connected, "configured" .= configured])
+  m | m == methodPost || m == methodDelete -> do
+    body <- strictRequestBody req
+    case eitherDecode body of
+      Left e -> json status400 (object ["error" .= ("body must be {\"url\": ...}: " <> e)])
+      Right v -> case relayUrlOf v of
+        Left e    -> json status400 (object ["error" .= e])
+        Right url
+          | m == methodPost -> do
+              -- A failed dial stays ephemeral: it joins the retry set, not
+              -- the config table, so dead URLs cannot accumulate on disk.
+              -- Only a relay that actually connected is remembered.
+              addRelay (bsPool bst) url
+              connected <- poolRelays (bsPool bst)
+              if url `elem` connected
+                then do
+                  addRelayConfig (bsStore bst) url
+                  replaySubs bst url
+                  json status200 (object ["added" .= url, "connected" .= True])
+                else do
+                  atomically $ modifyTVar' (bsRetries bst) (M.insertWith (\_ old -> old) url 0)
+                  json status200 (object ["added" .= url, "connected" .= False, "retrying" .= True])
+          | otherwise -> do
+              _ <- removeRelay (bsPool bst) url
+              removeRelayConfig (bsStore bst) url
+              atomically $ modifyTVar' (bsRetries bst) (M.delete url)
+              json status200 (object ["removed" .= url])
+  _ -> json status405 (object ["error" .= ("use GET, POST, or DELETE" :: Text)])
+  where
+    json st v = pure (responseLBS st [(hContentType, "application/json")] (encode v))
+    relayUrlOf v = case parseMaybe urlParser v of
+      Just u | "wss://" `T.isPrefixOf` u -> Right u
+      Just _ -> Left ("not a relay URL (try wss://…)" :: Text)
+      Nothing -> Left ("body must be {\"url\": ...}" :: Text)
+    urlParser = withObject "relay" $ \o -> o .: "url"
+
+-- | Retries before a failed dial is dropped. Twelve passes at thirty
+-- seconds is six minutes: generous to spotty connections, bounded for
+-- memory, disk, and the relay loop's own time.
+maxRetries :: Int
+maxRetries = 12
+
+-- | Retry every failed dial once. Success replays subscriptions and clears
+-- the entry; exhaustion drops it with a warning. Either way the map only
+-- shrinks from here — entries are added solely by POST /relays, one per
+-- failed dial, and each pass removes at least the exhausted ones.
+retryRelays :: BridgeState -> IO ()
+retryRelays bst = do
+  pending <- readTVarIO (bsRetries bst)
+  forM_ (M.toList pending) $ \(url, attempts) ->
+    if attempts >= maxRetries
+      then do
+        atomically $ modifyTVar' (bsRetries bst) (M.delete url)
+        emit (bsLogger bst) Warn ("bridge: giving up on " <> url <> " after " <> T.pack (show attempts) <> " tries")
+      else do
+        addRelay (bsPool bst) url
+        connected <- poolRelays (bsPool bst)
+        if url `elem` connected
+          then do
+            atomically $ modifyTVar' (bsRetries bst) (M.delete url)
+            -- The POST asked for this relay; the retry finished the job,
+            -- so the original intent (remember it) still applies.
+            addRelayConfig (bsStore bst) url
+            replaySubs bst url
+            emit (bsLogger bst) Info ("bridge: retry connected " <> url)
+          else atomically $ modifyTVar' (bsRetries bst) (M.insert url (attempts + 1))
 
 -- | Wire a single WebSocket client. Registers it for upstream fan-out, serves
 -- its requests until the socket dies, then unregisters it and stops its writer.
@@ -293,6 +381,19 @@ dedupe = go mempty
 
 countMsg :: Text -> Int -> Value
 countMsg sid n = toJSON [toJSON ("COUNT" :: Text), toJSON sid, object ["count" .= n]]
+
+-- | Re-send every live client subscription to one newly connected relay.
+-- Without this a relay added mid-session would sit silent until something
+-- re-subscribed: the bridge knows every active filter, so it replays them.
+-- Best-effort per filter — a relay that rejects one filter still gets the
+-- rest, and the next client REQ re-sends everything anyway.
+replaySubs :: BridgeState -> Text -> IO ()
+replaySubs bst url = do
+  clients <- readTVarIO (bsClients bst)
+  forM_ (M.elems clients) $ \cs -> do
+    subs <- readTVarIO (csSubs cs)
+    forM_ (M.toList subs) $ \(sid, filters) ->
+      void (sendTo (bsPool bst) url (CReq sid filters))
 
 -- | Forward one event upstream, queueing it when no relay confirms. A
 -- refusal is final (retrying a "no" is noise); anything else -- silence,

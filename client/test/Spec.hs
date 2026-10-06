@@ -34,7 +34,7 @@ import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Key
 import Krivostr.Logging
-import Krivostr.Bridge (BridgeState (..), ClientState (..), handleClientMsg, parseClient)
+import Krivostr.Bridge (BridgeState (..), ClientState (..), handleClientMsg, maxRetries, parseClient, retryRelays)
 import Krivostr.Pool (BroadcastFailure (..), broadcastEvent, newPool)
 import qualified Data.Map.Strict as M
 import Krivostr.Nip.Nip01
@@ -108,6 +108,19 @@ main = hspec $ do
       removeOutbox st (evId a)
       outboxCount st `shouldReturn` 1
       map evContent <$> dequeueOutbox st 10 `shouldReturn` ["second"]
+      closeStore st
+
+    it "remembers, lists, and forgets relays" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      getRelayConfig st `shouldReturn` []
+      addRelayConfig st "wss://b.example"
+      addRelayConfig st "wss://a.example"
+      addRelayConfig st "wss://a.example"
+      getRelayConfig st `shouldReturn` ["wss://b.example", "wss://a.example"]
+      removeRelayConfig st "wss://b.example"
+      removeRelayConfig st "wss://never-there.example"
+      getRelayConfig st `shouldReturn` ["wss://a.example"]
       closeStore st
 
     it "refuses a forged event and stores nothing" $ do
@@ -314,7 +327,8 @@ main = hspec $ do
           pool <- newPool lg (const (pure ()))
           clients <- newTVarIO M.empty
           nextId <- newTVarIO 0
-          let bst = BridgeState lg pool st clients nextId
+          retries <- newTVarIO M.empty
+          let bst = BridgeState lg pool st clients nextId retries
           outbox <- newTQueueIO
           subs <- newTVarIO M.empty
           f bst (ClientState 0 outbox subs) outbox st
@@ -339,6 +353,25 @@ main = hspec $ do
         handleClientMsg bst cs (encodeClient (CEvent e))
         getEventById st (evId e) `shouldReturn` Nothing
         outboxCount st `shouldReturn` 0
+
+  describe "Bridge retries" $ do
+    it "counts attempts and gives up at the cap" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      pool <- newPool lg (const (pure ()))
+      clients <- newTVarIO M.empty
+      nextId <- newTVarIO 0
+      retries <- newTVarIO (M.singleton "wss://dead.example" 0)
+      let bst = BridgeState lg pool st clients nextId retries
+      -- No relay answers (empty pool): attempts climb without persisting.
+      retryRelays bst
+      readTVarIO retries `shouldReturn` M.singleton "wss://dead.example" 1
+      getRelayConfig st `shouldReturn` []
+      atomically $ writeTVar retries (M.singleton "wss://dead.example" maxRetries)
+      retryRelays bst
+      readTVarIO retries `shouldReturn` M.empty
+      getRelayConfig st `shouldReturn` []
+      closeStore st
 
   describe "Pool" $ do
     it "fails fast with an empty pool" $ do

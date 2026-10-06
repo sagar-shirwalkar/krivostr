@@ -35,11 +35,40 @@ export class NostrRelayStatus extends LitElement {
     .bad  { background: var(--coral); }
     .relay { color: var(--text-dim); font-size: var(--step--1); font-family: var(--font-mono); }
     .hint { color: var(--mute); font-size: var(--step--1); }
+    .relay button {
+      background: transparent; border: none; color: var(--mute);
+      font-family: var(--font-mono); cursor: pointer; padding: 0 0 0 var(--s-1);
+    }
+    .relay button:hover { color: var(--coral); }
+    form.relays { display: flex; gap: var(--s-2); align-items: center; }
+    form.relays input {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--text);
+      font-family: var(--font-mono); font-size: var(--step--1);
+      padding: var(--s-1) var(--s-2); outline: none; width: 220px;
+    }
+    form.relays input:focus { border-color: var(--amber-dim); }
+    form.relays button {
+      background: transparent; border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--mute);
+      font-family: var(--font-mono); font-size: var(--step--1);
+      padding: var(--s-1) var(--s-3); cursor: pointer;
+    }
+    form.relays button:hover { color: var(--text); border-color: var(--amber-dim); }
+    .err { color: var(--coral); font-size: var(--step--1); font-family: var(--font-mono); }
   `;
 
   @state() private slots: Slot[] = [];
   @state() private userHints: RelayHint[] = [];
   @state() private transport: 'bridge' | 'relay' = chooseTransport();
+  @state() private relayInput = '';
+  @state() private relayError = '';
+  /** Bridge-mode upstream list (persisted server-side). Direct mode has none. */
+  @state() private upstreams: string[] = [];
+  /** Subset currently connected, per the bridge. */
+  @state() private connectedUp: string[] = [];
+  /** Last pubkey passed to subscribeOwn, so late-added slots get it too. */
+  private lastMutePubkey: string | null = null;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -56,6 +85,7 @@ export class NostrRelayStatus extends LitElement {
       this.slots = [{ url: 'bridge', handle, state: 'connecting' }];
       handle.subscribe('global', { kinds: [1], limit: 50 });
       handle.subscribe('user-relay-list', { kinds: [10002], limit: 1 });
+      void this.refreshUpstreams();
       return;
     }
 
@@ -70,10 +100,22 @@ export class NostrRelayStatus extends LitElement {
       });
       return { url, handle, state: 'connecting' };
     });
-    this.slots.forEach((s) => {
-      s.handle.subscribe('global', { kinds: [1], limit: 50 });
-      s.handle.subscribe('user-relay-list', { kinds: [10002], limit: 1 });
-    });
+    this.slots.forEach((s) => this.baseSubs(s.handle));
+  }
+
+  /**
+   * The subscriptions every relay slot carries: the global feed, relay
+   * lists, and the viewer's mute list once known. New slots — added by the
+   * relay form mid-session — get the same set, so they join the feed rather
+   * than sitting silent. (An active search/author view is not re-applied:
+   * re-run it to include the new relay.)
+   */
+  private baseSubs(handle: RelayHandle): void {
+    handle.subscribe('global', { kinds: [1], limit: 50 });
+    handle.subscribe('user-relay-list', { kinds: [10002], limit: 1 });
+    if (this.lastMutePubkey) {
+      handle.subscribe('own-mute-list', { kinds: [10002], authors: [this.lastMutePubkey], limit: 1 });
+    }
   }
 
   /**
@@ -111,8 +153,9 @@ export class NostrRelayStatus extends LitElement {
    * the signer reveals its pubkey.
    */
   subscribeOwn(pubkey: string): void {
+    this.lastMutePubkey = pubkey;
     for (const slot of this.slots) {
-      slot.handle.subscribe('own-mute-list', { kinds: [10000], authors: [pubkey], limit: 1 });
+      slot.handle.subscribe('own-mute-list', { kinds: [10002], authors: [pubkey], limit: 1 });
     }
   }
 
@@ -151,6 +194,116 @@ export class NostrRelayStatus extends LitElement {
       slot.handle.unsubscribe('author');
       slot.handle.subscribe('global', { kinds: [1], limit: 50 });
     }
+  }
+
+  /**
+   * Acceptable relay URLs: wss anywhere, ws on loopback only (tests and
+   * local relays). Anything else is a typo that would fail at connect with
+   * a confusing error — same rule as `krivostr relay add`.
+   */
+  static validRelayUrl(url: string): boolean {
+    return (
+      url.startsWith('wss://') || url.startsWith('ws://localhost') || url.startsWith('ws://127.0.0.1')
+    );
+  }
+
+  /** Bridge upstreams, persisted server-side. Fails quiet: the form stays. */
+  private async refreshUpstreams(): Promise<void> {
+    try {
+      const res = await fetch('/relays');
+      if (!res.ok) return;
+      const doc = (await res.json()) as { configured?: unknown; connected?: unknown };
+      if (Array.isArray(doc.configured)) {
+        this.upstreams = (doc.configured as unknown[]).filter(
+          (u): u is string => typeof u === 'string',
+        );
+      }
+      if (Array.isArray(doc.connected)) {
+        this.connectedUp = (doc.connected as unknown[]).filter(
+          (u): u is string => typeof u === 'string',
+        );
+      }
+    } catch {
+      /* offline bridge or foreign host — the dots still tell the story */
+    }
+  }
+
+  /**
+   * Add a relay. Bridge transport persists through the bridge's own HTTP
+   * API (same origin, so no CORS); direct transport opens a session-only
+   * slot that dies with the page. Either way the new connection joins the
+   * feed with the base subscriptions.
+   */
+  async addRelay(url: string): Promise<void> {
+    const trimmed = url.trim();
+    this.relayError = '';
+    if (!NostrRelayStatus.validRelayUrl(trimmed)) {
+      this.relayError = 'relay URL must be wss:// (ws:// only on localhost)';
+      return;
+    }
+    if (this.transport === 'bridge') {
+      try {
+        const res = await fetch('/relays', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: trimmed }),
+        });
+        if (!res.ok) {
+          this.relayError = `bridge refused: ${res.status}`;
+          return;
+        }
+      } catch {
+        this.relayError = 'bridge unreachable';
+        return;
+      }
+      this.relayInput = '';
+      await this.refreshUpstreams();
+      return;
+    }
+    if (this.slots.some((s) => s.url === trimmed)) {
+      this.relayError = 'already connected';
+      return;
+    }
+    const handle = connect(trimmed, {
+      onEvent: (e) => {
+        if (e.kind === 10002) this.learnHints(e);
+        this.emit(e);
+      },
+      onState: (s) => this.updateState(trimmed, s),
+      onEose: (id) => this.emitEose(id),
+    });
+    this.slots = [...this.slots, { url: trimmed, handle, state: 'connecting' }];
+    this.baseSubs(handle);
+    this.relayInput = '';
+  }
+
+  /**
+   * Drop a relay. Bridge transport forgets server-side too; direct
+   * transport just closes the socket. The bridge slot itself and the last
+   * direct slot stay: disconnecting everything strands the feed with no
+   * way back except a reload.
+   */
+  async removeRelay(url: string): Promise<void> {
+    this.relayError = '';
+    if (this.transport === 'bridge') {
+      try {
+        const res = await fetch('/relays', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        if (!res.ok) this.relayError = `bridge refused: ${res.status}`;
+      } catch {
+        this.relayError = 'bridge unreachable';
+      }
+      await this.refreshUpstreams();
+      return;
+    }
+    if (url === 'bridge' || this.slots.length <= 1) return;
+    const slot = this.slots.find((s) => s.url === url);
+    if (!slot) return;
+    slot.handle.close();
+    this.slots = this.slots.filter((s) => s.url !== url);
   }
 
   private emit(e: NostrEvent) {
@@ -228,6 +381,8 @@ export class NostrRelayStatus extends LitElement {
   }
 
   override render() {
+    const removable = (url: string): boolean =>
+      this.transport === 'relay' && url !== 'bridge' && this.slots.length > 1;
     return html`
       ${this.transport === 'bridge'
         ? html`<span class="hint">transport: bridge</span>`
@@ -237,9 +392,44 @@ export class NostrRelayStatus extends LitElement {
           <span class="relay">
             <span class="dot ${this.cls(s.state)}"></span>
             ${s.url === 'bridge' ? 'local bridge' : new URL(s.url).host}
+            ${removable(s.url)
+              ? html`<button title="disconnect" @click=${() => void this.removeRelay(s.url)}>×</button>`
+              : ''}
           </span>
         `,
       )}
+      ${this.transport === 'bridge'
+        ? html`${this.upstreams.map(
+            (u) => html`
+              <span class="relay">
+                <span class="dot ${this.upstreamState(u)}"></span>
+                ${new URL(u).host}
+                <button title="disconnect and forget" @click=${() => void this.removeRelay(u)}>×</button>
+              </span>
+            `,
+          )}`
+        : ''}
+      <form class="relays" @submit=${(e: Event) => {
+        e.preventDefault();
+        void this.addRelay(this.relayInput);
+      }}>
+        <input
+          placeholder="wss://…"
+          .value=${this.relayInput}
+          @input=${(e: Event) => (this.relayInput = (e.target as HTMLInputElement).value)}
+        />
+        <button type="submit">connect</button>
+      </form>
+      ${this.relayError ? html`<span class="err">${this.relayError}</span>` : ''}
     `;
+  }
+
+  /**
+   * Dot state for a configured upstream, from the bridge's own connected
+   * list: open when dialled, bad when configured but absent. (The UI has
+   * no slot for these — the bridge owns those sockets, not the page.)
+   */
+  private upstreamState(url: string): string {
+    return this.connectedUp.includes(url) ? 'ok' : 'bad';
   }
 }

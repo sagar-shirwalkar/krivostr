@@ -9,6 +9,8 @@ module Krivostr.Pool
   , subscribe
   , BroadcastFailure(..)
   , broadcastEvent
+  , sendTo
+  , poolRelays
   ) where
 
 import Control.Concurrent.STM
@@ -167,6 +169,20 @@ broadcast p cm = do
 
 subscribe :: Pool -> Text -> [Krivostr.Filter.Filter] -> IO ()
 subscribe p sid fs = broadcast p (CReq sid fs)
+
+-- | Send one message to exactly one connected relay. False when it is not
+-- connected: callers that need it connected should 'addRelay' first rather
+-- than assume.
+sendTo :: Pool -> Text -> ClientMessage -> IO Bool
+sendTo p url cm = do
+  relays <- readTVarIO (plRelays p)
+  case M.lookup url relays of
+    Nothing -> pure False
+    Just e  -> sendClient (peRelay e) cm >> pure True
+
+-- | Currently connected relay URLs.
+poolRelays :: Pool -> IO [Text]
+poolRelays p = M.keys <$> readTVarIO (plRelays p)
 
 -- | Why a publish got no confirmation. The bridge queues on 'NoRelays' and
 -- 'Timeout' but not on 'Rejected': a relay that refuses (auth, rate limit,

@@ -39,6 +39,12 @@ code exists anywhere in the UI.
 | **Pros** | No extension, no bunker, works anywhere. |
 | **Cons** | Key in page memory; no at-rest protection of any kind. |
 
+The picker gates this option behind an explicit risk acknowledgment: the first
+continue with a key pasted shows what pasting means (decrypted into page
+memory, wrong place for a main identity — use the bunker or run the UI
+locally) and only proceeds on "I understand". The acknowledgment is
+session-only; a fresh picker asks again.
+
 ## NIP-07 (browser extension)
 
 `nip07Signer()` calls `window.nostr.getPublicKey()` and
@@ -68,9 +74,11 @@ subscribes to kind 24133 events from the remote pubkey, and speaks
 session key — not the user's key, which never leaves the bunker — so the
 bunker can authenticate the caller.
 
-The Haskell core has a matching `Krivostr.Nip.Nip46` module — bunker URI
-parsing, the method table, and request/response codecs over NIP-44 — but the
-TypeScript signer does not call it, so the two are not yet interoperable.
+The Haskell core mirrors the same codecs in `Krivostr.Nip.Nip46`, and the
+TypeScript side calls them through `ui/src/nostr/nip46.ts`, so the two stay
+interoperable by construction. In the picker, the bunker option carries a
+tooltip naming where the URL comes from (Amber, nsec.app, a hardware wallet
+interface), and the picker heading nudges main identities toward the bunker.
 
 | | |
 |---|---|

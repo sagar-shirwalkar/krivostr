@@ -25,6 +25,9 @@ module Krivostr.Store
   , dequeueOutbox
   , removeOutbox
   , outboxCount
+  , getRelayConfig
+  , addRelayConfig
+  , removeRelayConfig
   , searchCount
   , reindexEvents
   , reindexIfStale
@@ -143,6 +146,14 @@ initialise conn = do
   execute_ conn "CREATE INDEX IF NOT EXISTS idx_pubkey     ON events(pubkey)"
   execute_ conn "CREATE INDEX IF NOT EXISTS idx_created_at ON events(created_at)"
   execute_ conn "CREATE INDEX IF NOT EXISTS idx_kind       ON events(kind)"
+  -- The bridge's upstream set, managed by `krivostr relay` and the UI relay
+  -- form. Distinct from NIP-65 kind 10002: that is the *published* read/write
+  -- hint list for other clients, this is where *this* bridge connects.
+  execute_ conn
+    "CREATE TABLE IF NOT EXISTS relay_config (\
+    \  url      TEXT PRIMARY KEY,\
+    \  added_at INTEGER NOT NULL\
+    \)"
   -- The offline outbox: events the bridge accepted locally but has not yet
   -- forwarded upstream. A plain table, not FTS: it is a FIFO work queue, and
   -- rows leave it the moment a relay confirms them.
@@ -417,6 +428,31 @@ dequeueOutbox st lim = do
 removeOutbox :: Store -> Text -> IO ()
 removeOutbox st eid =
   execute (stConn st) "DELETE FROM outbox WHERE id = ?" (Only eid)
+
+-- | The configured upstream relays, oldest first. Empty means "no opinion",
+-- and callers fall back to flags, then to compiled-in defaults. Ordered by
+-- rowid, not the timestamp: two adds in the same second would otherwise tie
+-- and fall back to URL order, which is neither insertion order nor useful.
+getRelayConfig :: Store -> IO [Text]
+getRelayConfig st = do
+  rows <- query_ (stConn st) "SELECT url FROM relay_config ORDER BY rowid ASC"
+    :: IO [Only Text]
+  pure (map fromOnly rows)
+
+-- | Remember an upstream relay. Idempotent: re-adding changes nothing, and
+-- the original position is kept rather than bumped to the end.
+addRelayConfig :: Store -> Text -> IO ()
+addRelayConfig st url = do
+  now <- getPOSIXTime
+  execute (stConn st)
+    "INSERT OR IGNORE INTO relay_config (url, added_at) VALUES (?, ?)"
+    (url, floor now :: Int64)
+
+-- | Forget an upstream relay. Removing what was never there succeeds
+-- silently: the desired end state (absent) already holds.
+removeRelayConfig :: Store -> Text -> IO ()
+removeRelayConfig st url =
+  execute (stConn st) "DELETE FROM relay_config WHERE url = ?" (Only url)
 
 -- | How many events are waiting for delivery.
 outboxCount :: Store -> IO Int
