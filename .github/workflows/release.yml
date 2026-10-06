@@ -4,6 +4,8 @@
 #   * one binary per platform, built from the same stack.yaml the tests ran on;
 #   * the compiled UI inside every archive, so a download is a working client
 #     rather than a binary that needs a separate pnpm build;
+#   * the UI nested at ui/dist (mirroring the repo), because `serve` defaults
+#     to --static ./ui/dist — an extracted tarball must run with zero flags;
 #   * SHA256SUMS covering every archive, generated once from the exact files
 #     that are uploaded.
 #
@@ -117,7 +119,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ui-dist
-          path: dist/ui
+          path: dist/_uidist
 
       - name: Package
         run: |
@@ -126,9 +128,17 @@ jobs:
 
           test -x dist/krivostr \
             || { echo "::error::dist/krivostr missing or not executable"; ls -la dist; exit 1; }
-          test -d dist/ui \
-            || { echo "::error::dist/ui missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
-          
+          test -d dist/_uidist \
+            || { echo "::error::dist/_uidist missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
+
+          # Mirror the repo layout inside the archive (ui/dist, not ui/):
+          # `serve` defaults to --static ./ui/dist, so an extracted tarball
+          # works with zero flags. See "What ships, and why" at the top.
+          mkdir -p dist/ui
+          mv dist/_uidist dist/ui/dist
+          test -f dist/ui/dist/index.html \
+            || { echo "::error::dist/ui/dist/index.html missing — bad ui-dist artifact"; ls -la dist/ui/dist; exit 1; }
+
           cp LICENSE README.md dist/
           tar -C dist -czf "krivostr-${version}-linux-${{ matrix.arch }}.tar.gz" \
             krivostr ui LICENSE README.md
@@ -188,7 +198,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ui-dist
-          path: dist/ui
+          path: dist/_uidist
 
       - name: Package
         run: |
@@ -196,7 +206,14 @@ jobs:
           version="${RELEASE_TAG#v}"
 
           test -x dist/krivostr || { echo "::error::dist/krivostr missing or not executable"; ls -la dist; exit 1; }
-          test -d dist/ui || { echo "::error::dist/ui missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
+          test -d dist/_uidist || { echo "::error::dist/_uidist missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
+
+          # Mirror the repo layout inside the archive (ui/dist, not ui/):
+          # `serve` defaults to --static ./ui/dist, so an extracted tarball
+          # works with zero flags. See "What ships, and why" at the top.
+          mkdir -p dist/ui
+          mv dist/_uidist dist/ui/dist
+          test -f dist/ui/dist/index.html || { echo "::error::dist/ui/dist/index.html missing — bad ui-dist artifact"; ls -la dist/ui/dist; exit 1; }
 
           cp LICENSE README.md dist/
           tar -C dist -czf "krivostr-${version}-macos-${{ matrix.arch }}.tar.gz" \
@@ -247,7 +264,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ui-dist
-          path: dist/ui
+          path: dist/_uidist
 
       - name: Package
         run: |
@@ -255,7 +272,14 @@ jobs:
           version="${RELEASE_TAG#v}"
 
           test -f dist/krivostr.exe || { echo "::error::dist/krivostr.exe missing"; ls -la dist; exit 1; }
-          test -d dist/ui || { echo "::error::dist/ui missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
+          test -d dist/_uidist || { echo "::error::dist/_uidist missing — check the ui-dist download-artifact step"; ls -la dist; exit 1; }
+
+          # Mirror the repo layout inside the archive (ui/dist, not ui/):
+          # `serve` defaults to --static ./ui/dist, so an extracted tarball
+          # works with zero flags. See "What ships, and why" at the top.
+          mkdir -p dist/ui
+          mv dist/_uidist dist/ui/dist
+          test -f dist/ui/dist/index.html || { echo "::error::dist/ui/dist/index.html missing — bad ui-dist artifact"; ls -la dist/ui/dist; exit 1; }
 
           cp LICENSE README.md dist/
           cd dist && 7z a "../krivostr-${version}-windows-x86_64.zip" krivostr.exe ui LICENSE README.md
