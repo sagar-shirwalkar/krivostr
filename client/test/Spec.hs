@@ -34,7 +34,9 @@ import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Key
 import Krivostr.Logging
-import Krivostr.Bridge (parseClient)
+import Krivostr.Bridge (BridgeState (..), ClientState (..), handleClientMsg, parseClient)
+import Krivostr.Pool (BroadcastFailure (..), broadcastEvent, newPool)
+import qualified Data.Map.Strict as M
 import Krivostr.Nip.Nip01
 import Krivostr.Nip.Nip42
 import Krivostr.Relay (parseUrl)
@@ -89,6 +91,23 @@ main = hspec $ do
       insertEvent st e `shouldReturn` Duplicate
       n <- countEvents st
       n `shouldBe` 1
+      closeStore st
+
+    it "queues, dequeues oldest-first, and removes" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      let a = mkSignedAt sk 1000 1 "first"
+          b = mkSignedAt sk 2000 1 "second"
+      outboxCount st `shouldReturn` 0
+      enqueueOutbox st a
+      enqueueOutbox st b
+      enqueueOutbox st a
+      outboxCount st `shouldReturn` 2
+      map evContent <$> dequeueOutbox st 10 `shouldReturn` ["first", "second"]
+      removeOutbox st (evId a)
+      outboxCount st `shouldReturn` 1
+      map evContent <$> dequeueOutbox st 10 `shouldReturn` ["second"]
       closeStore st
 
     it "refuses a forged event and stores nothing" $ do
@@ -287,6 +306,47 @@ main = hspec $ do
 
     it "rejects a COUNT with no filters" $
       parsed "[\"COUNT\",\"c1\"]" `shouldBe` Nothing
+
+  describe "Bridge outbox" $ do
+    let withBridge f = do
+          lg <- newLogger Error
+          st <- openMemoryStore lg
+          pool <- newPool lg (const (pure ()))
+          clients <- newTVarIO M.empty
+          nextId <- newTVarIO 0
+          let bst = BridgeState lg pool st clients nextId
+          outbox <- newTQueueIO
+          subs <- newTVarIO M.empty
+          f bst (ClientState 0 outbox subs) outbox st
+        drainOutbox outbox = atomically $ do
+          empty <- isEmptyTQueue outbox
+          if empty then pure [] else (:) <$> readTQueue outbox <*> pure []
+
+    it "stores, queues, and accepts when no relay is connected" $ do
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "offline note"
+      withBridge $ \bst cs outbox st -> do
+        handleClientMsg bst cs (encodeClient (CEvent e))
+        getEventById st (evId e) `shouldReturn` Just e
+        outboxCount st `shouldReturn` 1
+        frames <- drainOutbox outbox
+        length frames `shouldBe` 1
+
+    it "rejects forgeries without storing or queueing" $ do
+      sk <- generatePrivateKey
+      let e = (mkSigned sk 1 "hello") { evContent = "forged" }
+      withBridge $ \bst cs outbox st -> do
+        handleClientMsg bst cs (encodeClient (CEvent e))
+        getEventById st (evId e) `shouldReturn` Nothing
+        outboxCount st `shouldReturn` 0
+
+  describe "Pool" $ do
+    it "fails fast with an empty pool" $ do
+      lg <- newLogger Error
+      pool <- newPool lg (const (pure ()))
+      sk <- generatePrivateKey
+      broadcastEvent pool (mkSigned sk 1 "nowhere to go") 1000
+        `shouldReturn` Left NoRelays
 
   describe "Key" $ do
     it "generates distinct keys" $ do

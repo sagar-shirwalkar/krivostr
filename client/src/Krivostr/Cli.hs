@@ -309,7 +309,7 @@ runCLI = do
 -- client/package.yaml because hpack does not expose the package version to the
 -- source; the release workflow reads the tag, so the two are the same string.
 version :: String
-version = "0.5.3.0"
+version = "0.5.5.0"
 
 -- | @--version@ answers without needing a subcommand, so `krivostr --version`
 -- works in a script that knows nothing about the command set.

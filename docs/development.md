@@ -11,7 +11,7 @@ that also exists in the repo is a copy that goes stale.
 
 ```bash
 stack build --fast     # build
- stack test             # 625 examples: 551 core, 74 client
+ stack test             # 629 examples: 551 core, 78 client
 stack ghci krivostr-core   # REPL against the pure layer
 ```
 
@@ -53,7 +53,7 @@ Running `pnpm dev` needs `VITE_BRIDGE_URL` pointing at a running bridge, or
 | `make test` | `test-backend` + `test-ui` (unit **and** browser). |
 | `make coverage` | Backend report plus the UI v8 report. |
 | `make linux-binary` | Release binary via Docker — needs Docker. |
-| `make verify-version TAG=v0.5.3` | Fails if the tag disagrees with `client/package.yaml`. |
+| `make verify-version TAG=v0.5.5` | Fails if the tag disagrees with `client/package.yaml`. |
 | `make docker` / `make docker-down` | Image build, compose teardown. |
 | `make clean` | Build trees, `dist`, `ui/dist`, coverage output. |
 
@@ -103,8 +103,8 @@ nothing is pushed to a registry, and there is no `CHANGELOG.md` to update.
 
 1. Bump `version` in [`client/package.yaml`](../client/package.yaml). It is the
    single source of truth: a Cabal version carries a fourth component, so
-   `0.5.3.0` in the package file is released as the tag `v0.5.3`.
-2. Check the tag before pushing it: `make verify-version TAG=v0.5.3`.
+   `0.5.5.0` in the package file is released as the tag `v0.5.5`.
+2. Check the tag before pushing it: `make verify-version TAG=v0.5.5`.
 3. Tag and push. The tag is what triggers the release.
 
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on a

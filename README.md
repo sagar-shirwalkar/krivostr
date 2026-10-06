@@ -71,6 +71,24 @@ lambda terms through a stack of closures.
 
 ## Quick start
 
+### Download and run (no build)
+
+Each [release](https://github.com/sagar-shirwalkar/krivostr/releases) ships the
+binary **and** the built UI in one tarball — no clone, no toolchain, no Cloudflare
+account. Extract and run; the archive mirrors the repo layout (`ui/dist`), so
+`serve` finds the UI with zero flags:
+
+```bash
+mkdir krivostr && tar -xzf krivostr-0.5.5-linux-amd64.tar.gz -C krivostr
+cd krivostr
+./krivostr serve
+```
+
+Open <http://localhost:8081>. The bridge serves the UI, keeps your SQLite vault
+(`.krivostr/events.db`), and works fully offline once relays have fed it.
+
+### Build from source
+
 **Prerequisites:** GHC 9.10.3 (pinned by Stack through `lts-24.61`), Stack, Node 22+,
 pnpm 9+. Docker is optional.
 
@@ -417,7 +435,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 625 hspec examples across core and client
+make test-backend  # 629 hspec examples across core and client
 make test-ui       # 126 unit tests (jsdom) + 15 browser tests (real Chromium)
 ```
 

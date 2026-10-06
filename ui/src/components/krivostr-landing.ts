@@ -26,29 +26,18 @@ export class KrivostrLanding extends LitElement {
     .nav nav a { margin-left: var(--s-5); color: var(--text-dim); }
     .nav nav a:hover { color: var(--text); border-bottom-color: var(--amber); }
     .hero { max-width: 780px; }
-    .eyebrow {
-      font-family: var(--font-mono); font-size: var(--step--1);
-      color: var(--amber); letter-spacing: 0.15em; text-transform: uppercase;
-      margin-bottom: var(--s-4); display: block;
-    }
     h1 {
       font-size: var(--step-5); line-height: 0.98;
       letter-spacing: -0.035em; font-weight: 500; margin-bottom: var(--s-5);
     }
     h1 em { font-style: normal; color: var(--amber); font-family: var(--font-mono); font-weight: 400; }
     .lede {
-      font-size: var(--step-2); color: var(--text-dim); line-height: 1.5;
-      max-width: 620px; margin-bottom: var(--s-5);
+      font-size: var(--step-2); color: var(--text); line-height: 1.5;
+      max-width: 620px; margin-bottom: var(--s-4);
     }
-    .lede .nostr-link {
-      color: var(--amber); text-decoration: underline; text-underline-offset: 2px;
-      cursor: pointer; transition: color var(--dur) var(--ease);
-    }
-    .lede .nostr-link:hover { color: var(--amber-dim); }
-    .synergy {
+    .sub {
       font-size: var(--step-1); color: var(--text-dim); line-height: 1.6;
-      max-width: 620px; margin-bottom: var(--s-7); padding-left: var(--s-4);
-      border-left: 2px solid var(--amber);
+      max-width: 620px; margin-bottom: var(--s-7);
     }
     .cta { display: flex; gap: var(--s-4); align-items: center; margin-bottom: var(--s-10); }
     .btn {
@@ -107,6 +96,13 @@ export class KrivostrLanding extends LitElement {
     .feature .num { font-family: var(--font-mono); font-size: var(--step--1); color: var(--mute); display: block; margin-bottom: var(--s-4); }
     .feature h3 { font-size: var(--step-1); margin-bottom: var(--s-3); color: var(--text); }
     .feature p { color: var(--text-dim); font-size: var(--step-0); margin: 0; }
+    .stack-callout {
+      border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: var(--s-4) var(--s-5); margin-bottom: var(--s-10);
+      font-family: var(--font-mono); font-size: var(--step--1); color: var(--mute);
+    }
+    .stack-callout p { margin: 0; }
+    .stack-callout strong { color: var(--amber); font-weight: 500; }
     footer {
       border-top: 1px solid var(--border); padding-top: var(--s-5);
       font-family: var(--font-mono); font-size: var(--step--1); color: var(--mute);
@@ -122,31 +118,18 @@ export class KrivostrLanding extends LitElement {
     return html`
       <header class="nav">
         <div class="mark" @click=${this.enter}>
-          Krivostr<span style="color:var(--mute)">/0.5.3</span>
+          Krivostr<span style="color:var(--mute)">/0.5.5</span>
         </div>
         <nav>
           <a href="https://github.com/nostr-protocol/nostr" target="_blank">protocol</a>
         </nav>
       </header>
       <section class="hero">
-        <span class="eyebrow">a pure nostr client</span>
-        <h1>
-          A closed term language<br />
-          for the open social web.<br />
-          <em>reduce(relay) → feed</em>
-        </h1>
-        <p class="lede">
-          krivostr is a <span class="nostr-link" @click=${(e: Event) => { e.stopPropagation(); window.open('https://nostr.org/', '_blank'); }}>Nostr</span> client built like a Krivine machine: a small set of
-          immutable terms, a rewriting relation, and nothing else. Events are
-          values. Filters are predicates. The world touches the edges.
-        </p>
-        <p class="synergy">
-          This pure functional approach is naturally synergistic with <span class="nostr-link" @click=${(e: Event) => { e.stopPropagation(); window.open('https://nostr.org/', '_blank'); }}>Nostr</span>'s objectives: 
-          privacy and security through strong cryptography. 
-          When your core logic is pure—no hidden state, no side effects—there's 
-          no room for silent data leaks or supply-chain attacks. 
-          What the bridge accepts is exactly what the UI sends; what you sign is 
-          exactly what relays receive. Purity is the ultimate audit trail.
+        <h1>krivostr</h1>
+        <p class="lede">The local-first Nostr engine.</p>
+        <p class="sub">
+          An offline-capable archive, a multiplexing bridge, and a headless CLI.
+          Built for researchers, bots, and people who follow way too many people.
         </p>
         <div class="cta">
           <button class="btn primary" @click=${this.enter}>Open the client</button>
@@ -163,30 +146,27 @@ export class KrivostrLanding extends LitElement {
       </div>
       <section class="features">
         <article class="feature">
-          <span class="num">01 / core</span>
-          <h3>Pure by construction</h3>
-          <p>Haskell's purity isn't academic—it's battle-tested. The same guarantees that secure 
-          high-value banking operations (zero side effects, deterministic outputs) protect your 
-          keys here. Signing is a pure function. Filtering is a pure predicate. The canonical 
-          NIP‑01 bytes are a pure projection of the event term. No I/O. No hidden state. No surprises.</p>
+          <span class="num">01 / vault</span>
+          <h3>Relays forget. Your store does not.</h3>
+          <p>Public relays drop old events and rate-limit your history. krivostr ingests your firehose into a local SQLite vault with FTS5 indexing. Search millions of cryptographically verified notes in milliseconds, read your timeline on a flight, and keep your state—follows, mutes, and DMs—forever.</p>
         </article>
         <article class="feature">
-          <span class="num">02 / algebra</span>
-          <h3>Rules, not branches</h3>
-          <p>Filters compose with <code>and</code>/<code>or</code>/<code>not</code> — no ad-hoc if/else chains. 
-          The UI re‑expresses the same pure algebra in TypeScript with hand‑rolled <code>Maybe</code>, 
-          <code>Result</code>, and <code>IO</code>. What the bridge accepts is exactly what the UI sends; 
-          what the relay receives is exactly what you signed. Purity across the stack = high security.</p>
+          <span class="num">02 / core</span>
+          <h3>Pure by construction.</h3>
+          <p>Your private keys shouldn't live in a chaotic browser runtime. The cryptographic core is pure Haskell—zero I/O, zero side effects. From BIP-340 Schnorr signatures to NIP-44 v2 encrypted payloads, every byte is deterministic and mathematically verified before it ever touches your disk.</p>
         </article>
         <article class="feature">
-          <span class="num">03 / history</span>
-          <h3>Yours to keep</h3>
-          <p>Relays forget. krivostr caches a month of public events in IndexedDB, and keeps DMs, follows, and relay lists forever — on your device.</p>
+          <span class="num">03 / bridge</span>
+          <h3>More than a client.</h3>
+          <p>Run it headless as a team caching proxy, an algorithmic trading bot, or an offline daemon. The local bridge multiplexes upstream relays, silently answers NIP-42 auth challenges, and queues your NIP-17 gift-wrapped messages when you go off-grid. Query your archive via SQL or the CLI.</p>
         </article>
       </section>
+      <div class="stack-callout">
+        <p><strong>The Stack:</strong> Pure Haskell Core • SQLite + FTS5 Vault • Warp WebSocket Bridge • Lit 3 UI • NIP-01/17/42/44/59 Compliant</p>
+      </div>
       <footer>
         <span>AGPL-3.0 · built in the open</span>
-        <span>λ (λx.x) (λx.x)</span>
+        <span>K = Y (λM. λ⟨t,π,ρ⟩. t ρ @ π ▷ M)</span>
       </footer>
     `;
   }

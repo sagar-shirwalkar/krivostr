@@ -15,7 +15,7 @@ describe('<krivostr-app>', () => {
 
   it('renders landing page initially', async () => {
     await el.updateComplete;
-    await expect.element(page.getByText('A closed term language')).toBeVisible();
+    await expect.element(page.getByText('The local-first Nostr engine.')).toBeVisible();
   });
 
   it('switches to app view on enter', async () => {

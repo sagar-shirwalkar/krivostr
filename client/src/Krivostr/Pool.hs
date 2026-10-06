@@ -7,12 +7,15 @@ module Krivostr.Pool
   , removeRelay
   , broadcast
   , subscribe
+  , BroadcastFailure(..)
+  , broadcastEvent
   ) where
 
 import Control.Concurrent.STM
 import Control.Concurrent.Async
 import Control.Exception (SomeException, try)
 import Control.Monad (forM_, forever)
+import System.Timeout (timeout)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.Text (Text)
@@ -53,14 +56,20 @@ data Pool = Pool
   -- what "auth-required" relays expect -- they issue the challenge on connect
   -- and reject everything until it is answered.
   , plKey     :: !(Maybe PrivateKey)
+  -- | Events awaiting an OK, by event id: a done flag plus the last
+  -- refusal seen. 'broadcastEvent' registers before sending (a relay can
+  -- answer faster than a slow reader loops). An accept completes the wait;
+  -- refusals only update the message, so one fast refusal cannot mask a
+  -- slower accept from another relay.
+  , plAcks    :: TVar (M.Map Text (TMVar (), TVar Text))
   }
 
 newPool :: Logger -> (Event -> IO ()) -> IO Pool
-newPool lg h = Pool <$> newTVarIO M.empty <*> pure lg <*> pure h <*> pure Nothing
+newPool lg h = Pool <$> newTVarIO M.empty <*> pure lg <*> pure h <*> pure Nothing <*> newTVarIO M.empty
 
 -- | 'newPool' with a key, so the pool can answer NIP-42 challenges.
 newPoolWithKey :: Logger -> (Event -> IO ()) -> PrivateKey -> IO Pool
-newPoolWithKey lg h k = Pool <$> newTVarIO M.empty <*> pure lg <*> pure h <*> pure (Just k)
+newPoolWithKey lg h k = Pool <$> newTVarIO M.empty <*> pure lg <*> pure h <*> pure (Just k) <*> newTVarIO M.empty
 
 -- | Connect to a relay unless it is already connected.
 --
@@ -114,7 +123,17 @@ drain p rh = forever $ do
     REvent _ ev -> plHandler p ev
     RNotice t   -> emit (plLogger p) Info  ("notice: " <> t)
     RClosed s t -> emit (plLogger p) Warn  ("closed " <> s <> ": " <> t)
-    ROk _ _ m   -> emit (plLogger p) Debug ("ok: " <> m)
+    ROk eid ok m -> do
+      emit (plLogger p) Debug ("ok: " <> m)
+      atomically $ do
+        waiters <- readTVar (plAcks p)
+        case M.lookup eid waiters of
+          Nothing -> pure ()
+          Just (done, refusal)
+            | ok -> do
+                putTMVar done ()
+                modifyTVar' (plAcks p) (M.delete eid)
+            | otherwise -> writeTVar refusal m
     REose s     -> emit (plLogger p) Debug ("eose: " <> s)
     RChallenge c -> do
       emit (plLogger p) Info ("auth challenge: " <> c)
@@ -148,3 +167,39 @@ broadcast p cm = do
 
 subscribe :: Pool -> Text -> [Krivostr.Filter.Filter] -> IO ()
 subscribe p sid fs = broadcast p (CReq sid fs)
+
+-- | Why a publish got no confirmation. The bridge queues on 'NoRelays' and
+-- 'Timeout' but not on 'Rejected': a relay that refuses (auth, rate limit,
+-- policy) will refuse again in thirty seconds, so retrying is noise.
+data BroadcastFailure
+  = NoRelays
+  | Timeout Text
+  | Rejected Text
+  deriving (Show, Eq)
+
+-- | Publish one event and wait for a relay to confirm it. Success is the
+-- first accepting OK. An empty pool fails immediately rather than hanging:
+-- nothing is listening, so waiting would only burn the timeout.
+--
+-- The waiter is registered before sending and removed on settle, so a slow
+-- reader cannot miss a fast relay and a settled waiter cannot leak. Late
+-- OKs after a settle find no entry and stay log lines.
+broadcastEvent :: Pool -> Event -> Int -> IO (Either BroadcastFailure Text)
+broadcastEvent p ev waitMicros = do
+  relays <- readTVarIO (plRelays p)
+  if M.null relays
+    then pure (Left NoRelays)
+    else do
+      done <- newEmptyTMVarIO
+      refusal <- newTVarIO ""
+      atomically $ modifyTVar' (plAcks p) (M.insert (evId ev) (done, refusal))
+      broadcast p (CEvent ev)
+      accepted <- timeout waitMicros (atomically (takeTMVar done))
+      atomically $ modifyTVar' (plAcks p) (M.delete (evId ev))
+      case accepted of
+        Just () -> pure (Right "")
+        Nothing -> do
+          lastRefusal <- readTVarIO refusal
+          pure (Left (if T.null lastRefusal
+            then Timeout "no relay confirmed in time"
+            else Rejected lastRefusal))

@@ -14,6 +14,12 @@ module Krivostr.Bridge
   ( runBridge
   , BridgeConfig(..)
   , parseClient
+  -- Test seams: the client suite drives 'handleClientMsg' directly, because
+  -- the interesting bridge behaviours (store-then-forward, outbox on empty
+  -- pool) need no socket, only a state and a queue.
+  , BridgeState(..)
+  , ClientState(..)
+  , handleClientMsg
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -90,6 +96,8 @@ runBridge lg cfg store = do
   -- Background relay thread: connect the upstream set now, then re-offer it
   -- every half minute. 'addRelay' skips relays that are already connected, so
   -- the repeat brings back any that were unreachable or have since dropped.
+  -- Each pass also flushes the outbox: queued events ride the fresh
+  -- connections, and anything still unconfirmed waits for the next pass.
   --
   -- This runs in the background on purpose. Connecting first meant a relay on a
   -- network that blackholes packets delayed the point where the HTTP listener
@@ -97,6 +105,7 @@ runBridge lg cfg store = do
   -- serving the UI and reporting the relay as unavailable.
   _ <- async $ forever $ do
     forM_ (bcUpstreams cfg) (addRelay pool)
+    flushOutbox bst
     threadDelay (30 * 1000000)
   emit lg Info
     ("bridge: " <> T.pack (show (length (bcUpstreams cfg))) <> " upstream relays")
@@ -211,7 +220,11 @@ handleClientMsg bst cs v = case parseMaybe parseClient v of
     broadcast (bsPool bst) (CReq sid filters)
 
   -- Verification lives in 'insertEvent': a stored event is a verified
-  -- event by construction, and every ingest path funnels through it.
+  -- event by construction, and every ingest path funnels through it. The
+  -- browser always gets an accepting OK for a valid event -- the bridge took
+  -- it -- while upstream forwarding settles separately: confirmed relays
+  -- get it now, and anything unconfirmed waits in the outbox for the flush
+  -- loop. Local clients see it either way.
   Just (CEvent e) -> do
     let lg = bsLogger bst
     stored <- insertEvent (bsStore bst) e
@@ -219,11 +232,12 @@ handleClientMsg bst cs v = case parseMaybe parseClient v of
       InvalidSignature -> do
         emit lg Warn ("bridge: rejected event " <> evId e <> " (invalid signature)")
         enqueue (csOutbox cs) (okMsg (evId e) False "invalid signature")
-      Duplicate -> enqueue (csOutbox cs) (okMsg (evId e) True "duplicate")
+      Duplicate -> do
+        forward bst e
+        enqueue (csOutbox cs) (okMsg (evId e) True "duplicate")
       Inserted -> do
-        broadcast (bsPool bst) (CEvent e)
-        -- Other local clients watching the same kinds should see this too.
         deliverEvent bst e
+        forward bst e
         enqueue (csOutbox cs) (okMsg (evId e) True "")
 
   Just (CClose sid) -> do
@@ -279,6 +293,44 @@ dedupe = go mempty
 
 countMsg :: Text -> Int -> Value
 countMsg sid n = toJSON [toJSON ("COUNT" :: Text), toJSON sid, object ["count" .= n]]
+
+-- | Forward one event upstream, queueing it when no relay confirms. A
+-- refusal is final (retrying a "no" is noise); anything else -- silence,
+-- timeout, an empty pool -- waits in the outbox for the flush loop.
+forward :: BridgeState -> Event -> IO ()
+forward bst e = do
+  let lg = bsLogger bst
+  outcome <- broadcastEvent (bsPool bst) e (5 * 1000000)
+  case outcome of
+    Right _ -> pure ()
+    Left (Rejected msg) ->
+      emit lg Warn ("bridge: upstream refused " <> evId e <> ": " <> msg)
+    Left failure -> do
+      emit lg Info ("bridge: queued " <> evId e <> " (" <> describe failure <> ")")
+      enqueueOutbox (bsStore bst) e
+  where
+    describe NoRelays     = "no relays connected"
+    describe (Timeout msg) = msg
+    describe (Rejected _) = "refused"
+
+-- | Deliver every queued event upstream, oldest first. Confirmed events
+-- leave the queue; anything still unconfirmed stays for the next pass. At
+-- most 'flushBatch' per pass, so a huge backlog cannot stall the relay
+-- loop that also re-offers upstreams.
+flushOutbox :: BridgeState -> IO ()
+flushOutbox bst = do
+  queued <- dequeueOutbox (bsStore bst) flushBatch
+  forM_ queued $ \e -> do
+    outcome <- broadcastEvent (bsPool bst) e (5 * 1000000)
+    case outcome of
+      Right _ -> removeOutbox (bsStore bst) (evId e)
+      Left _  -> pure ()
+  n <- outboxCount (bsStore bst)
+  when (n > 0) $
+    emit (bsLogger bst) Info ("bridge: outbox holds " <> T.pack (show n))
+
+flushBatch :: Int
+flushBatch = 50
 
 -- | Count matches across the filters of one COUNT. A single filter counts
 -- exactly in SQL; several union by id, bounded by 'countCap', because an

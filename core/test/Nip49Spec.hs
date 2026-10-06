@@ -527,4 +527,3 @@ nip49Spec = describe "NIP-49 ncryptsec" $ do
       mapM_
         (\security -> keySecurityFromByte (keySecurityByte security) `shouldBe` Right security)
         [KeyHandledInsecurely, KeyHandledSecurely, KeyHandlingUntracked]
-
