@@ -92,6 +92,11 @@ jobs:
   # faster, which matters because the GHC build is the long pole.
   linux:
     name: linux-${{ matrix.arch }}
+    # The UI is bundled into every archive, and download-artifact@v4 fails
+    # fast when the artifact does not exist yet — unlike v3, it never waits
+    # for a parallel job. A warm Stack cache lets a platform build beat the
+    # `pnpm build` here, so all platform jobs gate on `ui` first.
+    needs: [ui]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -166,6 +171,8 @@ jobs:
   # Intel macOS can build from source: stack build --copy-bins.
   macos:
     name: macos-${{ matrix.arch }}
+    # See `linux` above: ui-dist must exist before download-artifact runs.
+    needs: [ui]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -235,6 +242,8 @@ jobs:
   # ─── Windows ─────────────────────────────────────────────────────
   windows:
     name: windows-x86_64
+    # See `linux` above: ui-dist must exist before download-artifact runs.
+    needs: [ui]
     runs-on: windows-latest
     defaults:
       run:
