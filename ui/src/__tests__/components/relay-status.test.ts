@@ -33,6 +33,46 @@ describe('<krivostr-relay-status>', () => {
     el.remove();
   });
 
+  it('subscribes the global feed to every renderable kind', async () => {
+    const sent: string[] = [];
+    const sockets: Array<{ open: () => void }> = [];
+    vi.stubGlobal(
+      'WebSocket',
+      class {
+        onopen: (() => void) | null = null;
+        onclose: (() => void) | null = null;
+        onerror: ((e: unknown) => void) | null = null;
+        onmessage: ((m: { data: string }) => void) | null = null;
+        constructor(public url: string) {
+          sockets.push({
+            open: () => {
+              this.onopen?.();
+            },
+          });
+        }
+        send(data: string) {
+          sent.push(data);
+        }
+        close() {}
+      },
+    );
+    const el = document.createElement('krivostr-relay-status') as NostrRelayStatus;
+    document.body.appendChild(el);
+    await el.updateComplete;
+    for (const s of sockets) s.open();
+    const global = sent
+      .map((s) => JSON.parse(s) as unknown[])
+      .find((m) => m[0] === 'REQ' && m[1] === 'global');
+    expect(global).toBeDefined();
+    const filter = (global as unknown[])[2] as { kinds: number[]; limit: number };
+    // Every kind the feed renders must be echoed back, or social events
+    // (reactions, reposts, comments, zaps, articles) never arrive.
+    for (const kind of [1, 5, 6, 7, 16, 1111, 9735, 30023]) {
+      expect(filter.kinds).toContain(kind);
+    }
+    el.remove();
+  });
+
   it('renders the relay form', async () => {
     const el = document.createElement('krivostr-relay-status') as NostrRelayStatus;
     document.body.appendChild(el);

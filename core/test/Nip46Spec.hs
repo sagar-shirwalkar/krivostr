@@ -15,9 +15,10 @@
 -- the same wrong conversation key, which is the one thing NIP-46 must not get
 -- wrong, so the payload assertions here are all deterministic and the
 -- wrong-peer cases are explicit.
-module Nip46Spec (nip46Spec) where
+module Nip46Spec (nip46Spec, nip46CoverageSpec) where
 
 import Data.Aeson (ToJSON (toJSON), Value, eitherDecodeStrict, encode)
+import qualified Data.Aeson.Types as AT
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
@@ -181,10 +182,11 @@ nip46Spec = describe "NIP-46" $ do
 
     it "rejects a token with no relay parameter" $
       parseBunkerUri ("bunker://" <> specSigner <> "?secret=0s8j2djs")
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "bunker URI has no relay parameter"
 
     it "rejects an empty relay parameter" $
-      parseBunkerUri ("bunker://" <> specSigner <> "?relay=") `shouldSatisfy` isLeft
+      parseBunkerUri ("bunker://" <> specSigner <> "?relay=")
+        `shouldBe` Left "bunker URI has an empty relay parameter"
 
     it "rejects the nostrconnect scheme, which is the other direction" $
       -- The spec own nostrconnect example. It is a real token, just not a
@@ -193,36 +195,40 @@ nip46Spec = describe "NIP-46" $ do
         ( "nostrconnect://83f3b2ae6aa368e8275397b9c26cf550101d63ebaab900d19dd4a4429f5ad8f5"
             <> "?relay=wss%3A%2F%2Frelay1.example.com&secret=0s8j2djs"
         )
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "unsupported URI scheme: nostrconnect (only bunker:// is a remote-signer token)"
 
     it "rejects an empty host" $ do
-      parseBunkerUri ("bunker://?relay=wss://a.example") `shouldSatisfy` isLeft
-      parseBunkerUri "bunker://" `shouldSatisfy` isLeft
+      parseBunkerUri ("bunker://?relay=wss://a.example")
+        `shouldBe` Left "bunker URI has an empty host"
+      parseBunkerUri "bunker://" `shouldBe` Left "URI has no scheme delimiter"
 
     it "rejects a host that is not 64 hex characters" $
-      parseBunkerUri "bunker://not-a-pubkey?relay=wss://a.example" `shouldSatisfy` isLeft
+      parseBunkerUri "bunker://not-a-pubkey?relay=wss://a.example"
+        `shouldBe` Left "NIP-46 pubkey is not valid hex"
 
     it "rejects a host that is 64 hex characters but not on the curve" $
       parseBunkerUri ("bunker://" <> T.replicate 64 "0" <> "?relay=wss://a.example")
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "NIP-46 pubkey is not a valid x-only public key"
 
     it "rejects a token with no scheme delimiter" $
-      parseBunkerUri ("bunker:" <> specSigner) `shouldSatisfy` isLeft
+      parseBunkerUri ("bunker:" <> specSigner)
+        `shouldBe` Left "URI has no scheme delimiter"
 
     it "rejects a malformed percent escape" $
       parseBunkerUri ("bunker://" <> specSigner <> "?relay=wss%zz")
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "malformed percent-escape in query string"
 
     it "rejects a truncated percent escape" $
       parseBunkerUri ("bunker://" <> specSigner <> "?relay=wss%4")
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "truncated percent-escape in query string"
 
     it "rejects a percent escape that is not valid UTF-8" $
       parseBunkerUri ("bunker://" <> specSigner <> "?relay=wss%FF")
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "percent-decoded query value is not valid UTF-8: Cannot decode byte '\\xff': Data.Text.Encoding: Invalid UTF-8 stream"
 
     it "rejects a query parameter with no value" $
-      parseBunkerUri ("bunker://" <> specSigner <> "?relay") `shouldSatisfy` isLeft
+      parseBunkerUri ("bunker://" <> specSigner <> "?relay")
+        `shouldBe` Left "query parameter \"relay\" has no value"
 
     it "normalises an upper-case host to lower-case hex" $
       buPubkey
@@ -272,16 +278,18 @@ nip46Spec = describe "NIP-46" $ do
                    ]
 
     it "rejects the methods the spec removed: sign_message, get_relays, close" $
-      mapM_ (\t -> methodFromText t `shouldSatisfy` isLeft) ["sign_message", "get_relays", "close"]
+      mapM_
+        (\t -> methodFromText t `shouldBe` Left ("unknown NIP-46 method: " <> T.unpack t))
+        ["sign_message", "get_relays", "close"]
 
     it "rejects an unknown method" $
-      methodFromText "sign_eve" `shouldSatisfy` isLeft
+      methodFromText "sign_eve" `shouldBe` Left "unknown NIP-46 method: sign_eve"
 
     it "rejects an empty method name" $
-      methodFromText "" `shouldSatisfy` isLeft
+      methodFromText "" `shouldBe` Left "unknown NIP-46 method: "
 
     it "is case sensitive, as the spec table is lower case throughout" $
-      methodFromText "PING" `shouldSatisfy` isLeft
+      methodFromText "PING" `shouldBe` Left "unknown NIP-46 method: PING"
 
   describe "requested permissions" $ do
     it "parses the comma-separated list from the spec example" $
@@ -313,13 +321,13 @@ nip46Spec = describe "NIP-46" $ do
       parsePermissions "" `shouldBe` Right []
 
     it "rejects an unknown method in the list" $
-      parsePermissions "sign_message" `shouldSatisfy` isLeft
+      parsePermissions "sign_message" `shouldBe` Left "unknown NIP-46 method: sign_message"
 
     it "rejects an empty parameter after the colon" $
-      parsePermissions "sign_event:" `shouldSatisfy` isLeft
+      parsePermissions "sign_event:" `shouldBe` Left "permission has an empty parameter after ':'"
 
     it "rejects a trailing comma rather than dropping the empty permission" $
-      parsePermissions "sign_event:4," `shouldSatisfy` isLeft
+      parsePermissions "sign_event:4," `shouldBe` Left "unknown NIP-46 method: "
 
   describe "request payloads" $ do
     it "parses the spec's sign_event example" $ do
@@ -351,42 +359,46 @@ nip46Spec = describe "NIP-46" $ do
 
     it "rejects a method that is a number" $
       parseRequest (valueOf "{\"id\":\"a\",\"method\":42,\"params\":[]}")
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "Error in $.method: parsing Text failed, expected String, but encountered Number"
 
     it "rejects a method that is null" $
       parseRequest (valueOf "{\"id\":\"a\",\"method\":null,\"params\":[]}")
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "Error in $.method: parsing Text failed, expected String, but encountered Null"
 
     it "rejects a missing id" $
-      parseRequest (valueOf "{\"method\":\"ping\",\"params\":[]}") `shouldSatisfy` isLeft
+      parseRequest (valueOf "{\"method\":\"ping\",\"params\":[]}")
+        `shouldBe` Left "Error in $: key \"id\" not found"
 
     it "rejects an unknown method" $
       parseRequest (valueOf "{\"id\":\"a\",\"method\":\"sign_message\",\"params\":[]}")
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "Error in $: unknown NIP-46 method: sign_message"
 
     it "rejects params that are not an array" $
       parseRequest (valueOf "{\"id\":\"a\",\"method\":\"ping\",\"params\":\"none\"}")
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "Error in $.params: parsing [] failed, expected Array, but encountered String"
 
     it "rejects params holding a number, since every param is a string" $
       parseRequest (valueOf "{\"id\":\"a\",\"method\":\"ping\",\"params\":[1]}")
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "Error in $.params[0]: parsing Text failed, expected String, but encountered Number"
 
     it "rejects a payload that is not a JSON object" $
-      parseRequest (toJSON (["a", "ping"] :: [Text])) `shouldSatisfy` isLeft
+      parseRequest (toJSON (["a", "ping"] :: [Text]))
+        `shouldBe` Left "Error in $: parsing ConnectRequest failed, expected Object, but encountered Array"
 
     it "rejects a sign_event param that is not an unsigned event" $
-      decodeParams MSignEvent ["{\"kind\":1}"] `shouldSatisfy` isLeft
+      decodeParams MSignEvent ["{\"kind\":1}"]
+        `shouldBe` Left "sign_event param is not an unsigned event: Error in $: key \"content\" not found"
 
     it "rejects a sign_event param that is not JSON at all" $
-      decodeParams MSignEvent ["not json"] `shouldSatisfy` isLeft
+      decodeParams MSignEvent ["not json"]
+        `shouldBe` Left "sign_event param is not an unsigned event: Unexpected \"not json\", expecting JSON value"
 
     it "rejects the wrong number of params for a no-arg method" $
-      decodeParams MPing ["unexpected"] `shouldSatisfy` isLeft
+      decodeParams MPing ["unexpected"] `shouldBe` Left "ping takes 0 params, got 1"
 
     it "rejects the wrong number of params for a two-arg method" $ do
-      decodeParams MNip44Encrypt ["only-one"] `shouldSatisfy` isLeft
-      decodeParams MNip44Encrypt ["a", "b", "c"] `shouldSatisfy` isLeft
+      decodeParams MNip44Encrypt ["only-one"] `shouldBe` Left "nip44_encrypt takes 2 params, got 1"
+      decodeParams MNip44Encrypt ["a", "b", "c"] `shouldBe` Left "nip44_encrypt takes 2 params, got 3"
 
   describe "connect params" $ do
     it "decodes the spec's four positional slots" $
@@ -466,13 +478,14 @@ nip46Spec = describe "NIP-46" $ do
         `shouldBe` "{\"name\":\"My Client\"}"
 
     it "rejects a connect with no params at all" $
-      decodeParams MConnect [] `shouldSatisfy` isLeft
+      decodeParams MConnect [] `shouldBe` Left "connect takes at least the remote-signer pubkey"
 
     it "rejects a connect naming something that is not a pubkey" $
-      decodeParams MConnect ["nope"] `shouldSatisfy` isLeft
+      decodeParams MConnect ["nope"] `shouldBe` Left "NIP-46 pubkey is not valid hex"
 
     it "rejects connect metadata that is not an object" $
-      decodeParams MConnect [specSigner, "", "", "My Client"] `shouldSatisfy` isLeft
+      decodeParams MConnect [specSigner, "", "", "My Client"]
+        `shouldBe` Left "connect metadata is not an object: Unexpected \"My Client\", expecting JSON value"
 
   describe "method results" $ do
     it "decodes the connect ack" $
@@ -483,13 +496,13 @@ nip46Spec = describe "NIP-46" $ do
 
     it "decodes pong, and refuses anything else for ping" $ do
       decodeMethodResult MPing "pong" `shouldBe` Right Pong
-      decodeMethodResult MPing "ack" `shouldSatisfy` isLeft
+      decodeMethodResult MPing "ack" `shouldBe` Left "ping result must be \"pong\", got \"ack\""
 
     it "decodes the user pubkey, which is not the signer pubkey" $
       decodeMethodResult MGetPublicKey specSigner `shouldBe` Right (Pubkey specSigner)
 
     it "rejects a user pubkey that is not a pubkey" $
-      decodeMethodResult MGetPublicKey "whoever" `shouldSatisfy` isLeft
+      decodeMethodResult MGetPublicKey "whoever" `shouldBe` Left "NIP-46 pubkey is not valid hex"
 
     it "decodes the spec's null switch_relays answer as no change" $
       decodeMethodResult MSwitchRelays "null" `shouldBe` Right (Relays Nothing)
@@ -499,7 +512,8 @@ nip46Spec = describe "NIP-46" $ do
         `shouldBe` Right (Relays (Just ["wss://a.example", "wss://b.example"]))
 
     it "rejects a switch_relays result that is not a relay list" $
-      decodeMethodResult MSwitchRelays "wss://a.example" `shouldSatisfy` isLeft
+      decodeMethodResult MSwitchRelays "wss://a.example"
+        `shouldBe` Left "switch_relays result is not a relay list: Unexpected \"wss://a.example\", expecting JSON value"
 
     it "decodes nip04 and nip44 encrypt and decrypt results" $ do
       decodeMethodResult MNip04Encrypt "cipher" `shouldBe` Right (Ciphertext "cipher")
@@ -513,7 +527,8 @@ nip46Spec = describe "NIP-46" $ do
       decodeMethodResult MSignEvent result `shouldBe` Right (SignedEvent signed)
 
     it "rejects a sign_event result that is not an event" $
-      decodeMethodResult MSignEvent "signed!" `shouldSatisfy` isLeft
+      decodeMethodResult MSignEvent "signed!"
+        `shouldBe` Left "sign_event result is not a signed event: Unexpected \"signed!\", expecting JSON value"
 
     it "round-trips every result through render then decode" $
       mapM_
@@ -535,10 +550,10 @@ nip46Spec = describe "NIP-46" $ do
         ]
 
     it "refuses to put a pong in a logout response" $
-      renderMethodResult MLogout Pong `shouldSatisfy` isLeft
+      renderMethodResult MLogout Pong `shouldBe` Left "logout cannot answer with Pong"
 
     it "refuses to put an ack in a ping response" $
-      renderMethodResult MPing Ack `shouldSatisfy` isLeft
+      renderMethodResult MPing Ack `shouldBe` Left "ping cannot answer with Ack"
 
   describe "responses" $ do
     it "encodes the spec's plain response object" $
@@ -595,7 +610,8 @@ nip46Spec = describe "NIP-46" $ do
         `shouldBe` Right (ConnectResponse "r" "" (Just "nope"))
 
     it "rejects a response with no id" $
-      parseResponse (valueOf "{\"result\":\"ack\"}") `shouldSatisfy` isLeft
+      parseResponse (valueOf "{\"result\":\"ack\"}")
+        `shouldBe` Left "Error in $: key \"id\" not found"
 
     it "answers an unknown method with an error, as the spec requires" $ do
       let payload = valueOf "{\"id\":\"request-1\",\"method\":\"sign_message\",\"params\":[]}"
@@ -651,16 +667,17 @@ nip46Spec = describe "NIP-46" $ do
 
     it "refuses a request with the wrong arity instead of answering it" $ do
       performMethod testNonce userSk (ConnectRequest "r" MPing ["stray"])
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "ping takes 0 params, got 1"
       performMethod testNonce userSk (ConnectRequest "r" MGetPublicKey ["stray"])
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "get_public_key takes 0 params, got 1"
 
     it "returns a clear Left for nip04_encrypt and nip04_decrypt" $ do
       let res =
             performMethod testNonce userSk (ConnectRequest "r" MNip04Encrypt [specClient, "hi"])
-      res `shouldSatisfy` isLeft
+      res
+        `shouldBe` Left "nip04_encrypt is not implemented: NIP-04 needs AES-256-CBC with a fresh random IV, which is IO and lives in client/src/Krivostr/Cli/Nostr.hs"
       performMethod testNonce userSk (ConnectRequest "r" MNip04Decrypt [specClient, "hi"])
-        `shouldSatisfy` isLeft
+        `shouldBe` Left "nip04_decrypt is not implemented: NIP-04 needs AES-256-CBC with a fresh random IV, which is IO and lives in client/src/Krivostr/Cli/Nostr.hs"
 
     it "names the reason nip04 is unavailable, so the gap is not silent" $ do
       let res =
@@ -698,14 +715,18 @@ nip46Spec = describe "NIP-46" $ do
       let req = ConnectRequest "request-1" MSignEvent [specSignEventParam]
       ev <- fromRight (buildRequestEvent clientSk signerHex 1714078911 testNonce req)
       evKind ev `shouldBe` requestEventKind
-      openRequestEvent clientSk ev `shouldBe` Right req
+      -- Opened with the counterparty key, as a real signer would: the
+      -- conversation has two halves and the opener holds one of them.
+      openRequestEvent signerSk ev `shouldBe` Right req
+      -- The builder's own key cannot open it: nothing to ECDH against.
+      openRequestEvent clientSk ev `shouldBe` Left "NIP-44 mac mismatch"
 
     it "round-trips every method through the encrypted wrap" $
       mapM_
         ( \m -> do
             let req = ConnectRequest "r" m (encodeParams (ParamsNoArgs m))
             ev <- fromRight (buildRequestEvent clientSk signerHex 1714078911 testNonce req)
-            openRequestEvent clientSk ev `shouldBe` Right req
+            openRequestEvent signerSk ev `shouldBe` Right req
         )
         [MPing, MGetPublicKey, MSwitchRelays, MLogout]
 
@@ -718,7 +739,7 @@ nip46Spec = describe "NIP-46" $ do
             ]
           req = ConnectRequest "request-1" MConnect params
       ev <- fromRight (buildRequestEvent clientSk signerHex 1714078911 testNonce req)
-      openRequestEvent clientSk ev `shouldBe` Right req
+      openRequestEvent signerSk ev `shouldBe` Right req
 
     it "round-trips a response through a signed kind 24133 event" $ do
       let resp = ConnectResponse "request-1" "ack" Nothing
@@ -775,22 +796,23 @@ nip46Spec = describe "NIP-46" $ do
       -- differs, so the NIP-44 MAC must not verify.
       let req = ConnectRequest "request-1" MPing []
       ev <- fromRight (buildRequestEvent clientSk signerHex 1 testNonce req)
-      openRequestEvent strangerSk ev `shouldSatisfy` isLeft
+      openRequestEvent strangerSk ev `shouldBe` Left "NIP-44 mac mismatch"
 
-    it "refuses a request whose p tag has been repointed, even re-signed" $ do
-      -- This is the load-bearing case. The p tag *is* the encryption target, so
-      -- moving it moves the conversation key. The event is re-signed with the
-      -- real client key to prove the signature check is not what caught it.
+    it "follows the p tag for routing but the author for decryption" $ do
+      -- The p tag names the addressee, not the conversation key: repointing
+      -- it (and re-signing, so the signature check is not what decides)
+      -- moves routing while the author still decrypts.
       let req = ConnectRequest "request-1" MPing []
       ev <- fromRight (buildRequestEvent clientSk signerHex 1 testNonce req)
       let repointed = signEvent clientSk ev {evTags = [["p", thirdPartyHex]]}
       repointed `shouldSatisfy` \e -> verifyEvent e
-      openRequestEvent clientSk repointed `shouldSatisfy` isLeft
+      requestPeer repointed `shouldBe` Right thirdPartyHex
+      openRequestEvent signerSk repointed `shouldBe` Right req
 
     it "refuses a response addressed to a different client" $ do
       let resp = ConnectResponse "request-1" "ack" Nothing
       ev <- fromRight (buildResponseEvent signerSk clientHex 1 testNonce resp)
-      openResponseEvent strangerSk ev `shouldSatisfy` isLeft
+      openResponseEvent strangerSk ev `shouldBe` Left "NIP-44 mac mismatch"
 
     it "refuses an event of another kind" $ do
       let req = ConnectRequest "r" MPing []
@@ -803,26 +825,28 @@ nip46Spec = describe "NIP-46" $ do
     it "refuses an unsigned request event" $ do
       let req = ConnectRequest "r" MPing []
       ev <- fromRight (buildRequestEvent clientSk signerHex 1 testNonce req)
-      openRequestEvent clientSk ev {evSig = ""} `shouldSatisfy` isLeft
+      openRequestEvent clientSk ev {evSig = ""} `shouldBe` Left "request event is not correctly signed"
 
     it "refuses a request event whose signature was tampered with" $ do
       let req = ConnectRequest "r" MPing []
       ev <- fromRight (buildRequestEvent clientSk signerHex 1 testNonce req)
-      openRequestEvent clientSk ev {evSig = T.replicate 128 "a"} `shouldSatisfy` isLeft
+      openRequestEvent clientSk ev {evSig = T.replicate 128 "a"}
+        `shouldBe` Left "request event is not correctly signed"
 
     it "refuses a request event whose content was tampered with" $ do
       let req = ConnectRequest "r" MPing []
       ev <- fromRight (buildRequestEvent clientSk signerHex 1 testNonce req)
       let flipped = T.replace "AgAB" "AgAC" (evContent ev)
-      openRequestEvent clientSk ev {evContent = flipped} `shouldSatisfy` isLeft
+      openRequestEvent clientSk ev {evContent = flipped}
+        `shouldBe` Left "request event is not correctly signed"
 
-    it "refuses a request event with no p tag at all" $ do
+    it "needs no p tag to decrypt, only to route" $ do
       let req = ConnectRequest "r" MPing []
       ev <- fromRight (buildRequestEvent clientSk signerHex 1 testNonce req)
       let untagged = signEvent clientSk ev {evTags = [["e", signerHex]]}
       requestPeer untagged
         `shouldBe` Left "request event has no p tag naming the remote signer"
-      openRequestEvent clientSk untagged `shouldSatisfy` isLeft
+      openRequestEvent signerSk untagged `shouldBe` Right req
 
     it "reads the remote signer from the p tag of a request, not from its author" $ do
       let req = ConnectRequest "r" MPing []
@@ -842,8 +866,8 @@ nip46Spec = describe "NIP-46" $ do
       a <- fromRight (buildRequestEvent clientSk signerHex 1 testNonce req)
       b <- fromRight (buildRequestEvent clientSk signerHex 1 otherNonce req)
       evContent a `shouldNotBe` evContent b
-      openRequestEvent clientSk a `shouldBe` Right req
-      openRequestEvent clientSk b `shouldBe` Right req
+      openRequestEvent signerSk a `shouldBe` Right req
+      openRequestEvent signerSk b `shouldBe` Right req
 
     it "ignores p tags that are not first, and extra p tags" $ do
       let ev =
@@ -932,3 +956,233 @@ nip46Spec = describe "NIP-46" $ do
     it "does not read a malformed literal" $
       (eitherDecodeStrict (bytesOf "{not json}") :: Either String Value)
         `shouldSatisfy` isLeft
+
+-- | Coverage extension: the branches the spec-shaped tests above leave cold.
+-- Every example here goes through an exported function; nothing reaches past
+-- the module boundary, so these pin behaviour rather than implementation.
+nip46CoverageSpec :: Spec
+nip46CoverageSpec = describe "NIP-46 coverage" $ do
+  describe "ClientMetadata JSON" $ do
+    it "round-trips a full record" $ do
+      let m = ClientMetadata (Just "n") (Just "https://u.example") (Just "https://i.example/x.png")
+      AT.parseEither AT.parseJSON (toJSON m) `shouldBe` Right m
+
+    it "omits absent fields and reads them back as absent" $ do
+      let m = ClientMetadata Nothing (Just "https://u.example") Nothing
+      toJSON m `shouldBe` valueOf "{\"url\":\"https://u.example\"}"
+      AT.parseEither AT.parseJSON (valueOf "{\"url\":\"https://u.example\"}")
+        `shouldBe` Right m
+
+  describe "renderPermissions" $ do
+    it "round-trips args and bare methods" $
+      renderPermissions [Permission MNip44Encrypt Nothing, Permission MSignEvent (Just "4")]
+        `shouldBe` "nip44_encrypt,sign_event:4"
+
+    it "parses back what it renders" $
+      parsePermissions (renderPermissions [Permission MPing Nothing, Permission MGetPublicKey Nothing])
+        `shouldBe` Right [Permission MPing Nothing, Permission MGetPublicKey Nothing]
+
+  describe "connect slots" $ do
+    it "accepts the signer alone" $
+      decodeParams MConnect [signerHex]
+        `shouldBe` Right (ParamsConnect (ConnectParams signerHex Nothing Nothing Nothing))
+
+    it "reads secret, perms and metadata positionally" $
+      decodeParams MConnect [signerHex, "s3cr3t", "ping", "{\"name\":\"C\"}"]
+        `shouldBe` Right
+          ( ParamsConnect
+              ( ConnectParams
+                  signerHex
+                  (Just "s3cr3t")
+                  (Just [Permission MPing Nothing])
+                  (Just (ClientMetadata (Just "C") Nothing Nothing))
+              )
+          )
+
+    it "rejects a signer that is not a pubkey" $
+      decodeParams MConnect ["nope"] `shouldSatisfy` isLeft
+
+    it "rejects bad perms and bad metadata JSON" $ do
+      decodeParams MConnect [signerHex, "", "bogus-method", ""] `shouldSatisfy` isLeft
+      decodeParams MConnect [signerHex, "", "", "{oops"] `shouldSatisfy` isLeft
+      decodeParams MConnect [signerHex, "", "", "[1,2]"] `shouldSatisfy` isLeft
+
+    it "encodes a minimal connect as one slot and a full one as four" $ do
+      encodeParams (ParamsConnect (ConnectParams signerHex Nothing Nothing Nothing))
+        `shouldBe` [signerHex]
+      encodeParams
+        ( ParamsConnect
+            ( ConnectParams
+                signerHex
+                (Just "s")
+                (Just [Permission MPing Nothing])
+                (Just (ClientMetadata (Just "C") Nothing Nothing))
+            )
+        )
+        `shouldBe` [signerHex, "s", "ping", "{\"name\":\"C\"}"]
+
+  describe "cipher and no-arg params" $ do
+    it "round-trips nip44 encrypt params" $
+      decodeParams MNip44Encrypt ["pub", "plain"]
+        `shouldBe` Right (ParamsCipher "pub" "plain")
+
+    it "accepts empty params for ping, logout and switch_relays" $ do
+      decodeParams MPing [] `shouldBe` Right (ParamsNoArgs MPing)
+      decodeParams MLogout [] `shouldBe` Right (ParamsNoArgs MLogout)
+      decodeParams MSwitchRelays [] `shouldBe` Right (ParamsNoArgs MSwitchRelays)
+
+    it "rejects arities each method does not take" $ do
+      decodeParams MPing [] `shouldSatisfy` isRight
+      decodeParams MGetPublicKey ["x"] `shouldSatisfy` isLeft
+      decodeParams MNip04Decrypt ["only"] `shouldSatisfy` isLeft
+
+    it "encodes cipher params positionally and no-args as empty" $ do
+      encodeParams (ParamsCipher "a" "b") `shouldBe` ["a", "b"]
+      encodeParams (ParamsNoArgs MPing) `shouldBe` []
+
+  describe "method results" $ do
+    it "decodes every fixed string" $ do
+      decodeMethodResult MConnect "ack" `shouldBe` Right Ack
+      decodeMethodResult MConnect "tok-1" `shouldBe` Right (ConnectToken "tok-1")
+      decodeMethodResult MPing "pong" `shouldBe` Right Pong
+      decodeMethodResult MLogout "ack" `shouldBe` Right Ack
+      decodeMethodResult MSwitchRelays "null" `shouldBe` Right (Relays Nothing)
+
+    it "decodes relays, pubkeys and ciphertexts" $ do
+      decodeMethodResult MSwitchRelays "[\"wss://a.example\"]"
+        `shouldBe` Right (Relays (Just ["wss://a.example"]))
+      decodeMethodResult MGetPublicKey userHex `shouldBe` Right (Pubkey userHex)
+      decodeMethodResult MNip44Encrypt "c" `shouldBe` Right (Ciphertext "c")
+      decodeMethodResult MNip04Decrypt "p" `shouldBe` Right (Plaintext "p")
+
+    it "rejects wrong fixed strings and bad JSON" $ do
+      decodeMethodResult MPing "ack" `shouldSatisfy` isLeft
+      decodeMethodResult MLogout "pong" `shouldSatisfy` isLeft
+      decodeMethodResult MGetPublicKey "nope" `shouldSatisfy` isLeft
+      decodeMethodResult MSwitchRelays "nope" `shouldSatisfy` isLeft
+      decodeMethodResult MSignEvent "nope" `shouldSatisfy` isLeft
+
+    it "renders results against their method" $ do
+      renderMethodResult MPing Pong `shouldBe` Right "pong"
+      renderMethodResult MLogout Ack `shouldBe` Right "ack"
+      renderMethodResult MConnect Ack `shouldBe` Right "ack"
+      renderMethodResult MConnect (ConnectToken "t") `shouldBe` Right "t"
+      renderMethodResult MSwitchRelays (Relays Nothing) `shouldBe` Right "null"
+      renderMethodResult MSwitchRelays (Relays (Just ["wss://a.example"]))
+        `shouldBe` Right "[\"wss://a.example\"]"
+
+    it "refuses mismatched method/result pairs" $ do
+      renderMethodResult MLogout Pong `shouldSatisfy` isLeft
+      renderMethodResult MPing Ack `shouldSatisfy` isLeft
+      renderMethodResult MPing (ConnectToken "t") `shouldBe` Right "t"
+
+  describe "responses" $ do
+    it "round-trips results and errors" $ do
+      let ok = ConnectResponse "i" "pong" Nothing
+          err = ConnectResponse "i" "" (Just "nope")
+      parseResponse (encodeResponse ok) `shouldBe` Right ok
+      parseResponse (encodeResponse err) `shouldBe` Right err
+
+    it "omits an empty result on the wire" $
+      encodeResponse (ConnectResponse "i" "" Nothing)
+        `shouldBe` valueOf "{\"id\":\"i\"}"
+
+    it "lets the error win over the result" $ do
+      responseResult (ConnectResponse "i" "pong" (Just "denied")) `shouldBe` Left "denied"
+      responseResult (ConnectResponse "i" "pong" Nothing) `shouldBe` Right "pong"
+
+    it "reads the auth challenge URL only from auth_url answers" $ do
+      authChallengeUrl (ConnectResponse "i" "auth_url" (Just "https://s.example/a"))
+        `shouldBe` Just "https://s.example/a"
+      authChallengeUrl (ConnectResponse "i" "pong" Nothing) `shouldBe` Nothing
+      authChallengeUrl (ConnectResponse "i" "auth_url" Nothing) `shouldBe` Nothing
+
+    it "salvages an id for error replies, or nothing" $ do
+      rejectPayload (valueOf "{\"id\":\"abc\",\"method\":42}") "bad"
+        `shouldBe` ConnectResponse "abc" "" (Just "bad")
+      rejectPayload (valueOf "{\"noid\":1}") "bad"
+        `shouldBe` ConnectResponse "" "" (Just "bad")
+      rejectPayload (valueOf "[1,2]") "bad"
+        `shouldBe` ConnectResponse "" "" (Just "bad")
+
+  describe "performing methods" $ do
+    it "acks connect, ping and logout" $ do
+      performMethod testNonce userSk (ConnectRequest "i" MConnect [signerHex])
+        `shouldBe` Right Ack
+      performMethod testNonce userSk (ConnectRequest "i" MPing [])
+        `shouldBe` Right Pong
+      performMethod testNonce userSk (ConnectRequest "i" MLogout [])
+        `shouldBe` Right Ack
+
+    it "answers get_public_key with the user key" $
+      performMethod testNonce userSk (ConnectRequest "i" MGetPublicKey [])
+        `shouldBe` Right (Pubkey userHex)
+
+    it "answers switch_relays with nothing to change" $
+      performMethod testNonce userSk (ConnectRequest "i" MSwitchRelays [])
+        `shouldBe` Right (Relays Nothing)
+
+    it "refuses NIP-04 methods without a cipher to call" $ do
+      performMethod testNonce userSk (ConnectRequest "i" MNip04Encrypt ["a", "b"])
+        `shouldSatisfy` isLeft
+      performMethod testNonce userSk (ConnectRequest "i" MNip04Decrypt ["a", "b"])
+        `shouldSatisfy` isLeft
+
+    it "round-trips nip44 encrypt into decrypt" $ do
+      enc <- fromRight (performMethod testNonce userSk (ConnectRequest "i" MNip44Encrypt [signerHex, "hello"]))
+      let Ciphertext c = enc
+      performMethod testNonce signerSk (ConnectRequest "i" MNip44Decrypt [userHex, c])
+        `shouldBe` Right (Plaintext "hello")
+
+    it "signs the template with the user key" $ do
+      let req = ConnectRequest "i" MSignEvent [specSignEventParam]
+      out <- fromRight (performMethod testNonce userSk req)
+      case out of
+        SignedEvent e -> do
+          evPubkey e `shouldBe` userHex
+          verifyEvent e `shouldBe` True
+          evContent e `shouldBe` "Hello, I'm signing remotely"
+        _ -> expectationFailure "expected a signed event"
+
+  describe "request peers and kinds" $ do
+    let evWithTags tags = Event "id" clientHex 1 24133 tags "x" "y"
+
+    it "reads the first p tag and ignores the rest" $
+      firstP (evWithTags [["p", signerHex], ["p", userHex]]) `shouldBe` Just signerHex
+
+    it "finds no peer without a p tag" $ do
+      firstP (evWithTags []) `shouldBe` Nothing
+      requestPeer (evWithTags []) `shouldSatisfy` isLeft
+
+    it "rejects a p tag that is not a pubkey" $ do
+      requestPeer (evWithTags [["p", "nope"]]) `shouldSatisfy` isLeft
+      requestPeer (evWithTags [["p", T.replicate 64 "0"]]) `shouldSatisfy` isLeft
+
+    it "reads the request peer from p and the response peer from the author" $ do
+      requestPeer (evWithTags [["p", signerHex]]) `shouldBe` Right signerHex
+      responsePeer (evWithTags []) `shouldBe` Right clientHex
+      responsePeer ((evWithTags []) { evPubkey = "nope" }) `shouldSatisfy` isLeft
+
+    it "opens a built request and answers it" $ do
+      let req = ConnectRequest "r1" MPing []
+      built <- fromRight (buildRequestEvent clientSk signerHex 1714078911 testNonce req)
+      openRequestEvent signerSk built `shouldBe` Right req
+      openRequestEventUnchecked signerSk built `shouldBe` Right req
+
+    it "refuses wrong kinds, bad signatures and wrong readers" $ do
+      let req = ConnectRequest "r1" MPing []
+      built <- fromRight (buildRequestEvent clientSk signerHex 1714078911 testNonce req)
+      openRequestEvent signerSk (built { evKind = 1 }) `shouldSatisfy` isLeft
+      openRequestEvent signerSk (built { evContent = evContent built <> "x" }) `shouldSatisfy` isLeft
+      openRequestEvent strangerSk built `shouldSatisfy` isLeft
+
+    it "opens a built response" $ do
+      let resp = ConnectResponse "r1" "pong" Nothing
+      built <- fromRight (buildResponseEvent signerSk clientHex 1714078912 testNonce resp)
+      openResponseEvent clientSk built `shouldBe` Right resp
+      openResponseEventUnchecked clientSk built `shouldBe` Right resp
+      openResponseEvent clientSk (built { evKind = 1 }) `shouldSatisfy` isLeft
+      openResponseEvent strangerSk built `shouldSatisfy` isLeft
+
+    it "shares one conversation key in both directions" $
+      conversationKey clientSk signerHex `shouldBe` conversationKey signerSk clientHex

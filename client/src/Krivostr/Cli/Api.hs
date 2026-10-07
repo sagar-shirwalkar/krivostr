@@ -13,6 +13,12 @@
 module Krivostr.Cli.Api
   ( runApi
   , ApiConfig(..)
+  -- Test seams: routes and their query plumbing, exercised against a
+  -- memory store without binding a port.
+  , route
+  , filterOf
+  , kindsOf
+  , tagParams
   ) where
 
 import Data.Aeson
@@ -177,14 +183,14 @@ tagParams qs =
 -- | Every other query parameter names a tag, so these are the ones @filterOf@
 -- consumes for itself.
 reservedKeys :: [Text]
-reservedKeys = ["limit", "since", "until", "kind", "author", "q", "any"]
+reservedKeys = ["limit", "since", "until", "kind", "author", "q", "any", "search"]
 
 -- | @?kind=1&kind=7@ or @?kind=1,7@.
 kindsOf :: Params -> Either Text (Maybe [Int])
 kindsOf qs =
-  case wordsOf qs "kind" of
+  case concatMap (T.splitOn ",") (wordsOf qs "kind") of
     [] -> Right Nothing
-    ks -> Just <$> mapM parseOne ks
+    ks -> Just <$> mapM parseOne (filter (not . T.null) ks)
   where
     parseOne :: Text -> Either Text Int
     parseOne t = case TR.decimal t of
@@ -214,8 +220,10 @@ qtext :: Params -> BS.ByteString -> Maybe Text
 qtext qs k = trimmed =<< lookup k qs
 
 -- | All values for a repeated parameter, e.g. @?author=a&author=b@.
+-- Every occurrence counts: 'lookup' would keep only the first @?kind=@ and
+-- silently drop the rest, so repeated filters matched less than asked for.
 wordsOf :: Params -> BS.ByteString -> [Text]
-wordsOf qs k = maybe [] (T.words . T.strip) (qtext qs k)
+wordsOf qs k = concatMap (T.words . T.strip) (mapMaybe trimmed [v | (k', v) <- qs, k' == k])
 
 trimmed :: BS.ByteString -> Maybe Text
 trimmed raw = case TE.decodeUtf8' raw of

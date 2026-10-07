@@ -19,7 +19,7 @@ import Nip25Spec (nip25Spec)
 import Nip11Spec (nip11Spec)
 import Nip17Spec (nip17Spec)
 import Nip42Spec (nip42Spec)
-import Nip46Spec (nip46Spec)
+import Nip46Spec (nip46CoverageSpec, nip46Spec)
 import Nip49Spec (nip49Spec)
 import Nip59Spec (nip59Spec)
 import Nip13Spec (nip13Spec)
@@ -98,6 +98,7 @@ main = hspec $ do
   nip17Spec
   nip42Spec
   nip46Spec
+  nip46CoverageSpec
   nip49Spec
   nip59Spec
   nip40Spec

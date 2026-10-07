@@ -4,6 +4,7 @@ module Nip11Spec (nip11Spec) where
 import Data.Aeson
 import Data.Text (Text)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
 import Krivostr.Nip.Nip11
 import Test.Hspec
@@ -129,3 +130,32 @@ nip11Spec = describe "NIP-11" $ do
     res `shouldSatisfy` isLeft
     let res2 = decodeRelayInfo "{\"name\":123}"
     res2 `shouldSatisfy` isLeft
+
+  it "parseRelayInfo agrees with decodeRelayInfo" $
+    parseRelayInfo fullDoc `shouldBe` decodeRelayInfo fullDoc
+
+  it "reads min_prefix when a relay sets one" $ do
+    info <- fromRight $ decodeRelayInfo "{\"limitation\":{\"min_prefix\":4}}"
+    fmap minPrefix (limitation info) `shouldBe` Just (Just 4)
+    BL.toStrict (encodeRelayInfo info)
+      `shouldSatisfy` BS.isInfixOf "\"min_prefix\":4"
+
+  it "parses a partial limitation with the rest absent" $ do
+    info <- fromRight $ decodeRelayInfo "{\"limitation\":{\"auth_required\":true}}"
+    case limitation info of
+      Just lim -> do
+        authRequired lim `shouldBe` Just True
+        maxLimit lim `shouldBe` Nothing
+        minPrefix lim `shouldBe` Nothing
+      Nothing -> expectationFailure "limitation should be present"
+
+  it "reads an empty limitation object as all-absent" $ do
+    info <- fromRight $ decodeRelayInfo "{\"limitation\":{}}"
+    fmap maxLimit (limitation info) `shouldBe` Just Nothing
+    fmap authRequired (limitation info) `shouldBe` Just Nothing
+
+  it "omits absent fields when encoding" $ do
+    info <- fromRight $ decodeRelayInfo "{\"name\":\"test\"}"
+    let bytes = BL.toStrict (encodeRelayInfo info)
+    bytes `shouldSatisfy` (not . BS.isInfixOf "supported_nips")
+    bytes `shouldSatisfy` (not . BS.isInfixOf "limitation")

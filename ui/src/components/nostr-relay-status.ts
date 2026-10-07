@@ -13,6 +13,19 @@ interface Slot {
 }
 
 /**
+ * Every kind the feed can render: notes and quotes (1), deletion receipts
+ * (5), reposts (6, 16), reactions (7), comments (1111), zap receipts
+ * (9735), and articles (30023). Subscribing to notes alone starves all of
+ * them: relays only echo what matches, so a kinds:[1] feed can never show
+ * anyone's reactions, reposts, comments, or zaps — including your own
+ * seconds after you publish.
+ */
+export const FEED_KINDS = [1, 5, 6, 7, 16, 1111, 9735, 30023];
+
+/** The shared feed subscription: every social kind, bounded as one page. */
+export const FEED_FILTER: FilterSpec = { kinds: FEED_KINDS, limit: 50 };
+
+/**
  * Owns the relay transport.
  *
  * This element is the single place in the UI that opens sockets. `app-shell`
@@ -83,7 +96,7 @@ export class NostrRelayStatus extends LitElement {
         onEose: (id) => this.emitEose(id),
       });
       this.slots = [{ url: 'bridge', handle, state: 'connecting' }];
-      handle.subscribe('global', { kinds: [1], limit: 50 });
+      handle.subscribe('global', FEED_FILTER);
       handle.subscribe('user-relay-list', { kinds: [10002], limit: 1 });
       void this.refreshUpstreams();
       return;
@@ -111,7 +124,7 @@ export class NostrRelayStatus extends LitElement {
    * re-run it to include the new relay.)
    */
   private baseSubs(handle: RelayHandle): void {
-    handle.subscribe('global', { kinds: [1], limit: 50 });
+    handle.subscribe('global', FEED_FILTER);
     handle.subscribe('user-relay-list', { kinds: [10002], limit: 1 });
     if (this.lastMutePubkey) {
       handle.subscribe('own-mute-list', { kinds: [10002], authors: [this.lastMutePubkey], limit: 1 });
@@ -176,7 +189,7 @@ export class NostrRelayStatus extends LitElement {
   clearSearch(): void {
     for (const slot of this.slots) {
       slot.handle.unsubscribe('search');
-      slot.handle.subscribe('global', { kinds: [1], limit: 50 });
+      slot.handle.subscribe('global', FEED_FILTER);
     }
   }
 
@@ -192,7 +205,7 @@ export class NostrRelayStatus extends LitElement {
   clearAuthor(): void {
     for (const slot of this.slots) {
       slot.handle.unsubscribe('author');
-      slot.handle.subscribe('global', { kinds: [1], limit: 50 });
+      slot.handle.subscribe('global', FEED_FILTER);
     }
   }
 

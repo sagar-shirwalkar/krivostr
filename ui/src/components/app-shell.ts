@@ -256,7 +256,12 @@ export class KrivostrApp extends LitElement {
     if (!status.publish(signed.value)) {
       // eslint-disable-next-line no-console
       console.error('publish failed: no relay connected');
+      return;
     }
+    // Optimistic local echo: relays only send back what matches our
+    // subscriptions, and a round trip is the slowest possible feedback.
+    // `push` deduplicates by id, so the relay echo lands silently.
+    this.mainFeed()?.push(signed.value);
   }
 
   /** The feed's reply button parks its target on the compose box. */
