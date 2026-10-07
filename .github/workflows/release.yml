@@ -10,9 +10,9 @@
 #     that are uploaded;
 #   * SLSA build-provenance attestations over every archive and SHA256SUMS,
 #     so releases are signed and Scorecard's Signed-Releases check passes.
-#   * Keyless Sigstore (Cosign) signatures beside every archive (`.sig` plus
-#     the `.pem` signing certificate), so each file verifies on its own
-#     without trusting the checksum file first.
+#   * Keyless Sigstore (Cosign) bundles beside every archive (`.bundle`
+#     packaging signature, certificate, and Rekor receipt), so each file
+#     verifies on its own without trusting the checksum file first.
 #
 # The Linux binaries are built by docker/Dockerfile.linux and need glibc >= 2.34
 # (what GHC 9.10.3 links against), libgmp and zlib; the compiler support
@@ -372,11 +372,14 @@ jobs:
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Sign release artifacts
-        # Keyless Sigstore signatures (Fulcio + Rekor) over every archive, so
-        # each file carries its own cryptographic signature alongside the
-        # SLSA attestation above. No GPG keys to manage or rotate. The .pem
-        # signing certificate ships too — without it, nobody could verify.
-        # `id-token: write` on this job is what makes keyless issuance work.
+        # Keyless Sigstore signatures (Fulcio + Rekor) over every archive.
+        # Cosign v2.2+ defaults to the new bundle format, which packages the
+        # signature, certificate, and Rekor receipt into a single .bundle
+        # file — the legacy --output-signature/--output-certificate flags
+        # are ignored under it, which is what broke this step before.
+        # Scorecard's Signed-Releases check recognizes .bundle files.
+        # The Publish step below uploads archives/*, so bundles ride along
+        # with no further changes.
         run: |
           set -eu
           cd archives
@@ -388,10 +391,7 @@ jobs:
             exit 1
           fi
           for f in "${files[@]}"; do
-            cosign sign-blob --yes \
-              --output-signature "$f.sig" \
-              --output-certificate "$f.pem" \
-              "$f"
+            cosign sign-blob --yes --bundle "$f.bundle" "$f"
           done
           ls -l
 
