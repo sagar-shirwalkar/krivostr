@@ -1,7 +1,5 @@
 # <p align="center">krivostr</p>
 
-<p align="center"><code>K = Y (λM. λ⟨t,π,ρ⟩. t ρ @ π ▷ M)</code></p>
-
 <p align="center"><strong>The local-first Nostr engine.</strong></p>
 
 <div align="center">
@@ -17,10 +15,7 @@
 
 <div align="center">
 
-<img width="2904" height="4474" alt="krivostr-ui-landing" src="https://github.com/user-attachments/assets/23460a3b-499e-4160-ae45-d0e0855dce99" />
-
-<img width="2922" height="5078" alt="krivostr-all-feed" src="https://github.com/user-attachments/assets/ae10ba5e-ce8b-4725-884f-074b0a38642f" />
-
+<img width="2900" height="3328" alt="krivostr-ui-landing" src="https://github.com/user-attachments/assets/2757af11-6abc-41bb-9e46-b9916a375b50" />
 
 </div>
 
