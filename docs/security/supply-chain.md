@@ -258,13 +258,12 @@ Verify before you trust a download:
 gh attestation verify krivostr-*.tar.gz --repo sagar-shirwalkar/krivostr
 ```
 
-Each archive also ships a keyless Sigstore signature (`.sig`) and its
-signing certificate (`.pem`), verifiable without GitHub:
+Each archive also ships a keyless Sigstore bundle (`.bundle`), verifiable
+without GitHub:
 
 ```bash
 cosign verify-blob \
-  --signature krivostr-0.6.2-linux-amd64.tar.gz.sig \
-  --certificate krivostr-0.6.2-linux-amd64.tar.gz.pem \
+  --bundle krivostr-0.6.2-linux-amd64.tar.gz.bundle \
   --certificate-identity-regexp 'https://github.com/sagar-shirwalkar/krivostr/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   krivostr-0.6.2-linux-amd64.tar.gz
