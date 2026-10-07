@@ -11,7 +11,7 @@ that also exists in the repo is a copy that goes stale.
 
 ```bash
 stack build --fast     # build
- stack test             # 631 examples: 551 core, 80 client
+ stack test             # 636 examples: 551 core, 85 client
 stack ghci krivostr-core   # REPL against the pure layer
 ```
 

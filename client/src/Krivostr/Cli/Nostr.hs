@@ -9,6 +9,7 @@ module Krivostr.Cli.Nostr
   , signUnsigned
   , publishTo
   , publishAll
+  , awaitOk
   , defaultRelays
   , fetchNip05Doc
   ) where
@@ -108,8 +109,13 @@ decodeB64 t =
     Right bs -> Right bs
 
 -- | Fill in the id and signature of an unsigned event.
+--
+-- Floors @created_at@ to whole seconds first: callers hand over 'getPOSIXTime'
+-- with its fractional part intact, and strict relays reject non-integer
+-- timestamps ("event created_at field was not an integer"). Flooring here,
+-- once, keeps every send command honest instead of trusting each call site.
 signUnsigned :: PrivateKey -> UnsignedEvent -> Event
-signUnsigned sk = signEvent sk . mkEvent
+signUnsigned sk u = signEvent sk (mkEvent u { ueCreatedAt = fromInteger (floor (ueCreatedAt u)) })
 
 -- | Publish to one relay and wait for its @OK@.
 --
@@ -124,7 +130,7 @@ publishTo lg waitMicros ev url = do
       pure (Left ("connect failed: " ++ takeWhile (/= '\n') (show e)))
     Right rh -> do
       sendClient rh (CEvent ev)
-      res <- timeout waitMicros (awaitOk rh (evId ev))
+      res <- timeout waitMicros (awaitOk (rhInbox rh) (evId ev))
       close rh
       pure $ case res of
         Nothing    -> Left "timed out waiting for OK"
@@ -133,19 +139,26 @@ publishTo lg waitMicros ev url = do
 
 -- | Read the inbox until the relay accepts or rejects this event id.
 --
+-- Takes the inbox queue rather than the handle: the logic is pure
+-- queue-draining, and a 'TQueue' is constructible in tests while a live
+-- 'RelayHandle' is not.
+--
 -- Every message here is relay-supplied text, so the failure side is Text;
 -- 'publishTo' narrows it to String for its caller.
-awaitOk :: RelayHandle -> Text -> IO (Either Text Text)
-awaitOk rh wantId = do
-  msg <- atomically $ readTQueue (rhInbox rh)
+awaitOk :: TQueue RelayMessage -> Text -> IO (Either Text Text)
+awaitOk inbox wantId = do
+  msg <- atomically $ readTQueue inbox
   case msg of
-    ROk _ ok m
-      | m == wantId || T.null m ->
+    -- Match on the event id, not the message: relays routinely answer with
+    -- a non-empty message ("duplicate: …", rate-limit notes), and comparing
+    -- the message to the wanted id hangs until timeout on every such OK.
+    ROk sid ok m
+      | sid == wantId ->
           pure $ if ok then Right ("accepted: " <> m) else Left ("rejected: " <> m)
-    ROk{}       -> awaitOk rh wantId
+      | otherwise -> awaitOk inbox wantId
     RClosed s m -> pure (Left ("relay closed " <> s <> ": " <> m))
     RNotice m   -> pure (Left ("notice: " <> m))
-    _           -> awaitOk rh wantId
+    _           -> awaitOk inbox wantId
 
 -- | Publish to several relays, keeping the first success.
 --

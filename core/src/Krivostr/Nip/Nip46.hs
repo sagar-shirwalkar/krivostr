@@ -945,10 +945,12 @@ firstP ev = case [t | tag <- evTags ev, Just t <- [tagValue "p" tag]] of
       (n : v : _) | n == name -> Just v
       _ -> Nothing
 
--- | The remote signer half of the conversation a request opens.
+-- | Which remote signer a request addresses, from its @p@ tag.
 --
--- From the @p@ tag. The event author is the client key, which is the wrong half
--- to encrypt to.
+-- Routing, not crypto: it answers "who is this for" when a client juggles
+-- several bunkers, or "is this for me" for a service. The decryption peer
+-- is always the author (see 'openRequestEventUnchecked'), because the
+-- shared secret has two halves and the @p@ tag names the opener's own.
 requestPeer :: Event -> Either String Text
 requestPeer ev = case firstP ev of
   Nothing -> Left "request event has no p tag naming the remote signer"
@@ -996,8 +998,11 @@ openRequestEvent sk ev = do
 -- | As 'openRequestEvent', for an event already known to verify.
 openRequestEventUnchecked :: PrivateKey -> Event -> Either String ConnectRequest
 openRequestEventUnchecked sk ev = do
-  peer <- requestPeer ev
-  plain <- Nip44.decrypt sk peer (evContent ev)
+  -- The author, not the @p@ tag: the conversation key has two halves, and
+  -- the opener holds one of them, so the other half is whoever signed.
+  -- Decrypting with the @p@ tag would ECDH the opener with itself, which is
+  -- why only same-key round trips ever passed before.
+  plain <- Nip44.decrypt sk (evPubkey ev) (evContent ev)
   parseRequest
     =<< decodeStrictAs "request payload is not JSON" plain
 

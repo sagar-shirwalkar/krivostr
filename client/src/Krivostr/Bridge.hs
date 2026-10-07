@@ -113,6 +113,12 @@ runBridge lg cfg store = do
   -- serving the UI and reporting the relay as unavailable.
   _ <- async $ forever $ do
     forM_ (bcUpstreams cfg) (addRelay pool)
+    -- Re-read the saved table: `relay add` while running lands here, and
+    -- the pool picks it up within a pass. Removals are not applied — a
+    -- connection in use stays until it drops or the bridge restarts; use
+    -- DELETE /relays for a live disconnect.
+    saved <- getRelayConfig store
+    forM_ saved (addRelay pool)
     retryRelays bst
     flushOutbox bst
     threadDelay (30 * 1000000)

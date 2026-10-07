@@ -43,7 +43,7 @@ highlight colour t = colour <> t <> reset
 shortHex :: Int -> Text -> Text
 shortHex n t
   | T.length t <= n * 2 + 1 = t
-  | otherwise = T.take n t <> "\8230" <> T.dropEnd n t
+  | otherwise = T.take n t <> "\8230" <> T.takeEnd n t
 
 -- | Collapse to a single line and clip to a column budget.
 oneLine :: Int -> Text -> Text

@@ -17,28 +17,38 @@ import qualified Database.SQLite3 as SQLite
 import System.IO.Temp (withSystemTempDirectory)
 import Krivostr.Cli
   ( FilterOpts (..)
+  , emptyFilterOpts
+  , buildFilter
   , csvField
   , isHex64
   , parseKind
+  , parseLevel
   , parseTag
   , parseWhen
   , renderCsv
   , resolveAuthor
+  , resolveRecipient
   , resolveTime
   , substitute
+  , resolveUpstreams
   , TimeSpec (..)
   )
-import Krivostr.Cli.Nostr (decryptNip04, encryptNip04)
-import Krivostr.Cli.Render (oneLine, relativeTime, renderEvent, renderEventBlock, shortHex)
+import Krivostr.Cli.Nostr (awaitOk, decryptNip04, defaultRelays, encryptNip04, signUnsigned)
+import Krivostr.Cli.Render (dim, highlight, kindColour, oneLine, relativeTime, renderEvent, renderEventBlock, shortHex)
+import Krivostr.Cli.Wallet (walletRequest)
 import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Key
 import Krivostr.Logging
 import Krivostr.Bridge (BridgeState (..), ClientState (..), handleClientMsg, maxRetries, parseClient, retryRelays)
-import Krivostr.Pool (BroadcastFailure (..), broadcastEvent, newPool)
+import Krivostr.Cli.Api (filterOf, kindsOf, route, tagParams)
+import Network.HTTP.Types (statusCode)
+import Network.Wai (responseStatus)
+import Krivostr.Pool (BroadcastFailure (..), broadcast, broadcastEvent, newPool, poolRelays, sendTo)
 import qualified Data.Map.Strict as M
 import Krivostr.Nip.Nip01
 import Krivostr.Nip.Nip42
+import Krivostr.Nip.Nip47 (Method (..), WalletConn (..))
 import Krivostr.Relay (parseUrl)
 import Krivostr.Store
 import Krivostr.Wire
@@ -320,6 +330,17 @@ main = hspec $ do
     it "rejects a COUNT with no filters" $
       parsed "[\"COUNT\",\"c1\"]" `shouldBe` Nothing
 
+    it "parses an EVENT the bridge itself encoded" $ do
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "through the bridge"
+      parseMaybe parseClient (encodeClient (CEvent e)) `shouldBe` Just (CEvent e)
+
+    it "rejects unknown verbs, non-arrays, and short CLOSEs" $ do
+      parsed "[\"NOPE\",\"s1\"]" `shouldBe` Nothing
+      parsed "{}" `shouldBe` Nothing
+      parsed "[\"CLOSE\",\"s1\",\"extra\"]" `shouldBe` Nothing
+      parsed "[\"REQ\",\"s1\",42]" `shouldBe` Nothing
+
   describe "Bridge outbox" $ do
     let withBridge f = do
           lg <- newLogger Error
@@ -354,6 +375,113 @@ main = hspec $ do
         getEventById st (evId e) `shouldReturn` Nothing
         outboxCount st `shouldReturn` 0
 
+    it "serves cached events then EOSE for a REQ" $ do
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "cached note"
+      withBridge $ \bst cs outbox st -> do
+        _ <- insertEvent st e
+        handleClientMsg bst cs (encodeClient (CReq "s1" [onlyKinds [1]]))
+        f1 <- atomically (readTQueue outbox)
+        f2 <- atomically (readTQueue outbox)
+        parseEither decodeRelay f1 `shouldBe` Right (REvent "s1" e)
+        f2 `shouldBe` toJSON [toJSON ("EOSE" :: Text), toJSON ("s1" :: Text)]
+        readTVarIO (csSubs cs) `shouldReturn` M.singleton "s1" [onlyKinds [1]]
+
+    it "answers a REQ with just EOSE when nothing matches" $ do
+      withBridge $ \bst cs outbox _st -> do
+        handleClientMsg bst cs (encodeClient (CReq "s9" [onlyKinds [4]]))
+        f <- atomically (readTQueue outbox)
+        f `shouldBe` toJSON [toJSON ("EOSE" :: Text), toJSON ("s9" :: Text)]
+
+    it "drops the subscription on CLOSE" $ do
+      withBridge $ \bst cs outbox _st -> do
+        handleClientMsg bst cs (encodeClient (CReq "s1" [onlyKinds [1]]))
+        _ <- atomically (readTQueue outbox)
+        handleClientMsg bst cs (encodeClient (CClose "s1"))
+        readTVarIO (csSubs cs) `shouldReturn` M.empty
+
+    it "answers COUNT from the store without forwarding" $ do
+      sk <- generatePrivateKey
+      withBridge $ \bst cs outbox st -> do
+        _ <- insertEvent st (mkSigned sk 1 "one")
+        _ <- insertEvent st (mkSigned sk 7 "two")
+        _ <- insertEvent st (mkSigned sk 4 "unrelated")
+        handleClientMsg bst cs (encodeClient (CCount "c1" [onlyKinds [1], onlyKinds [7]]))
+        f <- atomically (readTQueue outbox)
+        f `shouldBe` toJSON [toJSON ("COUNT" :: Text), toJSON ("c1" :: Text), object ["count" .= (2 :: Int)]]
+
+    it "answers a repeated publish as an accepted duplicate" $ do
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "twice"
+          okMsg accepted msg = toJSON
+            [ toJSON ("OK" :: Text), toJSON (evId e), toJSON accepted, toJSON (msg :: Text) ]
+      withBridge $ \bst cs outbox _st -> do
+        handleClientMsg bst cs (encodeClient (CEvent e))
+        f1 <- atomically (readTQueue outbox)
+        f1 `shouldBe` okMsg True ""
+        handleClientMsg bst cs (encodeClient (CEvent e))
+        f2 <- atomically (readTQueue outbox)
+        f2 `shouldBe` okMsg True "duplicate"
+
+  describe "Api query parsing" $ do
+    it "reads kinds singly, comma-joined, and repeated" $ do
+      kindsOf [] `shouldBe` Right Nothing
+      kindsOf [("kind", "1,7")] `shouldBe` Right (Just [1, 7])
+      kindsOf [("kind", "1"), ("kind", "7")] `shouldBe` Right (Just [1, 7])
+      kindsOf [("kind", "note")] `shouldSatisfy` isLeft
+
+    it "collects tag params and skips reserved keys" $ do
+      tagParams [("e", "abc"), ("e", "def"), ("t", "bitcoin"), ("limit", "5")]
+        `shouldBe` [("e", ["abc", "def"]), ("t", ["bitcoin"])]
+      tagParams [("tag", "x=y")] `shouldBe` [("tag", ["x=y"])]
+
+    it "builds event filters with search and tags" $ do
+      let Right f = filterOf [("kind", "1"), ("author", "abc"), ("since", "100"), ("limit", "10"), ("search", "hi"), ("e", "xyz")]
+      fKinds f `shouldBe` Just [1]
+      fAuthors f `shouldBe` Just ["abc"]
+      fmap floor (fSince f) `shouldBe` Just (100 :: Integer)
+      fLimit f `shouldBe` Just 10
+      fSearch f `shouldBe` Just "hi"
+      fTags f `shouldBe` [("e", ["xyz"])]
+
+    it "rejects bad numbers" $ do
+      filterOf [("limit", "many")] `shouldSatisfy` isLeft
+      filterOf [("since", "yesterday")] `shouldSatisfy` isLeft
+      filterOf [("kind", "1.5")] `shouldSatisfy` isLeft
+
+  describe "Api routes" $ do
+    let status st qs = do
+          lg <- newLogger Error
+          s <- openMemoryStore lg
+          sk <- generatePrivateKey
+          _ <- insertEvent s (mkSigned sk 1 "hello api")
+          r <- route s st qs
+          closeStore s
+          pure (statusCode (responseStatus r))
+
+    it "answers health, stats, and unknown routes" $ do
+      status ["api", "health"] [] `shouldReturn` 200
+      status ["api", "stats"] [] `shouldReturn` 200
+      status ["api", "nope"] [] `shouldReturn` 404
+      status [] [] `shouldReturn` 404
+
+    it "serves events by filter and by id" $ do
+      lg <- newLogger Error
+      s <- openMemoryStore lg
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "hello api"
+      _ <- insertEvent s e
+      let get segs qs = statusCode . responseStatus <$> route s segs qs
+      get ["api", "events"] [("kind", "1")] `shouldReturn` 200
+      get ["api", "events", evId e] [] `shouldReturn` 200
+      get ["api", "events", T.replicate 64 "0"] [] `shouldReturn` 404
+      get ["api", "events"] [("kind", "bogus")] `shouldReturn` 400
+      closeStore s
+
+    it "searches and complains without q" $ do
+      status ["api", "search"] [] `shouldReturn` 400
+      status ["api", "search"] [("q", "hello")] `shouldReturn` 200
+
   describe "Bridge retries" $ do
     it "counts attempts and gives up at the cap" $ do
       lg <- newLogger Error
@@ -380,6 +508,38 @@ main = hspec $ do
       sk <- generatePrivateKey
       broadcastEvent pool (mkSigned sk 1 "nowhere to go") 1000
         `shouldReturn` Left NoRelays
+
+    it "reports no relays and refuses direct sends when empty" $ do
+      lg <- newLogger Error
+      pool <- newPool lg (const (pure ()))
+      poolRelays pool `shouldReturn` []
+      sendTo pool "wss://x.example" (CClose "s") `shouldReturn` False
+      broadcast pool (CClose "s") `shouldReturn` ()
+
+  describe "signUnsigned" $ do
+    it "floors created_at to whole seconds" $ do
+      sk <- generatePrivateKey
+      let e = signUnsigned sk (UnsignedEvent "" 1700000000.75 1 [] "hi")
+      evCreatedAt e `shouldBe` 1700000000
+      -- ...and the signature still verifies over the floored form.
+      verifyEvent e `shouldBe` True
+
+  describe "awaitOk" $ do
+    it "accepts an OK whose message is non-empty" $ do
+      inbox <- newTQueueIO
+      atomically $ writeTQueue inbox (ROk "abc123" True "duplicate: already have this event")
+      awaitOk inbox "abc123" `shouldReturn` Right "accepted: duplicate: already have this event"
+
+    it "rejects a rejection for its own id" $ do
+      inbox <- newTQueueIO
+      atomically $ writeTQueue inbox (ROk "abc123" False "blocked: not authenticated")
+      awaitOk inbox "abc123" `shouldReturn` Left "rejected: blocked: not authenticated"
+
+    it "skips OKs for other event ids" $ do
+      inbox <- newTQueueIO
+      atomically $ writeTQueue inbox (ROk "other" True "")
+      atomically $ writeTQueue inbox (ROk "abc123" True "")
+      awaitOk inbox "abc123" `shouldReturn` Right "accepted: "
 
   describe "Key" $ do
     it "generates distinct keys" $ do
@@ -631,6 +791,40 @@ main = hspec $ do
       r <- decryptNip04 sk1 pk1 "AAAA?iv=!!!"
       r `shouldSatisfy` isLeft
 
+    it "refuses a payload whose ciphertext is not base64" $ do
+      sk1 <- generatePrivateKey
+      let pk1 = derivePublicKey sk1
+      r <- decryptNip04 sk1 pk1 "!!!?iv=QUJDQUJDQUJDQUJDQUJDQQ=="
+      r `shouldSatisfy` isLeft
+
+    it "refuses a payload whose iv decodes to the wrong length" $ do
+      sk1 <- generatePrivateKey
+      let pk1 = derivePublicKey sk1
+      -- Eight zero bytes are valid base64 but not a 16-byte AES IV.
+      r <- decryptNip04 sk1 pk1 "QUJD?iv=AAAAAAAAAAA="
+      r `shouldBe` Left "payload carries an IV of the wrong length"
+
+  describe "Wallet" $ do
+    -- Neither failure below opens a socket: a bad secret dies in 'importHex'
+    -- and a bad service pubkey dies in 'encryptWithNonce', both before the
+    -- first relay is dialled.
+    it "refuses a malformed secret before touching the network" $ do
+      lg <- newLogger Error
+      let conn = WalletConn (T.replicate 64 "a") [] "not-hex" Nothing
+      r <- walletRequest lg conn MGetBalance (object [])
+      case r of
+        Left e -> take 17 e `shouldBe` "bad wallet secret"
+        Right _ -> expectationFailure "a malformed secret must not produce a response"
+
+    it "refuses an unusable service pubkey at encryption time" $ do
+      lg <- newLogger Error
+      sk <- generatePrivateKey
+      let conn = WalletConn "not-a-pubkey" [] (exportHex sk) Nothing
+      r <- walletRequest lg conn MGetBalance (object [])
+      case r of
+        Left e -> take 22 e `shouldBe` "cannot encrypt request"
+        Right _ -> expectationFailure "an unusable pubkey must not produce a response"
+
   describe "Render" $ do
     it "renders one line with age, kind, and author" $ do
       sk <- generatePrivateKey
@@ -659,6 +853,55 @@ main = hspec $ do
     it "shortens hex and single-lines text" $ do
       shortHex 8 (T.replicate 64 "a") `shouldSatisfy` T.isPrefixOf "aaaaaaaa"
       oneLine 100 "a\nb" `shouldBe` "a b"
+
+    it "tints kinds by family" $ do
+      kindColour 4 `shouldBe` "\ESC[35m"
+      kindColour 7 `shouldBe` "\ESC[33m"
+      kindColour 0 `shouldBe` "\ESC[36m"
+      kindColour 3 `shouldBe` "\ESC[36m"
+      kindColour 10002 `shouldBe` "\ESC[36m"
+      kindColour 5 `shouldBe` "\ESC[31m"
+      kindColour 6 `shouldBe` "\ESC[31m"
+      kindColour 1 `shouldBe` "\ESC[32m"
+      kindColour 30023 `shouldBe` "\ESC[32m"
+
+    it "wraps highlights in colour and reset" $ do
+      highlight "C" "t" `shouldBe` "C" <> "t" <> "\ESC[0m"
+      dim `shouldBe` "\ESC[2m"
+
+    it "passes short hex through and clips the middle otherwise" $ do
+      shortHex 8 "abc" `shouldBe` "abc"
+      shortHex 2 "abcdef" `shouldBe` "ab\8230ef"
+
+    it "clips long lines with an ellipsis" $ do
+      oneLine 5 "abcdef" `shouldBe` "abcd\8230"
+      oneLine 100 "short" `shouldBe` "short"
+      oneLine 10 "a\r\nb\nc" `shouldBe` "a b c"
+
+    it "names hours, months, years, and the future" $ do
+      relativeTime 1700000000 1699996400 `shouldBe` "1h"
+      relativeTime 1700000000 1699999940 `shouldBe` "1m"
+      relativeTime 1700000000 1697408000 `shouldBe` "1mo"
+      relativeTime 1700000000 1668464000 `shouldBe` "1y"
+      relativeTime 1700000000 1700000100 `shouldBe` "now"
+
+    it "paints the colour form with ANSI escapes" $ do
+      sk <- generatePrivateKey
+      let e = mkSigned sk 1 "hello world"
+      renderEvent True True 1700000001 e `shouldSatisfy` T.isInfixOf "\ESC["
+      renderEvent True True 1700000001 e `shouldSatisfy` T.isInfixOf "hello world"
+
+    it "warns without a colon when the reason is empty" $ do
+      sk <- generatePrivateKey
+      let e = (mkSigned sk 1 "secret body") { evTags = [["content-warning"]] }
+      renderEvent False False 1700000001 e `shouldSatisfy` T.isInfixOf "sensitive"
+      renderEvent False False 1700000001 e `shouldSatisfy` (not . T.isInfixOf "sensitive:")
+
+    it "lists tags in block rendering" $ do
+      sk <- generatePrivateKey
+      let e = (mkSigned sk 1 "tagged") { evTags = [["t", "bitcoin"], ["e", ""]] }
+      renderEventBlock False True 1700000001 e `shouldSatisfy` T.isInfixOf "#t bitcoin"
+      renderEventBlock False True 1700000001 e `shouldSatisfy` T.isInfixOf "#e"
 
   describe "Cli helpers" $ do
     it "parses relative times" $ do
@@ -696,15 +939,82 @@ main = hspec $ do
       parseKind "-1"       `shouldSatisfy` isLeft
       parseKind "99999999999999" `shouldSatisfy` isLeft
 
+    it "names every kind alias and bounds numeric kinds" $ do
+      parseKind "delete"   `shouldBe` Right 5
+      parseKind "repost"   `shouldBe` Right 6
+      parseKind "like"     `shouldBe` Right 7
+      parseKind "follow"   `shouldBe` Right 3
+      parseKind "giftwrap" `shouldBe` Right 1059
+      parseKind "0"        `shouldBe` Right 0
+      parseKind "65535"    `shouldBe` Right 65535
+      parseKind "65536"    `shouldSatisfy` isLeft
+      parseKind ""         `shouldSatisfy` isLeft
+      parseKind "bogus"    `shouldSatisfy` isLeft
+
     it "splits tag filters" $ do
       parseTag "e=abc" `shouldBe` Right ("e", "abc")
       parseTag "t="    `shouldBe` Right ("t", "")
       parseTag "noequals" `shouldSatisfy` isLeft
 
+    it "accepts #-prefixed and rejects nameless tags" $ do
+      parseTag "#e=abc" `shouldBe` Right ("e", "abc")
+      parseTag "=abc"   `shouldSatisfy` isLeft
+      parseTag ""       `shouldSatisfy` isLeft
+
     it "recognises hex pubkeys" $ do
       isHex64 (T.replicate 64 "a") `shouldBe` True
       isHex64 "abc"                 `shouldBe` False
       isHex64 (T.replicate 63 "a")  `shouldBe` False
+
+    it "parses log levels case-insensitively" $ do
+      parseLevel "debug"   `shouldBe` Right Debug
+      parseLevel "INFO"    `shouldBe` Right Info
+      parseLevel "Warn"    `shouldBe` Right Warn
+      parseLevel "warning" `shouldBe` Right Warn
+      parseLevel "error"   `shouldBe` Right Error
+      parseLevel "verbose" `shouldSatisfy` isLeft
+
+    it "parses relative durations" $ do
+      parseWhen "90s" `shouldBe` Right (Ago 90)
+      parseWhen "30m" `shouldBe` Right (Ago 1800)
+      parseWhen "2h"  `shouldBe` Right (Ago 7200)
+      parseWhen "7d"  `shouldBe` Right (Ago 604800)
+      parseWhen "1w"  `shouldBe` Right (Ago 604800)
+      parseWhen "6mo" `shouldBe` Right (Ago (6 * 2592000))
+      parseWhen "1y"  `shouldBe` Right (Ago 31536000)
+      parseWhen "10x" `shouldSatisfy` isLeft
+
+    it "resolves absolute times unchanged" $ do
+      resolveTime (At 1700000000) `shouldReturn` 1700000000
+
+    it "resolves authors from npub and hex" $ do
+      sk <- generatePrivateKey
+      let pk = derivePublicKey sk
+          hex = pubKeyHex pk
+      resolveAuthor (T.unpack (exportNpub pk)) `shouldBe` Right hex
+      resolveAuthor (T.unpack hex) `shouldBe` Right hex
+      resolveAuthor "notakey" `shouldSatisfy` isLeft
+
+    it "resolves recipients to curve points" $ do
+      sk <- generatePrivateKey
+      let pk = derivePublicKey sk
+      resolveRecipient (T.unpack (exportNpub pk)) `shouldBe` Right pk
+      resolveRecipient "notakey" `shouldSatisfy` isLeft
+      -- 64 zeros are hex but lift to no curve point.
+      resolveRecipient (T.unpack (T.replicate 64 "0")) `shouldSatisfy` isLeft
+
+    it "builds filters from options" $ do
+      sk <- generatePrivateKey
+      let hex = T.unpack (pubKeyHex (derivePublicKey sk))
+      f <- buildFilter (FilterOpts [1, 7] [T.pack hex] [("e", "abc"), ("e", "def")] Nothing Nothing 25 (Just "hello"))
+      fKinds f `shouldBe` Just [1, 7]
+      fAuthors f `shouldBe` Just [T.pack hex]
+      fTags f `shouldBe` [("e", ["abc", "def"])]
+      fLimit f `shouldBe` Just 25
+      fSearch f `shouldBe` Just "hello"
+      g <- buildFilter emptyFilterOpts
+      fKinds g `shouldBe` Nothing
+      fLimit g `shouldBe` Just 100
 
     it "escapes csv only when it has to" $ do
       csvField "plain"      `shouldBe` "plain"
@@ -728,6 +1038,13 @@ main = hspec $ do
       substitute "kind={kind} author={author} content={content}" e
         `shouldBe` "kind=7 author=" <> evPubkey e <> " content=body text"
       T.unpack (substitute "{json}" e) `shouldContain` T.unpack (evId e)
+
+    it "resolves upstreams as flags ∪ table, else defaults" $ do
+      resolveUpstreams [] [] `shouldBe` defaultRelays
+      resolveUpstreams ["wss://a.example"] [] `shouldBe` ["wss://a.example"]
+      resolveUpstreams [] ["wss://b.example"] `shouldBe` ["wss://b.example"]
+      resolveUpstreams ["wss://a.example"] ["wss://b.example", "wss://a.example"]
+        `shouldBe` ["wss://a.example", "wss://b.example"]
 
   describe "resolveAuthor" $ do
     it "accepts a hex pubkey unchanged" $ do

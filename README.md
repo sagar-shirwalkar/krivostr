@@ -224,6 +224,45 @@ Global flags come before the subcommand:
 | `reindex` | Rebuild the full-text search index |
 | `keygen` | Generate an `nsec` / `npub` pair |
 
+### Setup from scratch
+
+Fresh tarball, empty directory, no history. Five steps to a working client:
+
+```bash
+# 1. A keypair. The secret never leaves your shell history file's reach —
+#    export it per session, or prefix it per command.
+krivostr keygen
+export KRIVOSTR_NSEC=nsec1…
+
+# 2. Relays. The table starts empty, so `list` shows the compiled-in
+#    defaults; add your own and they take effect (a running bridge picks
+#    them up within ~30 seconds, no restart).
+krivostr relay list
+krivostr relay add wss://my-relay.example
+
+# 3. The bridge. Serves the UI on :8081 and connects the effective set
+#    (flags ∪ table, else defaults). Leave it running.
+krivostr serve
+
+# 4. Fill the store. Nothing is in SQLite until something arrives: stream
+#    for a while, then read locally — the second command touches no network.
+krivostr feed --follow --ingest --relay wss://nos.lol -n 50
+krivostr feed -k note -n 20
+
+# 5. Say something. Your sends are stored locally on acceptance, so `feed`
+#    and `delete` can find them afterwards.
+printf '# Hello\n\nFirst post.\n' > hello.md
+krivostr publish hello.md --title "Hello"
+```
+
+Two things that bite newcomers: `KRIVOSTR_DB` defaults to `.krivostr/events.db`
+*relative to your shell's directory* — `serve` in one directory and `feed` in
+another read different stores, so pick a directory (or export the variable) and
+stay there. And the UI publishes through whichever transport it is on: the
+local UI talks to your bridge (everything above applies), the hosted demo
+talks to public relays directly (your store stays empty until something
+ingests into it).
+
 ### `feed`
 
 ```bash
@@ -310,7 +349,7 @@ krivostr keygen
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KRIVOSTR_DB` | `.krivostr/events.db` | SQLite path |
+| `KRIVOSTR_DB` | `.krivostr/events.db` | SQLite path (serve and CLI must agree — it is relative to your shell's directory) |
 | `KRIVOSTR_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `KRIVOSTR_PORT` | `8081` | Bridge port (`serve`) |
 | `KRIVOSTR_STATIC_DIR` | `./ui/dist` | Static asset directory |
@@ -464,7 +503,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 631 hspec examples across core and client
+make test-backend  # 636 hspec examples across core and client
 make test-ui       # 292 unit tests (jsdom) + 25 browser tests (real Chromium)
 ```
 

@@ -112,14 +112,21 @@ the selected `Signer`, then sends `["EVENT", …]` to the bridge. The bridge
 inserts it into SQLite, broadcasts it to the upstream pool, delivers it to
 other connected clients, and answers `OK`. The UI caches it in IndexedDB.
 Reply, react, and repost buttons on each note dispatch the same event with
-prebuilt tags, so one signer path serves every social action.
+prebuilt tags, so one signer path serves every social action. The app also
+echoes its own publishes into the feed immediately rather than waiting for
+relay echo — relays only send back what matches, and a round trip is the
+slowest possible feedback.
 
 **Subscribing.** The bridge answers a `REQ` from its own store first: it
 queries SQLite, replays the matching events, sends `EOSE`, and only then
 broadcasts the `REQ` upstream. So a client gets history immediately and live
 events afterwards, and the `EOSE` marks the seam between them. A `search`
 filter is answered from the FTS5 index on the same path — the bridge's
-instant search is this replay with a MATCH clause.
+instant search is this replay with a MATCH clause. The feed subscribes to
+every kind it can render (notes, reposts, reactions, comments, articles,
+receipts, deletions), not just notes: a notes-only subscription starves the
+social kinds, since neither the bridge nor public relays echo what the
+filter does not match.
 
 **Counting.** A `COUNT` never leaves the bridge: it is answered from SQLite
 (one indexed `COUNT(*)`, FTS subquery for search) and overlapping filters

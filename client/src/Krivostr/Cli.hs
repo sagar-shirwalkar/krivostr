@@ -11,6 +11,7 @@ module Krivostr.Cli
   , resolveTime
   , parseWhen
   , parseKind
+  , parseLevel
   , parseTag
   , isHex64
   , resolveAuthor
@@ -21,6 +22,7 @@ module Krivostr.Cli
   , csvField
   , renderCsv
   , substitute
+  , resolveUpstreams
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -747,9 +749,7 @@ dispatch (Opts g cmd) = do
                   Nothing -> fromMaybe "127.0.0.1" <$> envText "KRIVOSTR_BRIDGE_HOST"
       static <- maybe (envPath "./ui/dist" "KRIVOSTR_STATIC_DIR") pure (soStatic o)
       saved <- withStore lg' db getRelayConfig
-      let upstreams = case nub (soUpstream o <> saved) of
-            [] -> defaultRelays
-            xs -> xs
+      let upstreams = resolveUpstreams (soUpstream o) saved
       pure BridgeConfig
         { bcPort = port
         , bcHost = host
@@ -831,8 +831,14 @@ cmdFeed lg db colour o
       evs <- queryEvents st f
       now <- getPOSIXTime
       forM_ evs (putEvent colour now (fdJson o) (fdLong o) (fdReveal o))
-      when (null evs) $
-        TIO.hPutStrLn stderr "no events matched; try --limit 500, or --kind note"
+      -- An empty store and a too-narrow filter look identical from here, so
+      -- distinguish them: a fresh tarball install hits the first case, and
+      -- "try --kind note" sends those users down the wrong path.
+      when (null evs) $ do
+        total <- countEvents st
+        if total == 0
+          then TIO.hPutStrLn stderr "store is empty; fill it with `feed --follow --ingest` or open the UI"
+          else TIO.hPutStrLn stderr "no events matched; try --limit 500, or --kind note"
   where
     -- Stream from relays, printing as events arrive.
     --
@@ -983,7 +989,9 @@ cmdDm lg db o
         TIO.putStrLn $ case r of
           Right ok -> "ok    " <> url <> ": " <> ok
           Left  e  -> "fail  " <> url <> ": " <> T.pack e
-      unless (any (either (const False) (const True) . snd) results) exitFailure
+      let accepted = any (either (const False) (const True) . snd) results
+      when accepted $ withStore lg db $ \st -> void (insertEvent st ev)
+      unless accepted exitFailure
 
 -- ═══════════════════════════════════════════════════════════ social sends
 
@@ -1012,7 +1020,10 @@ requireEvent lg db raw = do
       Nothing -> die ("no event " ++ raw ++ " in the local store (try: krivostr feed first)")
 
 -- | Publish a signed event and report each relay's answer. Exits non-zero
--- when every relay refused, so scripts can test the outcome.
+-- when every relay refused, so scripts can test the outcome. On at least
+-- one acceptance, the event is also stored locally: your own sends belong
+-- in your store, or `feed`, `dm --inbox`, and `delete` could never find
+-- what you just published.
 publishNote :: Logger -> FilePath -> Int -> Event -> [Text] -> Text -> IO ()
 publishNote lg db timeoutSecs ev relays what = do
   targets <- case relays of
@@ -1028,7 +1039,9 @@ publishNote lg db timeoutSecs ev relays what = do
     TIO.putStrLn $ case r of
       Right ok -> "ok    " <> url <> ": " <> ok
       Left e   -> "fail  " <> url <> ": " <> T.pack e
-  unless (any (either (const False) (const True) . snd) results) exitFailure
+  let accepted = any (either (const False) (const True) . snd) results
+  when accepted $ withStore lg db $ \st -> void (insertEvent st ev)
+  unless accepted exitFailure
 
 cmdReply :: Logger -> FilePath -> ReplyOpts -> IO ()
 cmdReply lg db o = do
@@ -1330,7 +1343,14 @@ cmdWallet lg o = do
 
 cmdRelay :: Logger -> FilePath -> RelayOpts -> IO ()
 cmdRelay lg db o = withStore lg db $ \st -> case roAction o of
-  RList -> mapM_ TIO.putStrLn =<< getRelayConfig st
+  -- Shows what `serve` would connect to, not just the table: with nothing
+  -- configured, that is the compiled-in defaults (said on stderr, so stdout
+  -- stays a clean URL list for scripts).
+  RList -> do
+    saved <- getRelayConfig st
+    when (null saved) $
+      TIO.hPutStrLn stderr "(no configured relays; showing compiled-in defaults)"
+    mapM_ TIO.putStrLn (resolveUpstreams [] saved)
   RAdd url -> do
     valid <- either die pure (checkRelayUrl url)
     addRelayConfig st valid
@@ -1347,6 +1367,14 @@ cmdRelay lg db o = withStore lg db $ \st -> case roAction o of
       | "ws://localhost" `T.isPrefixOf` u = Right u
       | "ws://127.0.0.1" `T.isPrefixOf` u = Right u
       | otherwise = Left ("not a relay URL: " ++ T.unpack u ++ " (try wss://…)")
+
+-- | The effective upstream set from flags and the saved table: their
+-- union, or the compiled-in defaults when both are empty. Pure so the rule
+-- is testable; `bridgeConfig` and `relay list` share it, so they agree.
+resolveUpstreams :: [Text] -> [Text] -> [Text]
+resolveUpstreams flags saved = case nub (flags <> saved) of
+  [] -> defaultRelays
+  xs -> xs
 
 publicKeyFromHex :: Text -> Maybe PublicKey
 publicKeyFromHex t = do
