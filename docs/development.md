@@ -11,7 +11,7 @@ that also exists in the repo is a copy that goes stale.
 
 ```bash
 stack build --fast     # build
- stack test             # 636 examples: 551 core, 85 client
+ stack test             # 733 examples: 613 core, 120 client
 stack ghci krivostr-core   # REPL against the pure layer
 ```
 
@@ -59,6 +59,20 @@ Running `pnpm dev` needs `VITE_BRIDGE_URL` pointing at a running bridge, or
 
 See the [Makefile](../Makefile) for the exact recipes.
 
+## Sharp edges
+
+- **Fresh clone, browser tests red.** `pnpm install` fetches the Playwright
+  driver, not Chromium. Run `pnpm exec playwright install chromium` (or just
+  `make test-ui`, which does it) before reading the failure as real.
+- **Coverage is local-only.** CI runs no coverage job; the `.hpc-threshold`
+  ratchet and the v8 thresholds gate your machine and review discipline, not
+  the merge queue.
+- **Docker is CI territory.** `make linux-binary` produces a release artifact;
+  validate Docker and release changes through GitHub Actions, never `docker
+  run` on your workstation.
+- **`.cabal` files are generated.** Edit `package.yaml` and let hpack
+  regenerate; a hand-edit vanishes on the next build without warning.
+
 ## Coverage
 
 The two sides behave differently, and the difference is worth understanding.
@@ -67,7 +81,7 @@ The two sides behave differently, and the difference is worth understanding.
 across the board and passes.
 
 **Backend coverage is a ratchet.** `.hpc-threshold` pins the measured total
-— currently **54%** (794 of 1447) — and `scripts/check-coverage.sh` fails
+— currently **58%** (846 of 1449) — and `scripts/check-coverage.sh` fails
 the build when coverage drops below it. The threshold is a floor, not a
 goal: when new tests raise the measured number, raise the pin in the same
 change. Never lower it to make the build green.
@@ -113,9 +127,10 @@ nothing is pushed to a registry, and there is no `CHANGELOG.md` to update.
 [`docker/Dockerfile.linux`](../docker/Dockerfile.linux)), macOS, and Windows.
 
 **The UI deploys separately.** [`.github/workflows/ui.yml`](../.github/workflows/ui.yml)
-publishes `ui/dist` to Cloudflare Pages on every push to `main`. The Pages
-deployment needs `VITE_BRIDGE_URL` set in the Pages environment, or the built
-UI has no bridge to talk to.
+publishes `ui/dist` to Cloudflare Pages on pushes touching `ui/`. The workflow
+builds with `VITE_BRIDGE_URL` taken from the repository's variables
+(`vars.VITE_BRIDGE_URL`) — it must be a repo variable, not a Pages-project
+setting, because the build happens before upload.
 
 ## Docker
 

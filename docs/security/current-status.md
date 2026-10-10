@@ -65,8 +65,9 @@ We do **not** assume:
 
 - That the browser's random number generator is broken. If `crypto.getRandomValues`
   is compromised, all bets are off.
-- That the user has chosen a strong passphrase. We rate-limit unlock attempts
-  in the UI, but a weak passphrase is a weak passphrase.
+- That the user has chosen a strong passphrase. (And there is no unlock flow
+  in the UI to rate-limit: NIP-49 is a core module and a CLI-side reality,
+  not a wired-up picker path.)
 
 ## Key handling
 
@@ -92,7 +93,7 @@ and the extension holds the private half. This is the recommended path.
 
 The bunker holds the key and returns signatures over NIP-44-encrypted kind
 24133 DMs. The signer picker constructs `nip46Signer` with the NIP-44
-transport. See [signers.md](signers.md).
+transport. See [signers.md](../signers.md).
 
 ## Cached events
 
@@ -113,7 +114,7 @@ after use — we zero the heap-allocated key buffer on drop.
 
 Relay connections are `wss://` as configured. The UI derives the bridge's
 scheme from the page's own protocol in
-[`bridge.ts`](../ui/src/nostr/bridge.ts) — an `https:` page connects over
+[`bridge.ts`](../../ui/src/nostr/bridge.ts) — an `https:` page connects over
 `wss:`, an `http:` page over `ws:`. There is no check restricting `ws://` to
 localhost; it follows from serving the page over plain HTTP, so do not serve
 krivostr that way on a shared network.
@@ -132,7 +133,7 @@ reads for NIP-59 recipient metadata to be actually private.
 ## Headers
 
 The Content-Security-Policy lives in
-[`ui/public/_headers`](../ui/public/_headers) and applies to the **Cloudflare
+[`ui/public/_headers`](../../ui/public/_headers) and applies to the **Cloudflare
 Pages deployment only**. `krivostr serve` serves the same `dist/` over plain
 Warp and never reads that file, so a self-hosted bridge sends **no CSP, no
 `X-Frame-Options`, and no `X-Content-Type-Options`**.

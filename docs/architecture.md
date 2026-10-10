@@ -50,7 +50,7 @@ Pure Haskell. No network, no database, no clock — timestamps arrive as
 | `Krivostr.Key` | x-only keys, `nsec`/`npub` NIP-19, `ncryptsec` NIP-49. |
 | `Krivostr.Logging` | `Writer`-based logger for functions that explain themselves. |
 
-Tested with `hspec` (87 examples). `QuickCheck` is a declared dependency but no
+Tested with `hspec` (613 examples). `QuickCheck` is a declared dependency but no
 property uses it yet — every core test is example-based.
 
 ## Client
@@ -62,34 +62,32 @@ JSON API), `aeson` (JSON).
 | Module | Responsibility |
 |---|---|
 | `Main` (`client/src/Main.hs`) | Entry point. |
-| `Cli` | The nine-subcommand parser and rendering. |
+| `Cli` | The twenty-one-subcommand parser and rendering. |
 | `Cli.Nostr` | Signing, publishing, `nsec` import, relay defaults, NIP-42 auth. |
 | `Cli.Api` | The JSON HTTP API on its own port (NIP-42 auth). |
 | `Cli.Render` | Terminal output. |
+| `Cli.Wallet` | One-shot NIP-47 calls against a wallet service. |
 | `Pool` | The relay set, with broadcast and per-relay drain threads. |
 | `Relay` | One upstream connection: connect, subscribe, reconnect, NIP-42 auth. |
 | `Store` | SQLite, FTS5, NIP-40 purge, NIP-59 storage. |
 | `Bridge` | The relay-shaped WebSocket endpoint plus static assets (NIP-42 auth). |
-| `Nip44` | ChaCha20-Poly1305 + HKDF (bridge + CLI DMs). |
-| `Nip59` | Gift wrap bridge logic. |
-| `Nip17` | Private DM CLI commands. |
-| `Nip49` | `ncryptsec` key import/export. |
-| `Nip42` | Auth challenge/response (bridge + CLI). |
-| `Nip40` | Expiration tag enforcement. |
-| `Nip11` | Relay capability discovery. |
 
 `krivostr serve` runs the bridge, which owns the pool and the store. Every
 other subcommand opens the store directly and exits (except `feed --follow`
 and `watch`, which stream).
 
 `krivostr serve` binds to the interface specified by `--host` (default
-`127.0.0.1`, env `KRIVOSTR_BRIDGE_HOST`). The JSON API binds to `--host`
-(default `127.0.0.1`, env `KRIVOSTR_API_HOST`).
+`127.0.0.1`). The `--help` text cites a `KRIVOSTR_BRIDGE_HOST` variable, but the
+parser's own default shadows it, so the variable has no effect — pass the flag.
+The JSON API binds to `--host` (default `127.0.0.1`); its help cites
+`KRIVOSTR_API_HOST`, which the dispatch likewise never reads.
 
 ## UI
 
 Lit 3 + TypeScript, no framework and no runtime dependency beyond `lit`,
-`@lit/context`, `@lit/task`, `@noble/curves` and `@noble/hashes`.
+`@lit/context`, `@lit/task`, `@noble/curves`, `@noble/hashes`, and
+`@noble/ciphers` (raw ChaCha20 / XChaCha20-Poly1305 for NIP-44 and NIP-49,
+which neither `@noble/hashes` nor WebCrypto provides).
 
 The browser mirrors the core's vocabulary: `Maybe`, `Result`, `IO` in
 [`ui/src/fp/`](../ui/src/fp), and a `Rule`/`Predicate` algebra in

@@ -34,11 +34,16 @@ anything it can sign.
 
 | Asset | Where it lives | Protected by |
 |---|---|---|
-| Private key (`nsec`) | Browser memory, or an external signer | Non-extractable `CryptoKey`, or not held at all |
-| Encrypted private key at rest | IndexedDB | PBKDF2 (600k iters) + AES-GCM-256, passphrase-derived |
+| Private key (`nsec`) | Browser memory for the tab lifetime, or an external signer | Session-only risk acknowledgment, or not held at all |
 | Event cache | IndexedDB (browser), SQLite (bridge) | OS disk encryption, loopback-only binding |
 | Session state | Browser memory | Nothing — ephemeral by design |
 | Relay credentials (NIP-42) | Browser memory | Nothing — the challenge-response is per-connection |
+
+There is deliberately no "encrypted key at rest" row: no code in the UI
+stores a key in IndexedDB, wrapped or otherwise. NIP-49 `ncryptsec` exists in
+the Haskell core and the TypeScript `nip49.ts`, but the signer picker does not
+use it — the local signer holds a raw pasted key in a closure. See
+[signers.md](../signers.md).
 
 The private key is the only asset whose compromise is irreversible. Every
 design decision below either keeps it out of the system entirely or limits
@@ -74,17 +79,17 @@ Not trusted:
 
 **A hostile relay.** It receives every event published, every filter
 subscribed, and can correlate a public key with an IP address and a
-subscription pattern. Mitigations: the outbox model (NIP-65) limits which
-relays see which keys; NIP-59 gift wrap and NIP-17 DMs exist in the core so a
-relay need not see who is talking to whom, but the CLI `dm` command still
-sends NIP-04 kind 4; all relay traffic is `wss://`.
+subscription pattern. Mitigations: unpublished events wait in the SQLite
+`outbox` rather than spraying relays; NIP-59 gift wrap and NIP-17 DMs exist
+in the core so a relay need not see who is talking to whom, but the CLI `dm`
+command still sends NIP-04 kind 4; all relay traffic is `wss://`.
 
 **An XSS on the hosted UI origin.** If an attacker injects script into the
 Cloudflare Pages deployment, they can read whatever is in the page's memory.
-Mitigations: the signer picker defaults to NIP-07 and NIP-46, both of which
-keep the key off the origin entirely; a strict Content-Security-Policy;
-no third-party scripts; no `dangerouslySetInnerHTML` equivalents on remote
-data (Lit's `html` escapes by default).
+Mitigations: the signer picker steers main identities toward NIP-07 and
+NIP-46, both of which keep the key off the origin entirely; a strict
+Content-Security-Policy; no third-party scripts; no `dangerouslySetInnerHTML`
+equivalents on remote data (Lit's `html` escapes by default).
 
 **A stolen bridge database file.** The SQLite store is unencrypted. It holds
 public events and ciphertexts, not plaintext or keys. The metadata — who you
@@ -119,27 +124,24 @@ There is no DNSSEC enforcement and no certificate pinning.
 
 ## Key handling
 
-Three signers. Only one of them holds a key.
+Three signers. Only one of them holds a key. Full detail in
+[signers.md](../signers.md); the security-relevant shape is:
 
 ### Local signer
 
-The user pastes an `nsec1...` string. On confirmation:
+The user pastes an `nsec1...` string. On confirmation after an explicit risk
+acknowledgment ("I understand"):
 
 1. The bech32 is decoded to 32 raw bytes.
-2. A PBKDF2 key is derived from a user passphrase with 600,000 iterations of
-   SHA-256 and a 16-byte random salt.
-3. An AES-GCM-256 `CryptoKey` is derived from that PBKDF2 key, marked
-   **non-extractable**.
-4. The 32-byte secret is encrypted with that key under a 12-byte random IV.
-5. The ciphertext, salt, and IV are stored in IndexedDB under `keys/primary`.
-6. The plaintext 32 bytes are held only in a `Uint8Array` inside the
-   `localSigner` closure. They are not written to disk, not logged, and not
-   sent to the bridge.
+2. The bytes are held in the `localSigner` closure for the lifetime of the tab.
 
-**Consequence:** after the passphrase is entered, the key lives in JS memory
-for the lifetime of the tab. An XSS or a content-script-armed extension can
-read it. This is inherent to local signing and is why the hosted UI defaults
-to NIP-07.
+That is the whole mechanism. There is no passphrase, no AES-GCM wrapping, no
+PBKDF2, no `keys/primary` record in IndexedDB — none of that code exists. The
+acknowledgment is session-only; a fresh picker asks again.
+
+**Consequence:** the key lives in JS memory for the lifetime of the tab. An
+XSS or a content-script-armed extension can read it. This is inherent to local
+signing and is why the picker steers main identities toward the bunker.
 
 **What is not done:** the key is not zeroed on tab close (JS has no
 reliable mechanism for this), not moved to a Web Worker (which would not
@@ -167,18 +169,17 @@ to the bunker lives in page memory.
 
 ### Browser (IndexedDB)
 
-Database `krivostr`, object store `events`, indexes on `created_at` and
-`kind`. Contents:
+Database `krivostr`, object store `events` keyed on `id`, with one index:
+`by_created_at`, used to read newest-first. Contents:
 
 - Public events (kind 1, 6, 7, ...) for 30 days.
-- Persistent kinds (`0`, `3`, `4`, `1059`, `10002`) forever.
-- Encrypted private key material under `keys/primary` (separate store).
+- Persistent kinds (`0`, `3`, `4`, `1059`, `10002`) forever — note the bridge
+  additionally exempts `10000`, `10001`, and `10003`; see
+  [storage.md](../storage.md).
 
 DM ciphertext (kind 4 and 1059) is stored as received. It is encrypted on
-the wire, so a database dump does not reveal plaintext. The key to decrypt
-it is not in the same database unless the user has chosen the local signer
-with the same origin — in which case the encrypted key is there, and the
-passphrase is required to use it.
+the wire, so a database dump does not reveal plaintext. There is no key in
+the same database to decrypt it with — nothing in the UI stores one.
 
 ### Bridge (SQLite)
 
@@ -199,17 +200,19 @@ credentials, or session tokens. The bridge does not hold a private key.
 | Browser → bridge | `ws://` on loopback | Plaintext on loopback only. If the bridge is remote, `wss://` behind a TLS reverse proxy. |
 | Bridge → relay | `wss://` | Direct. TLS required. |
 
-`ws://` is accepted only for `localhost` and `127.0.0.1`. The bridge refuses
-to bind to a non-loopback address unless `KRIVOSTR_BIND` is set explicitly,
-and logs a warning when it is.
+`ws://` is accepted for loopback (`localhost`, `127.0.0.1`); anything else
+should be `wss://` behind a TLS reverse proxy. `serve --host` defaults to
+`127.0.0.1` — there is no `KRIVOSTR_BIND` variable, despite what an older
+version of this document claimed.
 
 ### Deployment footgun
 
 `docker run -p 8081:8081 krivostr` publishes to the host's default interface,
-which is reachable from the LAN. The compose file in `docker/` uses
-`127.0.0.1:8081:8081` for this reason. If you run the container without
-compose, use `-p 127.0.0.1:8081:8081` unless you have a reverse proxy in
-front of it and understand the consequences.
+which is reachable from the LAN — and so does the shipped
+`docker/docker-compose.yml`, whose `ports` entry is `8081:8081` with no
+loopback qualifier. If you serve past loopback, bind
+`-p 127.0.0.1:8081:8081` explicitly unless you have a reverse proxy in front
+of it and understand the consequences.
 
 A bridge exposed to the network with no authentication lets anyone on that
 network read the event cache, subscribe to any filter, and (if the user has
@@ -238,8 +241,8 @@ everything is a security document nobody should trust.
   belongs to the human the display name suggests. NIP-05 is a weak signal
   and is displayed as such.
 - **Anything written by a future version of this client.** Security
-  properties are per-release. A finding against one version does not
-  automatically apply to another.
+  properties are per-release. A finding against one version says nothing
+  about another until it is re-checked there.
 
 ---
 

@@ -17,9 +17,11 @@ The path comes from `KRIVOSTR_DB` and defaults to `.krivostr/events.db`.
 | `idx_kind` | On `events(kind)`. |
 | `events_fts_ai` | Trigger keeping `events_fts` in step on insert. |
 | `events_fts_ad` | Trigger keeping `events_fts` in step on delete. |
+| `outbox` | Events the bridge accepted but no upstream confirmed, flushed oldest-first. |
+| `relay_config` | Remembered upstream relays (`relay add` / `POST /relays`). |
 
-Full-text search is implemented: `krivostr search <query>` and the bridge's
-`/search` endpoint match `events_fts` and rank with `bm25`, falling back to a
+Full-text search is implemented: `krivostr search <query>` and the `api`'s
+`/api/search` route match `events_fts` and rank with `bm25`, falling back to a
 lexical query when FTS5 is missing at build time. `krivostr reindex` rebuilds
 the index from `events`.
 
@@ -45,9 +47,12 @@ version 1, object store `events` keyed on `id`, with **one** index:
 `created_at`, used to read newest-first.
 
 Retention matches the bridge: 30 days for everything except the persistent
-kinds, which are `0`, `3`, `4`, `1059` and `10002`. The Haskell side spells the
-same set in `persistentKinds` and the UI in `PERSISTENT_KINDS`; changing one
-means changing both.
+kinds. The two sides do not spell that set identically: the bridge keeps
+`0`, `3`, `4`, `1059`, `10000`, `10001`, `10002`, `10003` (`persistentKinds`
+in `Store.hs`) while the browser keeps `0`, `3`, `4`, `1059`, and `10002`
+(`PERSISTENT_KINDS` in `cache.ts`). The bridge additionally exempts pins,
+bookmarks, and relay lists; the browser does not. Changing either set means
+deciding whether the other should follow.
 
 `evictExpired` exists and is unit-tested, but **nothing in the app calls it** —
 no timer, no startup sweep. The browser cache grows until the user clears it.

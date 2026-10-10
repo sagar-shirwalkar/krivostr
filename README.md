@@ -81,6 +81,10 @@ cd krivostr
 Open <http://localhost:8081>. The bridge serves the UI, keeps your SQLite vault
 (`.krivostr/events.db`), and works fully offline once relays have fed it.
 
+Every release archive ships SLSA build provenance plus a keyless Sigstore
+bundle — see [docs/security/supply-chain.md](docs/security/supply-chain.md#release-provenance)
+for how to verify a download before running it.
+
 ### Build from source
 
 **Prerequisites:** GHC 9.10.3 (pinned by Stack through `lts-24.61`), Stack, Node 22+,
@@ -181,11 +185,14 @@ docker compose -f docker/docker-compose.yml up
 The image is `debian:bookworm-slim` with `libgmp10`, `zlib1g`, and `ca-certificates`, and
 it runs under `tini` so the bridge gets correct signal handling. The container serves the
 static UI and the bridge together, publishes `:8081`, and keeps the database at
-`/data/events.db` on the `krivostr-data` volume.
+`/data/events.db` on the `krivostr-data` volume. Note the compose file publishes
+`8081:8081` on all interfaces — see the deployment note in
+[docs/security/overview.md](docs/security/overview.md#deployment-footgun) before
+exposing it past loopback.
 
 The published Linux binary is built by `docker/Dockerfile.linux` and checked for a glibc
-floor of 2.33. It is **not** a fully static build: it links against glibc, `libgmp`, and
-`libz`, so it runs on any Linux with glibc 2.33 or newer.
+floor of 2.34. It is **not** a fully static build: it links against glibc, `libgmp`, and
+`libz`, so it runs on any Linux with glibc 2.34 or newer.
 
 ---
 
@@ -197,7 +204,7 @@ Global flags come before the subcommand:
 |---|---|---|---|
 | `--db PATH` | `KRIVOSTR_DB` | `.krivostr/events.db` | SQLite database |
 | `--log-level LEVEL` | `KRIVOSTR_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `--color` / `--no-color` | — | auto | Force or suppress ANSI colour |
+| `--color` / `--no-color` | `NO_COLOR` | auto | Force or suppress ANSI colour (`NO_COLOR` set suppresses unless `--color` is given) |
 | `--version` | — | — | Print the version and exit |
 
 | Command | What it does |
@@ -212,10 +219,10 @@ Global flags come before the subcommand:
 | `verify` | Check a NIP-05 identifier against its domain |
 | `publish` | Publish a Markdown file as a long-form article (NIP-23) |
 | `delete` | Request deletion of your events (NIP-09), removes locally |
-| `resolve` | Resolve a `nostr:` reference, bech32, or hex (NIP-27) |
+| `resolve` | Resolve a `nostr:` reference, bech32, or hex (NIP-27; `nevent`/`naddr` report as unimplemented) |
 | `comment` | Comment on a non-note event by id or address (NIP-22) |
 | `list` | Show or edit a NIP-51 list: `mute`, `pin`, `bookmark` |
-| `count` | Count stored events matching a filter (NIP-45) |
+| `count` | Count stored events matching a filter (NIP-45; ignores `--limit`) |
 | `wallet` | Talk to a lightning wallet: `balance`, `info`, `pay`, `invoice` (NIP-47) |
 | `relay` | List, add, or remove bridge upstream relays |
 | `export` | Bulk export as `nostr` (ndjson), `array`, or `csv` |
@@ -273,10 +280,17 @@ krivostr feed --since 2h --json                # time window, one JSON event per
 krivostr feed --follow --ingest                # stream from relays and store what arrives
 ```
 
-Filter flags shared by `feed`, `search`, `export`, and `watch`: `-k/--kind` (`note`, `dm`,
-`like`, `repost`, `delete`, `metadata`, `follow`, `relays`, or a number), `-a/--author`
-(`npub` or hex), `-t/--tag NAME=VALUE`, `--since`, `--until`, `-n/--limit`,
-`-s/--search` (NIP-50 full text — FTS5 locally, forwarded to relays).
+Filter flags shared by `feed`, `search`, `export`, `watch`, and `count`: `-k/--kind`
+(`note`, `dm`, `like`, `repost`, `delete`, `metadata`, `follow`, `relays`,
+`giftwrap`, or a number 0–65535), `-a/--author` (`npub` or hex), `-t/--tag NAME=VALUE`
+(also accepts `#e=<v>`), `--since`, `--until` (unix timestamp, `YYYY-MM-DD`, or
+relative `90s|15m|2h|7d|3w|6mo|1y`), `-n/--limit` (default 100), `-s/--search`
+(NIP-50 full text — FTS5 locally, forwarded to relays).
+
+Two sharp edges: `--follow` drops `--limit` (a limit means nothing to a live
+subscription), and `--ingest` only stores what verifies — forged events are rejected
+with `cli: rejected event … (invalid signature)` while the display keeps showing
+what arrived.
 
 ### `search`
 
@@ -284,6 +298,9 @@ Filter flags shared by `feed`, `search`, `export`, and `watch`: `-k/--kind` (`no
 krivostr search "gm" --any -n 20               # any word, not all
 krivostr search nostr -k note --since 7d
 ```
+
+`search` takes a `QUERY` positional and the shared filter flags (including `-s/--search`
+as a second query source). `--any` matches any word instead of requiring all of them.
 
 ### `dm`
 
@@ -300,6 +317,49 @@ of NIP-44; see [Known limitations](#known-limitations). The NIP-17 stack — kin
 rumor, NIP-44 seal, gift wrap — is implemented and tested in Haskell and
 TypeScript, but `dm` still sends kind 4.
 
+`--inbox` reads from the local store only (default 50, `-n` to change) — nothing is
+fetched from relays. Sends wait up to `--timeout` seconds (default 15) per relay and
+are stored locally once at least one relay accepts; the process exits non-zero when
+every relay refuses, so scripts can test the outcome.
+
+### Sends: `reply`, `react`, `repost`, `publish`, `comment`, `delete`
+
+All of these need `KRIVOSTR_NSEC`, take repeatable `--relay` (else the stored kind-10002
+read hints, else the defaults), and wait `--timeout` seconds (default 15) per relay:
+
+```bash
+krivostr reply <event-id> "well said"          # NIP-10, marked e tags, root resolved from the store
+krivostr react <event-id> --emoji "🤙"          # NIP-25 kind 7, default +
+krivostr repost <event-id>                     # kind 6 for notes, kind 16 + k tag otherwise
+krivostr repost <event-id> --quote "read this" # kind 1 + q tag, deliberately no e tag (stays out of the thread)
+krivostr publish hello.md --title "Hello" --slug hello --summary "…" --image https://…
+krivostr comment <event-id> "great article"    # kind 1111; refuses kind 1 (use reply, not comment)
+krivostr comment kind:pubkey:slug "…"          # …or an address for versioned content
+krivostr delete <event-id>…                    # kind 5; refuses other people's events, then removes yours locally
+```
+
+`publish` takes a Markdown file (required) and a `--title` (required); `--slug`
+defaults to the slugified title, and the printed `30023:pubkey:slug` address replaces
+on re-publish per slug. Like `dm`, every send here is stored locally on acceptance so
+`feed` and `delete` can find it afterwards.
+
+### Lookup, lists, counting, wallet
+
+```bash
+krivostr verify alice@example.com --pubkey npub1…   # NIP-05 over HTTPS; --pubkey defaults to your own key
+krivostr resolve nostr:npub1…                       # authors, relays, stored events (nevent/naddr: not yet)
+krivostr list mute --add npub1… --del npub1…        # mute | pin | bookmark; no --add/--del prints the list
+krivostr count -k note --since 7d                   # NIP-45; --limit is ignored, everything matching counts
+krivostr wallet balance                             # needs KRIVOSTR_NWC=nostr+walletconnect://…
+krivostr wallet pay lnbc1…                          # fixed 30s timeout; first relay in the NWC URI answers
+krivostr wallet invoice 21000 --description "tip"
+```
+
+`list` values are authors for `mute`, event ids for `pin`, and either (addresses as
+`a`, ids as `e`) for `bookmark`; edits publish the new list event and store it.
+`wallet` does `balance`, `info`, `pay`, and `invoice` as single-flight NIP-47 calls —
+no wallet service ships here, only the client side.
+
 ### `relay`, upstreams, and the bridge control channel
 
 Upstream relays resolve in three layers: `--upstream` flags first, then the
@@ -310,7 +370,7 @@ saved set:
 ```bash
 krivostr relay list                        # what serve will connect to
 krivostr relay add wss://my-relay.example  # remembered in SQLite
-krivostr relay remove wss://relay.damus.io # forgotten (pool drops it live if connected)
+krivostr relay remove wss://relay.damus.io # forgotten (needs a bridge restart, or DELETE below, to drop live)
 krivostr serve                             # flags ∪ table, else defaults
 ```
 
@@ -327,6 +387,12 @@ curl -X POST localhost:8081/relays -d '{"url":"wss://x.example"}'   # connect + 
 curl -X DELETE localhost:8081/relays -d '{"url":"wss://x.example"}' # disconnect + forget
 ```
 
+Two honest details: `POST` only persists the URL when the dial actually connects —
+a dead relay stays ephemeral (retried for ~6 minutes, then dropped with a warning)
+so dead URLs cannot accumulate on disk. And `relay remove` only forgets; a connection
+already in use stays until it drops or the bridge restarts — `DELETE /relays` is the
+live disconnect.
+
 A newly connected relay immediately receives every live client subscription,
 so it joins the feed instead of sitting silent. In the UI, the relay form
 under the status dots drives this endpoint on a local bridge; on the hosted
@@ -337,11 +403,21 @@ demo (direct relays) the same form opens session-only connections instead.
 ```bash
 krivostr export -k note --since 30d --format csv --out notes.csv
 krivostr watch -a npub1… --exec 'notify-send "{content}"'   # {json} {content} {author} {kind}
+krivostr watch --bell --interval 5 --existing               # ring, poll cadence, include history
 krivostr watch --print-unit > ~/.config/systemd/user/krivostr-watch.service
 krivostr api --port 8090                      # GET /health /stats /events /events/:id /search
 krivostr reindex                              # rebuild FTS5 after an import
 krivostr keygen
 ```
+
+`export --format` is `nostr` (ndjson, the default), `array`, or `csv` — case-insensitive,
+with `ndjson` accepted as an alias; CSV tags render as `name=v1|v2` with RFC-4180
+quoting. `watch --exec` substitutes exactly `{json} {content} {author} {kind}` through
+`sh -c` (quoting is the caller's problem); note the generated systemd unit only carries
+`--kind/--author/--tag/--bell` and silently drops `--exec`, `--interval`, `--limit`,
+`--search`, and `--existing`, so re-add what the unit needs. The `api` answers
+permissive CORS (`Access-Control-Allow-Origin: *`); `/search` requires `?q=` and answers
+503 with a `run: krivostr reindex` hint when the store has no search index.
 
 ---
 
@@ -354,8 +430,14 @@ krivostr keygen
 | `KRIVOSTR_PORT` | `8081` | Bridge port (`serve`) |
 | `KRIVOSTR_STATIC_DIR` | `./ui/dist` | Static asset directory |
 | `KRIVOSTR_API_HOST` | `127.0.0.1` | Interface for `api` |
-| `KRIVOSTR_NSEC` | — | Secret key for `dm` |
+| `KRIVOSTR_NSEC` | — | Secret key for `dm` and every send command |
 | `KRIVOSTR_NWC` | — | Wallet connection URI for `wallet` (NIP-47) |
+
+Two `--help` texts name environment variables the runners ignore: `serve --host`
+cites `KRIVOSTR_BRIDGE_HOST`, but the parser's own default shadows it, so only the
+`--host` flag (default `127.0.0.1`) takes effect; `api --host` cites
+`KRIVOSTR_API_HOST` in help yet the dispatch passes the flag straight through, so again
+pass `--host` explicitly. See [Known limitations](#known-limitations).
 
 UI variables are read by Vite at build time, so they must be set before `pnpm build`:
 
@@ -473,6 +555,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 | 07 | `window.nostr` | ✅ full |
 | 09 | Event deletion | ✅ kind 5, `krivostr delete`, local removal + UI hide |
 | 10 | Reply conventions | ✅ marked + positional `e` tags, `krivostr reply`, UI threads |
+| 11 | Relay info | ◐ parses `RelayInfo` (`supportsNip`); nothing fetches it on connect |
 | 13 | Proof of work | ✅ `nonce` tag, leading-zero-bit difficulty, committed target |
 | 18 | Reposts | ✅ kind 6/16 + `q` quotes, `krivostr repost`, UI rendering |
 | 19 | bech32 entities | ✅ keys + `nevent`/`naddr` TLV pointers, both sides |
@@ -494,7 +577,6 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 | 57 | Lightning zaps | ✅ kind 9734 + 9735 receipts, LNURL flow, UI zap dialog |
 | 59 | Gift wrap | ✅ rumor → seal (kind 13) → wrap (kind 1059), official vectors |
 | 17 | Private direct messages | ✅ kind 14 rumor → seal → wrap, ±2 day jitter |
-| 11 | Relay info | ✅ `RelayInfo` document with `supported_nips` |
 | 65 | Relay list metadata | ◐ kind 10002 drives CLI read relays; `writeRelays` unused |
 
 ---
@@ -503,7 +585,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 636 hspec examples across core and client
+make test-backend  # 733 hspec examples across core and client
 make test-ui       # 292 unit tests (jsdom) + 25 browser tests (real Chromium)
 ```
 
@@ -531,13 +613,13 @@ Krivostr.Store               39 / 52      75.0%
 Krivostr.Key                 22 / 30      73.3%
 Krivostr.Filter              17 / 28      60.7%
 …
-TOTAL                      794 / 1447     54.9%
+TOTAL                      846 / 1449     58.4%
 ```
 
 That is the honest number, and it is lower than you would like. The cryptography and the
 NIP modules are well covered; the IO layers — the relay pool, the bridge, the CLI, and
 the HTTP API — dominate the total and are mostly untested. `.hpc-threshold` pins the
-measured total as a ratchet (currently `min: 54`): coverage may rise, and `make coverage`
+measured total as a ratchet (currently `min: 58`): coverage may rise, and `make coverage`
 fails if it drops. If your change raises the measured number, raise the pin in the same
 change; never lower it.
 
@@ -596,18 +678,23 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
 
 - **Ingest trusts nothing.** `Store.insertEvent` verifies every signature and answers
   `Inserted` / `Duplicate` / `InvalidSignature`; the browser cache refuses forgeries too.
-- **Backend test coverage is 54%**, pinned by a ratchet (`.hpc-threshold`): the build
+- **Backend test coverage is 58%**, pinned by a ratchet (`.hpc-threshold`): the build
   fails when coverage drops. The NIP modules are well covered; the relay pool, bridge,
   CLI, and HTTP API are not.
 - **The local signer keeps the secret in memory for the session only.** There is no
   at-rest encryption and nothing is written to disk, but there is also no keyring
   integration.
-- **The Linux binary is not static.** It needs glibc 2.33+, `libgmp`, and `libz`.
+- **The Linux binary is not static.** It needs glibc 2.34+, `libgmp`, and `libz`.
 - **Upstream `search` depends on the relay.** The bridge answers from FTS5; remote
   relays without NIP-50 ignore the `search` key and return unfiltered matches.
 - **`_headers` applies to Cloudflare Pages only.** `krivostr serve` serves the same files
   without the CSP.
 - **`dm @alice` is not accepted**; pass an `npub` or hex key.
+- **Two `--help` texts name environment variables the runners ignore.**
+  `KRIVOSTR_BRIDGE_HOST` is shadowed by the parser default and `KRIVOSTR_API_HOST` is
+  never read by the `api` dispatch — pass `--host` explicitly until those are wired up.
+- **`resolve` does not resolve `nevent`/`naddr` yet.** They parse as opaque and print a
+  phase-2.3 stub instead of an id or coordinate.
 
 ---
 
@@ -621,7 +708,6 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
 
 ### Medium-term
 
-- **NIP-02** — parse and honour kind 3 follow lists.
 - **NIP-17** — switch `dm` from NIP-04 to gift-wrapped kind 14.
 - **NIP-49** — encrypt the local signer's key at rest with `ncryptsec`.
 
