@@ -29,7 +29,7 @@ drawSearch now st
         , str (show matches <> " match(es) for " <> T.unpack (asSearchQuery st))
         , if matches == 0
             then str "// nothing matches — try --any terms or fewer words"
-            else renderList (drawRow now (asPending st)) True (asList st)
+            else renderList (drawRow now (asPending st) (asRevealed st)) True (asList st)
         ]
   where
     matches :: Int

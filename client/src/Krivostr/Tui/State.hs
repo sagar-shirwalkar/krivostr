@@ -25,6 +25,7 @@ module Krivostr.Tui.State
   , revealSelected
   , yankSelected
   , stepEnter
+  , cycleScreen
   ) where
 
 import Brick.Widgets.Edit (editor)
@@ -131,6 +132,11 @@ closeCmd st = st { asCmdLine = Nothing }
 applyCommand :: Command -> AppState -> AppState
 applyCommand cmd st = case cmd of
   CmdQuit        -> st { asQuit = True, asCmdLine = Nothing }
+  CmdRelays      -> closeCmd (st { asScreen = SRelays })
+  CmdLists       -> closeCmd (st { asScreen = SLists })
+  CmdOutbox      -> closeCmd (st { asScreen = SOutbox })
+  CmdDm          -> closeCmd (st { asScreen = SDm })
+  CmdHelp        -> closeCmd (st { asScreen = SHelp })
   CmdUnknown raw -> closeCmd (pushLogText ("unknown command: " <> raw) st)
 
 -- | Key handling. Three layers, checked in order: an open command line
@@ -192,6 +198,7 @@ stepNavKey v st = case v of
   V.EvKey (V.KChar 'c') [] -> commentFor st
   V.EvKey (V.KChar 'v') [] -> revealSelected st
   V.EvKey (V.KChar 'y') [] -> yankSelected st
+  V.EvKey (V.KChar '\t') [] -> cycleScreen st
   V.EvKey (V.KChar c) [] | asScreen st == SLists, c >= '1', c <= '3' ->
     st { asListTab = fromEnum c - fromEnum '1' }
   _ -> st
@@ -201,6 +208,17 @@ stepNavKey v st = case v of
       SFeed   -> nav f s
       SSearch -> nav f s
       _       -> s
+
+-- | Cycle through screens: Feed → Relays → Lists → DM → Outbox → Help → Feed
+cycleScreen :: AppState -> AppState
+cycleScreen s = case asScreen s of
+  SFeed   -> s { asScreen = SRelays }
+  SRelays -> s { asScreen = SLists }
+  SLists  -> s { asScreen = SDm }
+  SDm     -> s { asScreen = SOutbox }
+  SOutbox -> s { asScreen = SHelp }
+  SHelp   -> s { asScreen = SFeed }
+  _       -> s
 
 -- | Back to the feed, restoring its widget from the model. Search results
 -- are a borrowed widget, not model state — leaving the screen gives them back.

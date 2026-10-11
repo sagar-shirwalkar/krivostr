@@ -142,7 +142,7 @@ isCtrl _ _                              = False
 
 -- | Immediate sends act on the focused event of a feed-like screen.
 isImmediateKey :: V.Event -> Bool
-isImmediateKey (V.EvKey (V.KChar c) []) = c `elem` ("aRdmy" :: String)
+isImmediateKey (V.EvKey (V.KChar c) []) = c `elem` ("aRdm" :: String)
 isImmediateKey _                        = False
 
 -- | Search edge: FTS answers in milliseconds, so run it synchronously and
@@ -371,7 +371,7 @@ drawUI :: AppState -> [Widget Name]
 drawUI st = [vBox [mainView, statusBar st, logPane st, cmdLine st]]
   where
     mainView = case asScreen st of
-      SThread _   -> drawThread (asNow st) (asPending st) (asThread st)
+      SThread _   -> drawThread (asNow st) (asPending st) (asRevealed st) (asThread st)
       SSearch     -> drawSearch (asNow st) st
       SCompose t  -> drawCompose st t (asCompose st)
       SLists      -> drawLists st

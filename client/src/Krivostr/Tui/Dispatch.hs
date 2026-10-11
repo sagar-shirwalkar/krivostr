@@ -17,6 +17,11 @@ import qualified Data.Text as T
 -- ('CmdUnknown'), never a parse failure — the bar must not crash on typos.
 data Command
   = CmdQuit
+  | CmdRelays
+  | CmdLists
+  | CmdOutbox
+  | CmdDm
+  | CmdHelp
   | CmdUnknown Text
   deriving (Show, Eq)
 
@@ -27,6 +32,11 @@ parseCommand raw = case T.words (T.strip raw) of
   []            -> CmdUnknown raw
   ("q" : _)     -> CmdQuit
   ("quit" : _)  -> CmdQuit
+  ("relays" : _) -> CmdRelays
+  ("lists" : _)  -> CmdLists
+  ("outbox" : _) -> CmdOutbox
+  ("dm" : _)     -> CmdDm
+  ("help" : _)   -> CmdHelp
   _             -> CmdUnknown raw
 
 -- | One help line per command, rendered by the Help view. Written next to
@@ -35,4 +45,9 @@ parseCommand raw = case T.words (T.strip raw) of
 commandHelp :: [(Text, Text)]
 commandHelp =
   [ (":q, :quit", "leave the TUI")
+  , (":relays", "show relays view")
+  , (":lists", "show mute/pin/bookmark lists view")
+  , (":outbox", "show outbox view")
+  , (":dm", "show DM view")
+  , (":help", "show help view")
   ]

@@ -15,6 +15,7 @@ import Data.Set (Set)
 import Data.Text (Text)
 import Data.Time.Clock.POSIX (POSIXTime)
 import Krivostr.Event (Event, evTags)
+import Krivostr.Nip.Nip36 (isSensitive)
 import Krivostr.Tui.Types (Name)
 import Krivostr.Tui.Views.Feed (drawRow)
 
@@ -30,7 +31,7 @@ threadReplies rid = filter cites
 
 -- | Root on top, replies below it. The caller passes root-first (see
 -- 'stepEnter'); an empty thread says so rather than rendering blank.
-drawThread :: POSIXTime -> Set Text -> [Event] -> Widget Name
-drawThread now pending evs = case evs of
+drawThread :: POSIXTime -> Set Text -> Set Text -> [Event] -> Widget Name
+drawThread now pending revealed evs = case evs of
   [] -> str "// no replies yet — o fetches missing relatives from relays"
-  (root : rest) -> vBox (drawRow now pending False root : map (drawRow now pending False) rest)
+  (root : rest) -> vBox (drawRow now pending revealed False root : map (drawRow now pending revealed False) rest)
