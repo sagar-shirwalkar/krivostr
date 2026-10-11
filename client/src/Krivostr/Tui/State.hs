@@ -14,6 +14,17 @@ module Krivostr.Tui.State
   , applyCommand
   , selectedEvent
   , findEvent
+  , mergeFetched
+  , clearPending
+  , stepCmdKey
+  , stepSearchKey
+  , stepNavKey
+  , popScreen
+  , composeFor
+  , commentFor
+  , revealSelected
+  , yankSelected
+  , stepEnter
   ) where
 
 import Brick.Widgets.Edit (editor)
