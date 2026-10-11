@@ -26,8 +26,8 @@ cd ui
 pnpm install --frozen-lockfile
 pnpm dev              # Vite dev server
 pnpm typecheck        # tsc --noEmit
-pnpm test             # 292 unit tests (jsdom)
-pnpm test:browser     # 25 browser tests (real Chromium)
+pnpm test             # 297 unit tests (jsdom)
+pnpm test:browser     # 28 browser tests (real Chromium)
 pnpm coverage         # v8, thresholds at 80
 ```
 
@@ -44,6 +44,8 @@ On CI you also need `--with-deps`; `make test-ui` handles the local case.
 
 Running `pnpm dev` needs `VITE_BRIDGE_URL` pointing at a running bridge, or
 `?transport=bridge` on the URL — the Vite dev server does not proxy `/ws`.
+(Localhost pages default to bridge transport when the variable is unset, so
+pointing the URL at the bridge is usually enough.)
 
 ## Make targets
 

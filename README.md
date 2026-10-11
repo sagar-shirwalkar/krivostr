@@ -446,7 +446,9 @@ UI variables are read by Vite at build time, so they must be set before `pnpm bu
 | `VITE_BRIDGE_URL` | same origin | Where the browser opens its WebSocket, e.g. `ws://localhost:8081` |
 | `VITE_KRIVOSTR_TRANSPORT` | `relay` | `bridge` or `relay` |
 
-`?transport=bridge` in the URL sets the same choice at runtime. The transport switch is
+`?transport=bridge` in the URL sets the same choice at runtime. When neither is
+set, a page on `localhost` / loopback defaults to the bridge (the tarball case),
+and anywhere else defaults to direct relays (the hosted demo). The transport switch is
 honoured by the relay-status element, which owns the browser's Nostr socket; the rest of
 the UI reads from that element.
 
@@ -586,7 +588,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
 make test-backend  # 733 hspec examples across core and client
-make test-ui       # 292 unit tests (jsdom) + 25 browser tests (real Chromium)
+make test-ui       # 297 unit tests (jsdom) + 28 browser tests (real Chromium)
 ```
 
 Browser tests run through `@vitest/browser` and Playwright against real Chromium. They

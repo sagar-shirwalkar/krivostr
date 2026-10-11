@@ -44,7 +44,11 @@ with NIP-44 and opaque to the store.
 
 [`ui/src/nostr/cache.ts`](../ui/src/nostr/cache.ts). Database `krivostr`,
 version 1, object store `events` keyed on `id`, with **one** index:
-`created_at`, used to read newest-first.
+`created_at`, used to read newest-first. Verification-gated (`put` refuses
+forgeries) and retention-mirroring — but **currently wired to nothing**: no
+component imports it, so the bridge's SQLite is the only durable store in
+practice. The paragraphs below describe what the module does, not what the
+app uses.
 
 Retention matches the bridge: 30 days for everything except the persistent
 kinds. The two sides do not spell that set identically: the bridge keeps
@@ -61,7 +65,9 @@ behaviour.
 
 **NIP-49 `ncryptsec`** — the core `Krivostr.Nip.Nip49` module encrypts
 private keys with scrypt + XChaCha20-Poly1305. The browser does not use it
-yet; IndexedDB holds keys in the clear.
+yet, and nothing in the UI stores a key in IndexedDB at all — the local
+signer holds a pasted key in memory for the session. See
+[signers.md](signers.md).
 
 Kind 4 events are stored **encrypted**, because that is how they arrive over
 the wire — the relay or sender already encrypted them. krivostr does not

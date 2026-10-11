@@ -21,8 +21,8 @@ functions are exceptions, both deliberate:**
 - `Krivostr.Logging.newLogger` is the one `IO` constructor in the logger; the
   rest of `Logging` is a `Writer` that a caller supplies.
 
-`Krivostr.Key` also reads key files with `withBinaryFile` for `importNsecFile`.
-Everything else in the core is a value in, a value out.
+`Krivostr.Key` generates keys from `/dev/urandom`. Everything else in the core
+is a value in, a value out.
 
 If a change needs IO, it belongs in `client/`. That is the rule that keeps the
 core honest.
@@ -38,7 +38,7 @@ Pure Haskell. No network, no database, no clock — timestamps arrive as
 | `Krivostr.Filter` | A filter record and `matches`, a predicate over events. |
 | `Krivostr.Wire` | `ClientMessage` / `RelayMessage` ADTs, `encodeClient`, `decodeRelay`. |
 | `Krivostr.Nip.Nip01` | Canonical serialization, event id, sign, verify. |
-| `Krivostr.Nip.Nip44` | ChaCha20-Poly1305 + HKDF (v2, short-ciphertext guard, payload-size guard). |
+| `Krivostr.Nip.Nip44` | Raw ChaCha20 + HMAC-SHA256 (+ HKDF key derivation). Deliberately not an AEAD: a Poly1305 tag would break the wire every other implementation expects. |
 | `Krivostr.Nip.Nip59` | Gift wrap (rumor → NIP-44 seal → ephemeral key). |
 | `Krivostr.Nip.Nip17` | Private DMs (rumor → NIP-44 seal → gift wrap, ±2 day timestamp). |
 | `Krivostr.Nip.Nip49` | `ncryptsec` (scrypt + XChaCha20-Poly1305, bech32 `ncryptsec1...`). |

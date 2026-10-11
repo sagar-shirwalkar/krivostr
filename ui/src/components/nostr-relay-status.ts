@@ -127,7 +127,10 @@ export class NostrRelayStatus extends LitElement {
     handle.subscribe('global', FEED_FILTER);
     handle.subscribe('user-relay-list', { kinds: [10002], limit: 1 });
     if (this.lastMutePubkey) {
-      handle.subscribe('own-mute-list', { kinds: [10002], authors: [this.lastMutePubkey], limit: 1 });
+      // Mute lists are NIP-51 kind 10000 — not 10002 (relay lists). A wrong
+      // kind here subscribes a second relay-list feed and muting silently
+      // never receives anything.
+      handle.subscribe('own-mute-list', { kinds: [10000], authors: [this.lastMutePubkey], limit: 1 });
     }
   }
 
@@ -168,7 +171,7 @@ export class NostrRelayStatus extends LitElement {
   subscribeOwn(pubkey: string): void {
     this.lastMutePubkey = pubkey;
     for (const slot of this.slots) {
-      slot.handle.subscribe('own-mute-list', { kinds: [10002], authors: [pubkey], limit: 1 });
+      slot.handle.subscribe('own-mute-list', { kinds: [10000], authors: [pubkey], limit: 1 });
     }
   }
 

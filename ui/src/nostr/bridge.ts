@@ -132,12 +132,36 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
  * Transport chooser: use bridge if `?transport=bridge` is present, or if
  * the environment variable `VITE_KRIVOSTR_TRANSPORT` is set to "bridge".
  * Otherwise, talk directly to relays.
+ *
+ * Kept separate from the module-level constant because Vite inlines
+ * `import.meta.env` when it builds this file, which leaves nothing a test can
+ * stub; the decision itself is worth testing on its own.
  */
-export const chooseTransport = (): 'bridge' | 'relay' => {
-  if (typeof window !== 'undefined') {
-    const p = new URLSearchParams(window.location.search);
-    if (p.get('transport') === 'bridge') return 'bridge';
+export const decideTransport = (
+  search: string | undefined,
+  hostname: string | undefined,
+  envTransport: string | undefined,
+): 'bridge' | 'relay' => {
+  // Explicit beats implicit, always: a URL param or a build-time choice wins
+  // over any heuristic, so demos and debugging stay predictable.
+  const param = search !== undefined ? new URLSearchParams(search).get('transport') : null;
+  if (param === 'bridge') return 'bridge';
+  if (param === 'relay') return 'relay';
+  if (envTransport === 'bridge') return 'bridge';
+  if (envTransport === 'relay') return 'relay';
+  // Unset: a loopback page is almost certainly the bundled UI served by the
+  // bridge itself (the release tarball, `krivostr serve`), so default to it
+  // and let localhost just work. Anywhere else — the hosted demo, a LAN
+  // address — stays relay-direct, exactly as before.
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return 'bridge';
   }
+  return 'relay';
+};
+
+export const chooseTransport = (): 'bridge' | 'relay' => {
+  const search = typeof window !== 'undefined' ? window.location.search : undefined;
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : undefined;
   const env = (import.meta as unknown as { env?: Record<string, string> }).env;
-  return env?.VITE_KRIVOSTR_TRANSPORT === 'bridge' ? 'bridge' : 'relay';
+  return decideTransport(search, hostname, env?.VITE_KRIVOSTR_TRANSPORT);
 };

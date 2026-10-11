@@ -1,9 +1,10 @@
 /**
  * Signer plug-in. The publish boundary only ever sees a `Signer`.
  * Three implementations:
- *   - LocalSigner  — private key held in memory, decrypted from IndexedDB.
+ *   - LocalSigner  — private key pasted per session, held in memory only.
  *   - Nip07Signer  — delegates to window.nostr (browser extension).
- *   - Nip46Signer  — remote bunker over NIP-04-encrypted DMs.
+ *   - Nip46Signer  — remote bunker over NIP-44-encrypted DMs (the transport
+ *     is injected; the picker passes the NIP-44 adapter).
  *
  * None of these touch the core event algebra except through `UnsignedEvent`
  * and the `Result` type.
