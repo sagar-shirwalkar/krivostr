@@ -48,6 +48,7 @@ export class NostrRelayStatus extends LitElement {
     .bad  { background: var(--coral); }
     .relay { color: var(--text-dim); font-size: var(--step--1); font-family: var(--font-mono); }
     .hint { color: var(--mute); font-size: var(--step--1); }
+    .warn { color: var(--amber); font-size: var(--step--1); font-family: var(--font-mono); }
     .relay button {
       background: transparent; border: none; color: var(--mute);
       font-family: var(--font-mono); cursor: pointer; padding: 0 0 0 var(--s-1);
@@ -396,12 +397,27 @@ export class NostrRelayStatus extends LitElement {
     return 'bad';
   }
 
+  /**
+   * The bridge slot failed (closed or errored) while the page expects it.
+   * The dot already turns red; the hint line next to it names the two escape
+   * hatches, so a dead bridge teaches instead of just looking broken. Only
+   * ever renders on failure — production UX is untouched.
+   */
+  private bridgeDown(): boolean {
+    if (this.transport !== 'bridge') return false;
+    const slot = this.slots.find((s) => s.url === 'bridge');
+    return slot !== undefined && slot.state !== 'open' && slot.state !== 'connecting';
+  }
+
   override render() {
     const removable = (url: string): boolean =>
       this.transport === 'relay' && url !== 'bridge' && this.slots.length > 1;
     return html`
       ${this.transport === 'bridge'
         ? html`<span class="hint">transport: bridge</span>`
+        : ''}
+      ${this.bridgeDown()
+        ? html`<span class="warn">bridge unreachable — if running pnpm dev, set VITE_BRIDGE_URL=ws://localhost:8081/ws, or use ?transport=relay</span>`
         : ''}
       ${this.slots.map(
         (s) => html`

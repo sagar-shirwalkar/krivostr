@@ -127,8 +127,7 @@ describe('<krivostr-relay-status>', () => {
     history.replaceState(null, '', window.location.pathname);
   });
 
-  it('subscribes the viewer mute list as kind 10000, not relay lists', async () => {
-    const sent: string[] = [];
+  it('subscribes the viewer mute list as kind 10000, not relay lists', async () => {    const sent: string[] = [];
     const sockets: Array<{ open: () => void }> = [];
     vi.stubGlobal(
       'WebSocket',
@@ -162,6 +161,48 @@ describe('<krivostr-relay-status>', () => {
       .find((m) => m[0] === 'REQ' && m[1] === 'own-mute-list');
     expect(mute).toBeDefined();
     expect(mute![2]).toEqual({ kinds: [10000], authors: ['abc123pubkey'], limit: 1 });
+    el.remove();
+  });
+
+  it('names the escape hatches when the bridge slot fails', async () => {
+    const sockets: Array<{ open: () => void; close: () => void }> = [];
+    vi.stubGlobal(
+      'WebSocket',
+      class {
+        onopen: (() => void) | null = null;
+        onclose: (() => void) | null = null;
+        onerror: ((e: unknown) => void) | null = null;
+        onmessage: ((m: { data: string }) => void) | null = null;
+        constructor(public url: string) {
+          sockets.push({
+            open: () => {
+              this.onopen?.();
+            },
+            close: () => {
+              this.onclose?.();
+            },
+          });
+        }
+        send() {}
+        close() {}
+      },
+    );
+    // Loopback test page → bridge transport by default; no param needed.
+    const el = document.createElement('krivostr-relay-status') as NostrRelayStatus;
+    document.body.appendChild(el);
+    await el.updateComplete;
+    // Connecting: no warning yet.
+    expect(el.shadowRoot!.querySelector('.warn')).toBeNull();
+    for (const s of sockets) s.open();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.warn')).toBeNull();
+    // Closed: the hint names both escape hatches.
+    for (const s of sockets) s.close();
+    await el.updateComplete;
+    const warn = el.shadowRoot!.querySelector('.warn');
+    expect(warn).toBeTruthy();
+    expect(warn!.textContent).toContain('VITE_BRIDGE_URL=ws://localhost:8081/ws');
+    expect(warn!.textContent).toContain('?transport=relay');
     el.remove();
   });
 });
