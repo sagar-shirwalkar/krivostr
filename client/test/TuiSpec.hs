@@ -6,6 +6,7 @@
 module TuiSpec (tuiSpec) where
 
 import Brick.Widgets.Edit (editor, getEditContents)
+import Brick.Widgets.List (listElements)
 import Data.Foldable (toList)
 import Data.Maybe (isJust)
 import Data.Sequence (Seq)
@@ -13,8 +14,6 @@ import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.IORef (newIORef, readIORef, writeIORef)
-import System.IO.Unsafe (unsafePerformIO)
 import qualified Graphics.Vty.Input.Events as V
 import Krivostr.Cli.Options (buildFilter, emptyFilterOpts)
 import Krivostr.Event
@@ -51,6 +50,7 @@ import Krivostr.Tui.State
   , yankSelected
   , stepEnter
   , cycleScreen
+  , cycleScreenBack
   )
 import Krivostr.Tui.Types
 import Krivostr.Tui.Views.Compose (drawCompose, targetLine)
@@ -759,6 +759,34 @@ tuiSpec = describe "TUI" $ do
       let s6 = cycleScreen s5
       asScreen s6 `shouldBe` SFeed
 
+    it "cycles through screens via step with Tab key" $ do
+      let s0 = step (key (V.EvKey (V.KChar '\t') [])) st0
+      asScreen s0 `shouldBe` SRelays
+      let s1 = step (key (V.EvKey (V.KChar '\t') [])) s0
+      asScreen s1 `shouldBe` SLists
+      let s2 = step (key (V.EvKey (V.KChar '\t') [])) s1
+      asScreen s2 `shouldBe` SDm
+      let s3 = step (key (V.EvKey (V.KChar '\t') [])) s2
+      asScreen s3 `shouldBe` SOutbox
+      let s4 = step (key (V.EvKey (V.KChar '\t') [])) s3
+      asScreen s4 `shouldBe` SHelp
+      let s5 = step (key (V.EvKey (V.KChar '\t') [])) s4
+      asScreen s5 `shouldBe` SFeed
+
+    it "cycles backwards via step with Shift-Tab (KBackTab)" $ do
+      let s0 = step (key (V.EvKey V.KBackTab [])) st0
+      asScreen s0 `shouldBe` SHelp
+      let s1 = step (key (V.EvKey V.KBackTab [])) s0
+      asScreen s1 `shouldBe` SOutbox
+      let s2 = step (key (V.EvKey V.KBackTab [])) s1
+      asScreen s2 `shouldBe` SDm
+      let s3 = step (key (V.EvKey V.KBackTab [])) s2
+      asScreen s3 `shouldBe` SLists
+      let s4 = step (key (V.EvKey V.KBackTab [])) s3
+      asScreen s4 `shouldBe` SRelays
+      let s5 = step (key (V.EvKey V.KBackTab [])) s4
+      asScreen s5 `shouldBe` SFeed
+
   describe "State.applyCommand new commands" $ do
     it "switches to relays view" $ do
       let st = applyCommand CmdRelays st0
@@ -786,16 +814,27 @@ tuiSpec = describe "TUI" $ do
       asCmdLine st `shouldBe` Nothing
 
   describe "Views.Feed muting filter" $ do
-    it "filters out events from muted authors" $ do
+    it "filters out events from muted authors (retroactive on EvMuted)" $ do
       e1 <- mkEv 1 "from muted"
       e2 <- mkEv 2 "from normal"
       let st = foldr (step . EvIncoming) st0 [e2, e1]
-          muted = st { asMuted = Set.singleton (evPubkey e1) }
-      let widget = drawFeed 1700000001 muted
-      -- The feed should only show e2 (not muted)
-      -- We can't easily inspect the widget, but we can check the filteredFeed logic
-      let filtered = Seq.filter (\e -> not (Set.member (evPubkey e) (asMuted muted))) (asFeed muted)
-      Seq.length filtered `shouldBe` 1
+          -- Process the mute event - this should purge e1 from feed
+          muted = step (EvMuted (evPubkey e1)) st
+      -- The model feed should only contain e2 (not muted)
+      let feed = toList (asFeed muted)
+      length feed `shouldBe` 1
+      evContent (head feed) `shouldBe` "from normal"
+
+    it "rejects incoming events from muted authors at ingest time" $ do
+      e1 <- mkEv 1 "from muted"
+      e2 <- mkEv 2 "from normal"
+      let st = st0 { asMuted = Set.singleton (evPubkey e1) }
+          -- Incoming events from muted author should be rejected
+          st1 = step (EvIncoming e1) st
+          st2 = step (EvIncoming e2) st1
+      let feed = toList (asFeed st2)
+      length feed `shouldBe` 1
+      evContent (head feed) `shouldBe` "from normal"
 
   describe "Views.Feed NIP-36 content warning" $ do
     it "hides sensitive content when not revealed" $ do

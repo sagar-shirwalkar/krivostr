@@ -14,8 +14,6 @@ import Brick.Types (Widget)
 import Brick.Widgets.Core (str, txt)
 import Brick.Widgets.List (renderList)
 import Data.Foldable (toList)
-import Data.Sequence (Seq)
-import qualified Data.Sequence as Seq
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -28,14 +26,12 @@ import Krivostr.Tui.Sanitize (stripAnsiAndC0)
 import Krivostr.Tui.Types (AppState (..), Name)
 
 -- | The feed: rows newest-first, or the empty state when the store has
--- nothing for the filter yet. Muted authors are filtered out.
+-- nothing for the filter yet. Muted authors are filtered at the model level
+-- (see 'Krivostr.Tui.State.pushEvent' and 'purgeMutedAuthor').
 drawFeed :: POSIXTime -> AppState -> Widget Name
-drawFeed now st = case toList (filteredFeed st) of
+drawFeed now st = case toList (asFeed st) of
   [] -> str "// no events yet — fill the store with feed --follow --ingest"
   _  -> renderList (drawRow now (asPending st) (asRevealed st)) True (asList st)
-  where
-    filteredFeed s = Seq.filter (not . isMutedAuthor s) (asFeed s)
-    isMutedAuthor s e = Set.member (evPubkey e) (asMuted s)
 
 -- | One row. Sanitized before clipping (never the reverse: an escape could
 -- hide past the clip point), content clipped to a column budget. Width-aware

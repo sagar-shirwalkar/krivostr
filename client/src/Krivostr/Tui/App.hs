@@ -42,6 +42,7 @@ import Krivostr.Nip.Nip51 (addEntry, muteKind)
 import Krivostr.Cli.Nostr (signUnsigned)
 import Krivostr.Store (StoreStats (ssTotal))
 import Krivostr.Tui.Backend (TuiBackend (..))
+import Krivostr.Tui.Dispatch (commandHelp)
 import Krivostr.Tui.State (findEvent, pushLogText, selectedEvent, step)
 import Krivostr.Tui.Types
 import Krivostr.Tui.Views.Compose (drawCompose)
@@ -378,5 +379,37 @@ drawUI st = [vBox [mainView, statusBar st, logPane st, cmdLine st]]
       SDm         -> str "// dm view arrives in M3 — the CLI `dm` covers sending"
       SRelays     -> str "// relays view arrives in M3 — `relay list` covers it"
       SOutbox     -> str "// outbox view arrives in M3 — depth is in the status bar"
-      SHelp       -> str "// help arrives in M3 — ? is currently unbound"
+      SHelp       -> drawHelp
       SFeed       -> drawFeed (asNow st) st
+
+drawHelp :: Widget Name
+drawHelp = vBox
+  ( [ str "Global keys:"
+    , str "  ?        Help (this screen)"
+    , str "  q        Quit / pop screen"
+    , str "  :        Command bar"
+    , str "  /        Search"
+    , str "  ~        Toggle log pane"
+    , str "  Tab      Cycle screens (Feed→Relays→Lists→DM→Outbox→Help)"
+    , str "  Esc      Cancel overlay"
+    , str ""
+    , str "Feed keys:"
+    , str "  j/k      Move down/up"
+    , str "  g/G      Jump top/bottom"
+    , str "  Enter    Open thread"
+    , str "  r        Reply compose"
+    , str "  A        React compose (+)"
+    , str "  Q        Quote compose"
+    , str "  c        Comment compose"
+    , str "  v        Reveal sensitive (NIP-36)"
+    , str "  y        Yank event id"
+    , str "  a        Immediate like"
+    , str "  R        Immediate repost"
+    , str "  d        Immediate delete (own)"
+    , str "  m        Immediate mute author"
+    , str "  f        Toggle follow"
+    , str ""
+    , str "Commands (prefix with :):"
+    ] <>
+    map (\(cmd, desc) -> txt ("  " <> cmd <> "  " <> desc)) commandHelp
+  )

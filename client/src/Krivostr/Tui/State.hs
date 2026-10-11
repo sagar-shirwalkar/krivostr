@@ -26,6 +26,7 @@ module Krivostr.Tui.State
   , yankSelected
   , stepEnter
   , cycleScreen
+  , cycleScreenBack
   ) where
 
 import Brick.Widgets.Edit (editor)
@@ -38,7 +39,7 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Graphics.Vty.Input.Events as V
-import Krivostr.Event (Event, evId, evKind, evTags)
+import Krivostr.Event (Event, evId, evKind, evPubkey, evTags)
 import Krivostr.Logging (LogEntry (..), LogLevel (..))
 import Krivostr.Tui.Dispatch (Command (..), parseCommand)
 import Krivostr.Tui.Types
@@ -51,8 +52,7 @@ step ev st = case ev of
   EvIncoming e     -> pushEvent e st
   EvPublishDone eid r -> pushLog (publishEntry eid r) (clearPending eid st)
   EvAsyncResult k r   -> pushLog (asyncEntry k r) st
-  EvMuted hex      -> (pushLogText ("muted " <> hex) st)
-    { asMuted = Set.insert hex (asMuted st) }
+  EvMuted hex      -> pushLogText ("muted " <> hex) (purgeMutedAuthor hex st)
   EvFetched evs    -> mergeFetched evs st
   EvTick          -> st
   EvLog entry     -> pushLog entry st
@@ -62,6 +62,18 @@ step ev st = case ev of
 -- the caller ('pushLog' above); this only clears the marker.
 clearPending :: Text -> AppState -> AppState
 clearPending eid st = st { asPending = Set.delete eid (asPending st) }
+
+-- | Insert a muted author into the mute set and retroactively purge all
+-- their events from the feed and open thread. Rebuilds the list widget
+-- with selection re-pointed by event id so the cursor doesn't jump.
+purgeMutedAuthor :: Text -> AppState -> AppState
+purgeMutedAuthor hex st =
+  let st' = st { asMuted = Set.insert hex (asMuted st) }
+      feed = Seq.filter (\e -> evPubkey e /= hex) (asFeed st')
+      thread = filter (\e -> evPubkey e /= hex) (asThread st')
+      sel = fst <$> listSelectedElement (asList st')
+      newList = listReplace feed sel (asList st')
+  in st' { asFeed = feed, asThread = thread, asList = newList }
 
 -- | The focused event, if the widget has a selection at all.
 selectedEvent :: AppState -> Maybe Event
@@ -90,13 +102,15 @@ mergeFetched evs st =
         isReply []         = False
     dedupe = foldr (\e acc -> if any ((== evId e) . evId) acc then acc else e : acc) []
 
--- | Prepend an event to the feed unless its id is already there; cap at
--- 'feedCap' newest. Newest-first is the invariant the views render, so the
--- prepend goes left and the cap drops the right ('Seq.take' keeps the left).
--- The widget follows the model (selection preserved by 'listReplace').
+-- | Prepend an event to the feed unless its id is already there or its
+-- author is muted; cap at 'feedCap' newest. Newest-first is the invariant
+-- the views render, so the prepend goes left and the cap drops the right
+-- ('Seq.take' keeps the left). The widget follows the model (selection
+-- preserved by 'listReplace').
 pushEvent :: Event -> AppState -> AppState
 pushEvent e st
   | any ((== evId e) . evId) (toList (asFeed st)) = st
+  | Set.member (evPubkey e) (asMuted st)          = st
   | otherwise =
       let feed = Seq.take feedCap (e <| asFeed st)
           sel = fst <$> listSelectedElement (asList st)
@@ -199,6 +213,7 @@ stepNavKey v st = case v of
   V.EvKey (V.KChar 'v') [] -> revealSelected st
   V.EvKey (V.KChar 'y') [] -> yankSelected st
   V.EvKey (V.KChar '\t') [] -> cycleScreen st
+  V.EvKey V.KBackTab []     -> cycleScreenBack st
   V.EvKey (V.KChar c) [] | asScreen st == SLists, c >= '1', c <= '3' ->
     st { asListTab = fromEnum c - fromEnum '1' }
   _ -> st
@@ -208,6 +223,17 @@ stepNavKey v st = case v of
       SFeed   -> nav f s
       SSearch -> nav f s
       _       -> s
+
+-- | Cycle screens backwards: Feed → Help → Outbox → DM → Lists → Relays → Feed
+cycleScreenBack :: AppState -> AppState
+cycleScreenBack s = case asScreen s of
+  SFeed   -> s { asScreen = SHelp }
+  SHelp   -> s { asScreen = SOutbox }
+  SOutbox -> s { asScreen = SDm }
+  SDm     -> s { asScreen = SLists }
+  SLists  -> s { asScreen = SRelays }
+  SRelays -> s { asScreen = SFeed }
+  _       -> s
 
 -- | Cycle through screens: Feed → Relays → Lists → DM → Outbox → Help → Feed
 cycleScreen :: AppState -> AppState

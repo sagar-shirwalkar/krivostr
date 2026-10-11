@@ -420,6 +420,96 @@ quoting. `watch --exec` substitutes exactly `{json} {content} {author} {kind}` t
 permissive CORS (`Access-Control-Allow-Origin: *`); `/search` requires `?q=` and answers
 503 with a `run: krivostr reindex` hint when the store has no search index.
 
+### `tui`
+
+```bash
+krivostr tui                                    # start the TUI
+krivostr tui --relay wss://nos.lol              # override upstream relays
+krivostr tui --no-ingest                        # disable live follow ingest
+krivostr tui --no-color                         # disable ANSI colours
+```
+
+The TUI is a brick-based terminal interface over the same SQLite store and relay
+pool. It shares the store with `serve` and the CLI (WAL mode with
+`busy_timeout = 5000` allows concurrent access).
+
+**Screens and global keys**
+
+| Screen | Purpose | Enter via |
+|---|---|---|
+| Feed | Timeline, newest first | default |
+| Thread | Note + replies | `Enter` on a note |
+| Search | FTS5 query | `/` or `:search` |
+| DM | Inbox + send | `Tab` cycle or `:dm` |
+| Relays | Connected + configured + outbox depth | `Tab` cycle or `:relays` |
+| Lists | Mute / pin / bookmark tabs | `Tab` cycle or `:lists` |
+| Outbox | Queued events, retry/drop | `Tab` cycle or `:outbox` |
+| Help | Key table + command list | `Tab` cycle or `:help` |
+| Compose | Reply / react / quote / article / DM | `r` `A` `Q` `c` `E` |
+
+Global keys work everywhere: `?` shows the help overlay, `q` quits (or pops back
+from a sub-screen), `:` opens the command bar, `/` enters search, `~` toggles
+the log pane, `Esc` cancels any overlay.
+
+**Feed keys** (Feed, Search, Thread screens):
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Move selection down / up |
+| `g` / `G` | Jump to top / bottom |
+| `Enter` | Open thread for focused note |
+| `r` | Reply compose (NIP-10) |
+| `A` | React compose, prefilled with `+` (NIP-25) |
+| `Q` | Quote compose (NIP-18) |
+| `c` | Comment compose (kind 1111; refuses kind 1) |
+| `v` | Reveal sensitive content (session only, NIP-36) |
+| `y` | Yank full event id to log pane |
+| `a` | Immediate like (`+` reaction) |
+| `R` | Immediate repost |
+| `d` | Immediate delete (own events only) |
+| `m` | Immediate mute author (publishes kind 10000) |
+| `f` | Toggle live follow mode |
+| `1`–`3` | Switch Lists tab (mute / pin / bookmark) when on Lists screen |
+
+**Compose keys** (multiline editor):
+
+| Key | Action |
+|---|---|
+| `Ctrl-G` | Sign and send |
+| `Esc` | Cancel, return to previous screen |
+| `E` | Promote to `$EDITOR` (only on empty editor) |
+
+**Command bar** (opened with `:`):
+
+| Command | Effect |
+|---|---|
+| `:q` / `:quit` | Leave the TUI |
+| `:relays` | Show relays view |
+| `:lists` | Show mute/pin/bookmark lists view |
+| `:outbox` | Show outbox view |
+| `:dm` | Show DM view |
+| `:help` | Show help view |
+| `:search <query>` | Run FTS search |
+| `:verify <id> [--pubkey …]` | Async NIP-05 check |
+| `:publish <file.md>` | Article flow (prompts title/slug) |
+| `:resolve <ref>` | Open thread/author for `nostr:`/bech32/hex |
+| `:export [--format …] [--out …]` | Export current filter |
+| `:wallet …` | NIP-47 via `KRIVOSTR_NWC` |
+| `:reindex` | Rebuild FTS5 index |
+| `:keygen` | Generate keypair (reveals `nsec` on `v`) |
+| `:count` | Exact NIP-45 count for current filter |
+| `:bell on/off` | Terminal bell on matching events |
+| `:exec <cmd>` | Run shell command on match (substitution) |
+| `:limit N` | Cap feed display (default 500) |
+| `:ingest on/off` | Toggle live follow ingest |
+
+**Security notes**
+
+- Muted authors are filtered from the feed (same as CLI `feed` and web UI).
+- Sensitive content (NIP-36 `content-warning` tag) renders as `[hidden — content-warning]` until `v` is pressed; reveals are session-only, never persisted.
+- The log pane (`~`) captures all publish verdicts, async results, and yanks — nothing is printed to stderr (would shred the screen).
+- `KRIVOSTR_NSEC` enables sending; without it the TUI is read-only (same as CLI).
+
 ---
 
 ## Configuration
@@ -590,8 +680,8 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 769 hspec examples across core and client
-make test-ui       # 297 unit tests (jsdom) + 28 browser tests (real Chromium)
+make test-backend  # 221 hspec examples across core and client
+make test-ui       # 310 unit tests (jsdom) + 29 browser tests (real Chromium)
 ```
 
 Browser tests run through `@vitest/browser` and Playwright against real Chromium. They
@@ -617,8 +707,9 @@ Krivostr.Nip.Nip01            4 / 4      100.0%
 Krivostr.Store               39 / 52      75.0%
 Krivostr.Key                 22 / 30      73.3%
 Krivostr.Filter              17 / 28      60.7%
+Krivostr.Tui.State           22 / 22     100.0%
 …
-TOTAL                      911 / 1569     58.1%
+TOTAL                      932 / 1602     58.2%
 ```
 
 That is the honest number, and it is lower than you would like. The cryptography and the
