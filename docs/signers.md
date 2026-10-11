@@ -88,9 +88,9 @@ interface), and the picker heading nudges main identities toward the bunker.
 ## Generating a key
 
 `krivostr keygen` prints an `nsec`/`npub` pair.
-`Krivostr.Key.generatePrivateKey` reads 32 bytes from **`/dev/urandom`**,
-which is POSIX-only: `keygen` will not work on Windows, and there is no
-fallback entropy source. On a malformed draw it retries.
+`Krivostr.Key.generatePrivateKey` draws 32 bytes from the operating system's
+CSPRNG via the `crypton` library — cross-platform, so `keygen` now works on
+Windows, Linux, and macOS alike. On a malformed draw it retries.
 
 ## Choosing a signer
 
@@ -116,6 +116,7 @@ local signer has no passphrase — use NIP-49 instead).
 - **The risk acknowledgment is per tab, not per key.** A new tab asks again
   even for the same burner key. That friction is deliberate; do not "fix" it
   with persistence.
-- **`keygen` entropy is POSIX-only.** `generatePrivateKey` reads
-  `/dev/urandom`: no Windows, no fallback. Generate keys where the OS gives
-  entropy, move the `nsec` over, and keep it out of chat logs.
+- **`keygen` entropy is cross-platform.** `generatePrivateKey` draws from the
+  OS CSPRNG via `crypton`: works on Windows, Linux, and macOS. Generate keys
+  where the OS gives entropy, move the `nsec` over, and keep it out of chat
+  logs.

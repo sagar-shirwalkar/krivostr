@@ -11,6 +11,8 @@
 module Krivostr.Tui
   ( TuiOpts (..)
   , runTui
+  , fillInitial
+  , tuiDefaultKinds
   ) where
 
 import Brick.BChan (BChan, newBChan, writeBChan, writeBChanNonBlocking)
@@ -29,14 +31,13 @@ import Krivostr.Event (Event)
 import Krivostr.Filter (Filter (..))
 import Krivostr.Key (PrivateKey, derivePublicKey, pubKeyHex)
 import Krivostr.Logging (LogLevel (Warn), Logger, drainQueue, emit)
-import Krivostr.Nip.Nip51 (bookmarkKind, bookmarkedIds, muteKind, mutedPubkeys, pinKind, pinnedIds)
+import Krivostr.Nip.Nip51 (bookmarkKind, bookmarkedIds, bookmarkedAddresses, muteKind, mutedPubkeys, pinKind, pinnedIds)
 import Krivostr.Pool (addRelay, broadcast, newPool, poolRelays, removeRelay)
 import Krivostr.Store
   (Store, closeStore, getRelayConfig, openStore, outboxCount, queryEvents, storeStats)
 import Krivostr.Tui.App (tuiApp)
 import Krivostr.Tui.Backend (inProcessBackend)
 import Krivostr.Tui.State (pushEvent)
-import Krivostr.Tui.Types (AppState (..), TuiEvent (..), initialState)
 import Krivostr.Tui.Types (AppState (..), TuiEvent (..), initialState)
 import Krivostr.Wire (ClientMessage (..))
 import System.Exit (exitFailure)
@@ -113,8 +114,9 @@ fillInitial st filt key = do
       let me = pubKeyHex (derivePublicKey sk)
       mutes' <- Set.fromList . concatMap mutedPubkeys <$> listsOf st me muteKind
       pins' <- Set.fromList . concatMap pinnedIds <$> listsOf st me pinKind
-      bookmarks' <- Set.fromList . concatMap bookmarkedIds <$> listsOf st me bookmarkKind
-      pure (mutes', pins', bookmarks')
+      bookmarkIds <- Set.fromList . concatMap bookmarkedIds <$> listsOf st me bookmarkKind
+      bookmarkAddrs <- Set.fromList . concatMap bookmarkedAddresses <$> listsOf st me bookmarkKind
+      pure (mutes', pins', bookmarkIds <> bookmarkAddrs)
   let s0 = (initialState now filt key)
         { asStats = Just stats
         , asOutbox = depth

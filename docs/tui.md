@@ -32,7 +32,7 @@ krivostr tui --no-color
 | Help | Key table + command list | `Tab` cycle or `:help` |
 | Compose | Reply / react / quote / article / DM | `r` `A` `Q` `c` `E` |
 
-Global keys work on feed-like screens (Feed, Thread, Search):
+Global keys work on Feed and Thread screens:
 - `?` — help screen
 - `q` — quit
 - `:` — command bar
@@ -41,6 +41,8 @@ Global keys work on feed-like screens (Feed, Thread, Search):
 - `Esc` — cancel overlay / pop screen
 - `Tab` — cycle screens (Feed→Relays→Lists→DM→Outbox→Help→Feed)
 - `Shift-Tab` — reverse cycle
+
+> **Note:** In Search screen, `stepSearchKey` owns every key — global keys (Tab, ?, f, q, ~, /, Esc) are inert there.
 
 ## Feed keys (Feed, Search, Thread screens)
 
@@ -134,7 +136,7 @@ The TUI and `serve` can run concurrently on the same database:
 | Relays view | ⬜ M3 stub |
 | Outbox view | ⬜ M3 stub |
 | Help view | ✅ |
-| `:wallet`, `:publish`, `:export`, `:search`, `:verify`, `:resolve`, `:export`, `:wallet`, `:reindex`, `:keygen`, `:count`, `:bell`, `:exec`, `:limit`, `:ingest` | ⬜ M3 |
+| `:wallet`, `:publish`, `:export`, `:search`, `:verify`, `:resolve`, `:reindex`, `:keygen`, `:count`, `:bell`, `:exec`, `:limit`, `:ingest` | ⬜ M3 |
 | Mention links (`n` key) | ✅ (lists mentions, fetches referenced events) |
 | Unread counter | ✅ (shows on all screens) |
 | Theme attrs (kind colours) | ✅ |

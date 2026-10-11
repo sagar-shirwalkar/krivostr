@@ -8,8 +8,8 @@
 [![Lit](https://img.shields.io/badge/lit-324FFF?style=for-the-badge&logo=lit&logoColor=white)](https://lit.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![License](https://img.shields.io/badge/AGPL--3.0-red?style=for-the-badge)](LICENSE)
-![GitHub Release](https://img.shields.io/github/v/release/sagar-shirwalkar/krivostr?display_name=release&style=for-the-badge&labelColor=black)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/sagar-shirwalkar/krivostr/ci.yml?branch=main&style=for-the-badge&labelColor=%23404040&color=%232d9e37)
+[![GitHub Release](https://img.shields.io/github/v/release/sagar-shirwalkar/krivostr?display_name=release&style=for-the-badge&labelColor=black&color=%23fbb22b)](https://github.com/sagar-shirwalkar/krivostr/actions/workflows/release.yml)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/sagar-shirwalkar/krivostr/ci.yml?branch=main&style=for-the-badge&labelColor=%23404040&color=%232d9e37)](https://github.com/sagar-shirwalkar/krivostr/actions/workflows/ci.yml)
 
 </div>
 
@@ -680,7 +680,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 221 hspec examples across core and client
+make test-backend  # 862 hspec examples (613 core + 249 client)
 make test-ui       # 310 unit tests (jsdom) + 29 browser tests (real Chromium)
 ```
 
@@ -701,15 +701,15 @@ that `stack test --coverage` writes:
 
 ```
 coverage index: .stack-work/install/…/9.10.3/hpc/combined/all/hpc_index.html
-module                  covered / total
-Krivostr.Schnorr             16 / 16     100.0%
-Krivostr.Nip.Nip01            4 / 4      100.0%
-Krivostr.Store               39 / 52      75.0%
-Krivostr.Key                 22 / 30      73.3%
-Krivostr.Filter              17 / 28      60.7%
-Krivostr.Tui.State           22 / 22     100.0%
+module                       covered / total
+Krivostr.Schnorr              16 / 16     100.0%
+Krivostr.Nip.Nip01             4 / 4      100.0%
+Krivostr.Store                39 / 52      75.0%
+Krivostr.Key                  22 / 30      73.3%
+Krivostr.Filter               17 / 28      60.7%
+Krivostr.Tui.State            28 / 28     100.0%
 …
-TOTAL                      932 / 1602     58.2%
+TOTAL                        941 / 1623    58.0%
 ```
 
 That is the honest number, and it is lower than you would like. The cryptography and the

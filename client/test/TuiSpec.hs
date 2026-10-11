@@ -1,52 +1,68 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | TUI specs: the pure core ('State.step', the 'Dispatch' parser,
--- 'Sanitize') without a terminal. IO edges ('App', 'Backend', 'runTui')
--- are covered by seam tests in the main suite, not here.
+-- 'Sanitize', the views' text layers) plus IO-edge seam tests
+-- ('fillInitial', 'lookupEvent', 'buildUnsigned', 'Backend') driven
+-- against memory stores — the same pattern the main suite uses for
+-- 'handleClientMsg' and 'route'. Nothing here needs a terminal.
 module TuiSpec (tuiSpec) where
 
 import Brick.AttrMap (attrName)
 import Brick.Widgets.Edit (editor, getEditContents)
-import Brick.Widgets.List (listElements)
+import Data.Either (isLeft)
 import Data.Foldable (toList)
+import Data.List (sort)
 import Data.Maybe (isJust)
-import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Graphics.Vty.Input.Events as V
-import Krivostr.Cli.Options (FilterOpts (foKinds))
+import Krivostr.Cli.Options
+  ( TimeSpec (..)
+  , buildFilter
+  , emptyFilterOpts
+  , groupTags
+  , parseKind
+  , parseTag
+  , parseWhen
+  , resolveAuthor
+  , resolveUpstreams
+  )
+import Krivostr.Cli.Render
+  ( kindColour
+  , oneLine
+  , relativeTime
+  , renderEvent
+  , renderEventBlock
+  , shortHex
+  )
 import Krivostr.Event
 import Krivostr.Filter (Filter (..))
-import Krivostr.Key (derivePublicKey, generatePrivateKey, pubKeyHex)
+import Krivostr.Key
+  ( PrivateKey
+  , derivePublicKey
+  , exportNpub
+  , generatePrivateKey
+  , pubKeyHex
+  )
 import Krivostr.Logging (LogEntry (..), LogLevel (..), leMsg, newLogger)
 import Krivostr.Nip.Nip01 (signEvent)
-import qualified Krivostr.Nip.Nip27 as Nip27
 import Krivostr.Nip.Nip27 (findMentions)
-import Krivostr.Tui.Sanitize (stripAnsiAndC0)
 import Krivostr.Pool (newPool)
 import Krivostr.Store (closeStore, enqueueOutbox, insertEvent, openMemoryStore)
-import Krivostr.Tui.App (statusText)
+import Krivostr.Tui (fillInitial, tuiDefaultKinds)
+import Krivostr.Tui.App (buildUnsigned, lookupEvent, statusText)
 import Krivostr.Tui.Backend
   (inProcessBackend, tbCount, tbDelRelay, tbFetchOnce, tbFetchThread, tbFlush, tbGet
   , tbOutbox, tbQuery, tbRelays, tbSearch)
 import Krivostr.Tui.Dispatch (Command (..), commandHelp, parseCommand)
-import Krivostr.Tui.Theme (kindAttr, selectedAttr, sensitiveAttr, pendingAttr, themeAttrMap)
+import Krivostr.Tui.Sanitize (stripAnsiAndC0)
 import Krivostr.Tui.State
   ( step
-  , stepKey
-  , pushEvent
-  , pushLog
-  , pushLogText
   , applyCommand
   , selectedEvent
   , findEvent
-  , mergeFetched
-  , clearPending
-  , stepCmdKey
-  , stepSearchKey
-  , stepNavKey
   , popScreen
   , composeFor
   , commentFor
@@ -58,8 +74,8 @@ import Krivostr.Tui.State
   , listMentions
   , handleResolvedMention
   )
+import Krivostr.Tui.Theme (kindAttr, selectedAttr, sensitiveAttr, pendingAttr, themeAttrMap)
 import Krivostr.Tui.Types
-import Krivostr.Tui.Sanitize (stripAnsiAndC0)
 import Krivostr.Tui.Views.Compose (drawCompose, targetLine)
 import Krivostr.Tui.Views.Feed (drawFeed, drawRow, rowText)
 import Krivostr.Tui.Views.Lists (drawLists, tabName)
@@ -86,6 +102,20 @@ mkEvFull n kind content tags = do
     , evContent = content
     , evSig = ""
     }
+
+-- | Sign with a given key (pure): authorship fixtures — the list events
+-- 'fillInitial' must attribute to me — need a specific pubkey, which
+-- mkEvFull's fresh-key-per-call cannot give.
+mkEvAs :: PrivateKey -> Int -> Int -> Text -> [[Text]] -> Event
+mkEvAs sk n kind content tags = signEvent sk Event
+  { evId = ""
+  , evPubkey = ""
+  , evCreatedAt = 1700000000 + fromIntegral n
+  , evKind = kind
+  , evTags = tags
+  , evContent = content
+  , evSig = ""
+  }
 
 emptyFilter :: Filter
 emptyFilter = Filter Nothing Nothing Nothing Nothing Nothing Nothing [] Nothing
@@ -998,6 +1028,372 @@ tuiSpec = describe "TUI" $ do
     it "handleResolvedMention does nothing for RTOpaque" $ do
       let st = handleResolvedMention (RTOpaque "unknown") st0
       asScreen st `shouldBe` SFeed
+
+  describe "Krivostr.Cli.Options pure helpers" $ do
+    describe "parseWhen" $ do
+      it "parses a unix timestamp" $
+        parseWhen "1700000000" `shouldBe` Right (At 1700000000)
+
+      it "parses every relative unit" $ do
+        parseWhen "30s" `shouldBe` Right (Ago 30)
+        parseWhen "5m"  `shouldBe` Right (Ago 300)
+        parseWhen "2h"  `shouldBe` Right (Ago 7200)
+        parseWhen "7d"  `shouldBe` Right (Ago 604800)
+        parseWhen "2w"  `shouldBe` Right (Ago 1209600)
+        parseWhen "3mo" `shouldBe` Right (Ago 7776000)
+        parseWhen "1y"  `shouldBe` Right (Ago 31536000)
+
+      it "parses an ISO date" $
+        parseWhen "2026-01-01" `shouldBe` Right (At 1767225600)
+
+      it "rejects garbage" $ do
+        parseWhen "not-a-time"   `shouldSatisfy` isLeft
+        parseWhen ""             `shouldSatisfy` isLeft
+        parseWhen "3fortnights"  `shouldSatisfy` isLeft
+
+    describe "parseKind" $ do
+      it "parses every named kind" $ do
+        parseKind "note"     `shouldBe` Right 1
+        parseKind "dm"       `shouldBe` Right 4
+        parseKind "delete"   `shouldBe` Right 5
+        parseKind "repost"   `shouldBe` Right 6
+        parseKind "like"     `shouldBe` Right 7
+        parseKind "metadata" `shouldBe` Right 0
+        parseKind "follow"   `shouldBe` Right 3
+        parseKind "relays"   `shouldBe` Right 10002
+        parseKind "giftwrap" `shouldBe` Right 1059
+
+      it "parses numeric kinds within the 16-bit range" $ do
+        parseKind "0"     `shouldBe` Right 0
+        parseKind "999"   `shouldBe` Right 999
+        parseKind "65535" `shouldBe` Right 65535
+
+      it "rejects out-of-range and non-numeric" $ do
+        parseKind "65536"      `shouldSatisfy` isLeft
+        parseKind "-1"         `shouldSatisfy` isLeft
+        parseKind "not-a-kind" `shouldSatisfy` isLeft
+
+    describe "parseTag" $ do
+      it "parses e=value, #e=value, and bare pairs" $ do
+        parseTag "e=abc123"  `shouldBe` Right ("e", "abc123")
+        parseTag "#e=abc123" `shouldBe` Right ("e", "abc123")
+        parseTag "p=pubkey"  `shouldBe` Right ("p", "pubkey")
+
+      it "accepts an empty value but rejects a missing key" $ do
+        parseTag "key="   `shouldBe` Right ("key", "")
+        parseTag "=value" `shouldSatisfy` isLeft
+
+    describe "resolveAuthor" $ do
+      it "resolves an npub to its hex" $ do
+        sk <- generatePrivateKey
+        let npub = exportNpub (derivePublicKey sk)
+            hex  = pubKeyHex (derivePublicKey sk)
+        resolveAuthor (T.unpack npub) `shouldBe` Right hex
+
+      it "passes hex through and rejects junk" $ do
+        sk <- generatePrivateKey
+        let hex = pubKeyHex (derivePublicKey sk)
+        resolveAuthor (T.unpack hex) `shouldBe` Right hex
+        resolveAuthor "invalid"      `shouldSatisfy` isLeft
+
+    describe "groupTags" $ do
+      it "groups values per key" $
+        groupTags [("e", "a"), ("e", "b"), ("p", "c")]
+          `shouldSatisfy` \res -> sort res == sort [("e", ["a", "b"]), ("p", ["c"])]
+
+      it "maps the empty list to the empty list" $
+        groupTags [] `shouldBe` []
+
+    describe "resolveUpstreams" $ do
+      it "falls back to the compiled-in defaults" $
+        resolveUpstreams [] [] `shouldNotBe` ([] :: [Text])
+
+      it "unions flags and saved, deduplicated, flags first" $ do
+        resolveUpstreams ["a", "b"] ["b", "c"] `shouldBe` ["a", "b", "c"]
+        resolveUpstreams ["a", "a"] ["a"]      `shouldBe` ["a"]
+
+  describe "Krivostr.Cli.Render" $ do
+    it "shortHex keeps short strings and elides the middle" $ do
+      shortHex 4 "abcd"         `shouldBe` "abcd"
+      shortHex 4 "abcdefghi"    `shouldBe` "abcdefghi"
+      shortHex 4 "abcdefghijkl" `shouldBe` "abcd\8230ijkl"
+
+    it "oneLine collapses whitespace, CRLF, and clips" $ do
+      oneLine 80 "hello    world\nwith\nlines" `shouldBe` "hello world with lines"
+      oneLine 80 "hello\r\nworld"              `shouldBe` "hello world"
+      oneLine 10 "123456789012345"             `shouldBe` "123456789\8230"
+      oneLine 80 ""                            `shouldBe` ""
+
+    it "relativeTime names every bucket" $ do
+      relativeTime 1000 950          `shouldBe` "now"
+      relativeTime 3600 3000         `shouldBe` "10m"
+      relativeTime 86400 43200       `shouldBe` "12h"
+      relativeTime 864000 432000     `shouldBe` "5d"
+      relativeTime 31536000 15768000 `shouldBe` "6mo"
+      relativeTime 31536000 0        `shouldBe` "1y"
+
+    it "kindColour matches the CLI palette" $ do
+      kindColour 4     `shouldBe` "\ESC[35m"
+      kindColour 7     `shouldBe` "\ESC[33m"
+      kindColour 0     `shouldBe` "\ESC[36m"
+      kindColour 3     `shouldBe` "\ESC[36m"
+      kindColour 10002 `shouldBe` "\ESC[36m"
+      kindColour 5     `shouldBe` "\ESC[31m"
+      kindColour 6     `shouldBe` "\ESC[31m"
+      kindColour 999   `shouldBe` "\ESC[32m"
+
+    describe "renderEvent" $ do
+      it "includes age, kind, pubkey, and content" $ do
+        let e = Event "id" "pub" 1000 1 [] "content" "sig"
+            rendered = renderEvent False False 2000 e
+        rendered `shouldSatisfy` T.isInfixOf "pub"
+        rendered `shouldSatisfy` T.isInfixOf "#1"
+        rendered `shouldSatisfy` T.isInfixOf "content"
+
+      it "hides content behind a CW unless revealed" $ do
+        let e = Event "id" "pub" 1000 1 [["content-warning", "spoiler"]] "secret" "sig"
+        renderEvent False False 2000 e `shouldSatisfy` T.isInfixOf "sensitive"
+        let shown = renderEvent False True 2000 e
+        shown `shouldSatisfy` T.isInfixOf "secret"
+        shown `shouldSatisfy` (not . T.isInfixOf "sensitive")
+
+      it "emits ANSI only when colour is on" $ do
+        let e = Event "id" "pub" 1000 1 [] "content" "sig"
+        renderEvent True  False 2000 e `shouldSatisfy` T.isInfixOf "\ESC["
+        renderEvent False False 2000 e `shouldSatisfy` (not . T.isInfixOf "\ESC[")
+
+      it "sanitizes the warning reason — it is tag data" $ do
+        let e = Event "id" "pub" 1000 1 [["content-warning", "\ESC[31mx\ESC[0m"]] "body" "sig"
+            rendered = renderEvent False False 2000 e
+        rendered `shouldSatisfy` T.isInfixOf "sensitive"
+        rendered `shouldSatisfy` (not . T.isInfixOf "\ESC")
+
+    describe "renderEventBlock" $ do
+      it "includes header, body, and tags" $ do
+        let e = Event "id" "pub" 1000 1 [["p", "alice"]] "content" "sig"
+            rendered = renderEventBlock False False 2000 e
+        rendered `shouldSatisfy` T.isInfixOf "content"
+        rendered `shouldSatisfy` T.isInfixOf "#p alice"
+
+      it "sanitizes tag values" $ do
+        let e = Event "id" "pub" 1000 1 [["subject", "\ESC[31mhi\ESC[0m"]] "body" "sig"
+            rendered = renderEventBlock False False 2000 e
+        rendered `shouldSatisfy` T.isInfixOf "hi"
+        rendered `shouldSatisfy` (not . T.isInfixOf "\ESC[31m")
+
+  describe "Tui.tuiDefaultKinds" $ do
+    it "renders social kinds and excludes the firehose and ciphertext" $ do
+      tuiDefaultKinds `shouldSatisfy` all (`elem` [1, 5, 6, 7, 16, 1111, 9735, 30023])
+      -- Encrypted and firehose-dominating kinds must not stream into rows.
+      tuiDefaultKinds `shouldNotSatisfy` (4 `elem`)
+      tuiDefaultKinds `shouldNotSatisfy` (1059 `elem`)
+      tuiDefaultKinds `shouldNotSatisfy` (0 `elem`)
+      tuiDefaultKinds `shouldNotSatisfy` (3 `elem`)
+      tuiDefaultKinds `shouldNotSatisfy` (10002 `elem`)
+
+  describe "Tui.fillInitial seam" $ do
+    it "fills the feed from the store, newest first" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      e1 <- mkEv 1 "first"
+      e2 <- mkEv 2 "second"
+      _ <- insertEvent st e1
+      _ <- insertEvent st e2
+      filt <- buildFilter emptyFilterOpts
+      initial <- fillInitial st filt Nothing
+      map evContent (toList (asFeed initial)) `shouldBe` ["second", "first"]
+      closeStore st
+
+    it "loads my mute/pin/bookmark lists when a key is present" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      -- List events must be authored by me and carry the list kinds:
+      -- fillInitial queries (author = my pubkey, kind = 10000/10001/10003).
+      let m1 = mkEvAs sk 1 10000 "" [["p", "pub1"], ["p", "pub2"]]
+          p1 = mkEvAs sk 2 10001 "" [["e", "ev1"]]
+          b1 = mkEvAs sk 3 10003 "" [["e", "ev2"], ["a", "30023:x:y"]]
+      _ <- insertEvent st m1
+      _ <- insertEvent st p1
+      _ <- insertEvent st b1
+      filt <- buildFilter emptyFilterOpts
+      initial <- fillInitial st filt (Just sk)
+      asMuted initial     `shouldBe` Set.fromList ["pub1", "pub2"]
+      asPins initial      `shouldBe` Set.fromList ["ev1"]
+      asBookmarks initial `shouldBe` Set.fromList ["ev2", "30023:x:y"]
+      closeStore st
+
+    it "reads only the newest version of a replaceable list" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      let older = mkEvAs sk 1 10000 "" [["p", "gone"]]
+          newer = mkEvAs sk 5 10000 "" [["p", "kept"]]
+      _ <- insertEvent st older
+      _ <- insertEvent st newer
+      filt <- buildFilter emptyFilterOpts
+      initial <- fillInitial st filt (Just sk)
+      asMuted initial `shouldBe` Set.fromList ["kept"]
+      closeStore st
+
+    it "starts with empty lists and no key" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      filt <- buildFilter emptyFilterOpts
+      initial <- fillInitial st filt Nothing
+      asMuted initial     `shouldBe` Set.empty
+      asPins initial      `shouldBe` Set.empty
+      asBookmarks initial `shouldBe` Set.empty
+      closeStore st
+
+  describe "Tui.App.lookupEvent seam" $ do
+    it "falls back to the store when the model does not have it" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      e1 <- mkEv 1 "test event"
+      _ <- insertEvent st e1
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+      filt <- buildFilter emptyFilterOpts
+      lookupEvent backend (initialState 0 filt Nothing) (evId e1)
+        `shouldReturn` Right e1
+      closeStore st
+
+    it "prefers the model copy" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      e1 <- mkEv 1 "in feed"
+      _ <- insertEvent st e1
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+      filt <- buildFilter emptyFilterOpts
+      initial <- fillInitial st filt Nothing
+      lookupEvent backend initial (evId e1) `shouldReturn` Right e1
+      closeStore st
+
+    it "reports a missing event as Left" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+      filt <- buildFilter emptyFilterOpts
+      r <- lookupEvent backend (initialState 0 filt Nothing) "nonexistent"
+      r `shouldSatisfy` isLeft
+      closeStore st
+
+  describe "Tui.App.buildUnsigned seam" $ do
+    it "builds a note — no key needed to BUILD, only to send" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+      filt <- buildFilter emptyFilterOpts
+      r <- buildUnsigned backend (initialState 0 filt Nothing) CTNote "hello world"
+      r `shouldBe` Right (UnsignedEvent "" 0 1 [] "hello world")
+      closeStore st
+
+    it "builds a reply with NIP-10 marked tags, parent from the store" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      e1 <- mkEv 1 "parent note"
+      _ <- insertEvent st e1
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+      filt <- buildFilter emptyFilterOpts
+      r <- buildUnsigned backend (initialState 0 filt Nothing) (CTReply (evId e1)) "reply text"
+      case r of
+        Right ue -> do
+          ueKind ue    `shouldBe` 1
+          ueContent ue `shouldBe` "reply text"
+          ueTags ue    `shouldBe` [["e", evId e1, "", "root"], ["p", evPubkey e1]]
+        Left e -> expectationFailure e
+      closeStore st
+
+    it "reports a missing parent as Left" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+      filt <- buildFilter emptyFilterOpts
+      r <- buildUnsigned backend (initialState 0 filt Nothing) (CTReply (T.replicate 64 "0")) "x"
+      r `shouldSatisfy` isLeft
+      closeStore st
+
+    it "builds a reaction with the default emoji and NIP-25 tags" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      e1 <- mkEv 1 "note to react"
+      _ <- insertEvent st e1
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+      filt <- buildFilter emptyFilterOpts
+      r <- buildUnsigned backend (initialState 0 filt Nothing) (CTReact (evId e1)) ""
+      case r of
+        Right ue -> do
+          ueKind ue    `shouldBe` 7
+          ueContent ue `shouldBe` "+"
+          ueTags ue    `shouldBe` [["e", evId e1, ""], ["p", evPubkey e1], ["k", "1"]]
+        Left e -> expectationFailure e
+      closeStore st
+
+    it "builds a quote with a q tag and no e tag" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      e1 <- mkEv 1 "note to quote"
+      _ <- insertEvent st e1
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+      filt <- buildFilter emptyFilterOpts
+      r <- buildUnsigned backend (initialState 0 filt Nothing) (CTQuote (evId e1)) "my quote"
+      case r of
+        Right ue -> do
+          ueKind ue    `shouldBe` 1
+          ueContent ue `shouldBe` "my quote"
+          ueTags ue    `shouldBe` [["q", evId e1, ""]]
+        Left e -> expectationFailure e
+      closeStore st
+
+    it "builds a comment with the address of an addressable target" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      -- A real kind-30023 with a d tag, correctly signed: insertEvent verifies.
+      e1 <- mkEvFull 1 30023 "article" [["d", "slug"]]
+      _ <- insertEvent st e1
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+          addr = "30023:" <> evPubkey e1 <> ":slug"
+      filt <- buildFilter emptyFilterOpts
+      r <- buildUnsigned backend (initialState 0 filt Nothing) (CTComment (evId e1)) "my comment"
+      case r of
+        Right ue -> do
+          ueKind ue `shouldBe` 1111
+          ueTags ue `shouldSatisfy` any (\t -> case t of
+            ("A" : a : _) -> a == addr
+            _             -> False)
+        Left e -> expectationFailure e
+      closeStore st
+
+    it "refuses comment on kind 1 note" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      e1 <- mkEv 1 "a note"
+      _ <- insertEvent st e1
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+      filt <- buildFilter emptyFilterOpts
+      r <- buildUnsigned backend (initialState 0 filt Nothing) (CTComment (evId e1)) "comment"
+      r `shouldBe` Left "that is a kind 1 note: use reply, not comment"
+      closeStore st
+
+    it "refuses DM compose until the DM view exists" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
+      filt <- buildFilter emptyFilterOpts
+      r <- buildUnsigned backend (initialState 0 filt Nothing) (CTDm "abcd") "hi"
+      r `shouldBe` Left "DM compose needs the DM view (M3)"
+      closeStore st
 
 -- | Focused event as a zero-or-one list, for shouldBe against literals.
 selEv :: AppState -> [Event]

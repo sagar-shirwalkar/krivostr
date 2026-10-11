@@ -16,13 +16,14 @@ database, or a clock, because nothing in it can reach one.
 `core/` contains no `IO`, no exceptions, and no `unsafePerformIO`. **Two
 functions are exceptions, both deliberate:**
 
-- `Krivostr.Key.generatePrivateKey` reads 32 bytes from `/dev/urandom`. There
-  is no way to get entropy in pure Haskell.
+- `Krivostr.Key.generatePrivateKey` reads 32 bytes from the operating system's
+  CSPRNG via the `crypton` library (cross-platform). There is no way to get
+  entropy in pure Haskell.
 - `Krivostr.Logging.newLogger` is the one `IO` constructor in the logger; the
   rest of `Logging` is a `Writer` that a caller supplies.
 
-`Krivostr.Key` generates keys from `/dev/urandom`. Everything else in the core
-is a value in, a value out.
+`Krivostr.Key` generates keys from the operating system's CSPRNG (via `crypton`).
+Everything else in the core is a value in, a value out.
 
 If a change needs IO, it belongs in `client/`. That is the rule that keeps the
 core honest.

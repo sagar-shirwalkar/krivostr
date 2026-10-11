@@ -7,6 +7,8 @@
 module Krivostr.Tui.App
   ( tuiApp
   , statusText
+  , buildUnsigned
+  , lookupEvent
   ) where
 
 import Brick.Main (App (..), halt, neverShowCursor, showCursorNamed, suspendAndResume)
@@ -242,8 +244,9 @@ promoteEditorWorker = do
 -- | Sign and publish an unsigned event: mark pending now, publish in a
 -- worker, post the verdict. Shared by every send path so pending markers
 -- and logging behave identically for compose and immediate sends.
-runPublish :: TuiBackend -> UnsignedEvent -> PrivateKey -> EventM Name AppState ()
-runPublish backend unsigned sk = do
+-- Optional onSuccess runs in the worker after a successful publish.
+runPublish :: TuiBackend -> UnsignedEvent -> PrivateKey -> IO () -> EventM Name AppState ()
+runPublish backend unsigned sk onSuccess = do
   now <- liftIO getPOSIXTime
   let me = pubKeyHex (derivePublicKey sk)
       ev = signUnsigned sk unsigned { uePubkey = me, ueCreatedAt = now }
@@ -251,6 +254,9 @@ runPublish backend unsigned sk = do
   void $ liftIO $ forkIO $ do
     r <- try (tbPublish backend ev) :: IO (Either SomeException (Either String ()))
     tbPost backend (EvPublishDone (evId ev) (either (Left . show) id r))
+    case either (Left . show) id r of
+      Right () -> onSuccess
+      Left _ -> pure ()
 
 -- | Look up an event by id: first in the model (feed + thread), then in the store.
 lookupEvent :: TuiBackend -> AppState -> Text -> IO (Either String Event)
@@ -275,19 +281,8 @@ sendComposeWorker backend = do
         Left e -> modify (pushLogText (T.pack e))
         Right u -> case asKey st of
           Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
-          Just sk -> do
-            now <- liftIO getPOSIXTime
-            let me = pubKeyHex (derivePublicKey sk)
-                ev = signUnsigned sk u { uePubkey = me, ueCreatedAt = now }
-            modify (\s -> s { asPending = Set.insert (evId ev) (asPending s) })
-            void $ liftIO $ forkIO $ do
-              r <- try (tbPublish backend ev) :: IO (Either SomeException (Either String ()))
-              case either (Left . show) id r of
-                Right () -> do
-                  tbPost backend (EvPublishDone (evId ev) (Right ()))
-                  tbPost backend EvComposeSent
-                Left err -> do
-                  tbPost backend (EvPublishDone (evId ev) (Left err))
+          Just sk -> runPublish backend u sk
+            (tbPost backend EvComposeSent)
     _ -> pure ()
 
 -- | Build the unsigned event for a compose target. Parent/root lookups hit
@@ -348,12 +343,14 @@ immediateWorker backend v = do
       Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
       Just sk -> runPublish backend
         (UnsignedEvent "" 0 7 (buildReactionTags (evId t) "" (evPubkey t) (evKind t)) emoji) sk
+        (pure ())
     sendRepost :: AppState -> Event -> EventM Name AppState ()
     sendRepost st t = case asKey st of
       Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
       Just sk -> runPublish backend
         (UnsignedEvent "" 0 (if evKind t == 1 then 6 else 16)
           (buildRepostTags (evId t) "" (evPubkey t) (evKind t)) (embedOriginal t)) sk
+        (pure ())
     sendDelete :: AppState -> Event -> EventM Name AppState ()
     sendDelete st t = case asKey st of
       Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
@@ -364,7 +361,7 @@ immediateWorker backend v = do
             let addrs = maybeToList (parameterizedAddress t)
             runPublish backend
               (UnsignedEvent "" 0 deletionKind (buildDeletionTags [evId t] addrs) "") sk
-            liftIO (tbDeleteEvent backend (evId t))
+              (liftIO (tbDeleteEvent backend (evId t)))
     sendMute :: AppState -> Event -> EventM Name AppState ()
     sendMute st t = case asKey st of
       Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
@@ -447,7 +444,7 @@ drawHelp :: Widget Name
 drawHelp = vBox
   ( [ str "Global keys:"
     , str "  ?        Help (this screen)"
-    , str "  q        Quit / pop screen"
+    , str "  q        Quit"
     , str "  :        Command bar"
     , str "  /        Search"
     , str "  ~        Toggle log pane"

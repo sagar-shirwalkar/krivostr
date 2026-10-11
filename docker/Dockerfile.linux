@@ -116,3 +116,14 @@ RUN set -eu; \
 
 FROM scratch AS artifact
 COPY --from=build /out/krivostr /krivostr
+
+# Runtime image with explicitly declared dependencies. libtinfo6 is required
+# by vty-unix (via terminfo), and we name it explicitly rather than relying on
+# transitive pulls from bash.
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install --no-install-recommends -y \
+      ca-certificates \
+      libtinfo6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=artifact /krivostr /usr/local/bin/krivostr
+ENTRYPOINT ["krivostr"]
