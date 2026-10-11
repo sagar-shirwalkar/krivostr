@@ -9,7 +9,6 @@ module Krivostr.Tui.App
   , statusText
   ) where
 
-import Brick.AttrMap (attrMap)
 import Brick.Main (App (..), halt, neverShowCursor, showCursorNamed, suspendAndResume)
 import Brick.Types (BrickEvent (..), CursorLocation, EventM, Widget, nestEventM')
 import Brick.Widgets.Core (emptyWidget, str, txt, vBox)
@@ -37,6 +36,7 @@ import Krivostr.Nip.Nip09 (buildDeletionTags, deletionKind)
 import Krivostr.Nip.Nip10 (buildReplyTags, replyRoot)
 import Krivostr.Nip.Nip18 (buildQuoteTags, buildRepostTags, embedOriginal)
 import Krivostr.Nip.Nip22 (ItemRef (..), buildCommentTags)
+import Krivostr.Tui.Theme (themeAttrMap)
 import Krivostr.Nip.Nip25 (buildReactionTags)
 import Krivostr.Nip.Nip51 (addEntry, muteKind)
 import Krivostr.Cli.Nostr (signUnsigned)
@@ -63,7 +63,7 @@ tuiApp backend = App
   , appChooseCursor = chooseCursor
   , appHandleEvent = handleEvent backend
   , appStartEvent = pure ()
-  , appAttrMap = const (attrMap Vty.defAttr [])
+  , appAttrMap = const themeAttrMap
   }
 
 -- | Cursor follows the compose editor; nowhere else wants one.
@@ -333,7 +333,7 @@ statusBar st = txt (statusText st)
 -- total is @?@ until the first tick fills it (stats need SQL, not the model).
 statusText :: AppState -> Text
 statusText st = T.intercalate " · "
-  [ screenName (asScreen st)
+  [ screenName (asScreen st) <> unreadSuffix
   , T.pack (show (Seq.length (asFeed st))) <> " events"
   , if asFollowing st then "following" else "paused"
   , "outbox " <> T.pack (show (asOutbox st))
@@ -349,6 +349,9 @@ statusText st = T.intercalate " · "
     screenName SOutbox     = "outbox"
     screenName (SCompose _) = "compose"
     screenName SHelp       = "help"
+    unreadSuffix
+      | asScreen st == SFeed, asUnread st > 0 = " (" <> T.pack (show (asUnread st)) <> " new)"
+      | otherwise = ""
 
 -- | The command line, or nothing when closed.
 cmdLine :: AppState -> Widget Name

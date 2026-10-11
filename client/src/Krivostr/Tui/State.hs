@@ -27,6 +27,8 @@ module Krivostr.Tui.State
   , stepEnter
   , cycleScreen
   , cycleScreenBack
+  , listMentions
+  , handleResolvedMention
   ) where
 
 import Brick.Widgets.Edit (editor)
@@ -39,8 +41,10 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Graphics.Vty.Input.Events as V
-import Krivostr.Event (Event, evId, evKind, evPubkey, evTags)
+import Krivostr.Event (Event, evId, evKind, evPubkey, evTags, evContent)
 import Krivostr.Logging (LogEntry (..), LogLevel (..))
+import qualified Krivostr.Nip.Nip27 as Nip27
+import Krivostr.Nip.Nip27 (findMentions)
 import Krivostr.Tui.Dispatch (Command (..), parseCommand)
 import Krivostr.Tui.Types
 import Krivostr.Tui.Views.Thread (threadReplies)
@@ -49,7 +53,7 @@ import Krivostr.Tui.Views.Thread (threadReplies)
 -- to a log line, never a crash.
 step :: TuiEvent -> AppState -> AppState
 step ev st = case ev of
-  EvIncoming e     -> pushEvent e st
+  EvIncoming e     -> maybeIncrementUnread (pushEvent e st)
   EvPublishDone eid r -> pushLog (publishEntry eid r) (clearPending eid st)
   EvAsyncResult k r   -> pushLog (asyncEntry k r) st
   EvMuted hex      -> pushLogText ("muted " <> hex) (purgeMutedAuthor hex st)
@@ -57,6 +61,31 @@ step ev st = case ev of
   EvTick          -> st
   EvLog entry     -> pushLog entry st
   EvVty v         -> stepKey v st
+  EvResolveMentions ms -> st { asMentions = ms }
+  EvResolvedMention rt -> handleResolvedMention rt st
+
+-- | Increment unread counter when a new event arrives and we're not on the feed.
+maybeIncrementUnread :: AppState -> AppState
+maybeIncrementUnread st
+  | asScreen st == SFeed = st
+  | otherwise            = st { asUnread = asUnread st + 1 }
+
+-- | Handle a resolved mention by opening the appropriate screen.
+handleResolvedMention :: ResolveTarget -> AppState -> AppState
+handleResolvedMention rt st = case rt of
+  RTAuthor pk -> st { asScreen = SFeed } -- TODO: open author feed
+  RTEvent eid -> st { asScreen = SThread eid }
+  RTAddress addr -> st { asScreen = SFeed } -- TODO: open article
+  RTOpaque _  -> st
+
+-- | List mentions in the focused thread event. Pure: extracts mentions from
+-- the focused event's content and posts them to the log pane.
+listMentions :: AppState -> AppState
+listMentions st = case (asScreen st, selectedEvent st) of
+  (SThread _, Just e) ->
+    let ms = findMentions (evContent e)
+    in pushLogText ("mentions: " <> T.intercalate ", " (map Nip27.meRaw ms)) (st { asMentions = ms })
+  _ -> pushLogText "not in a thread" st
 
 -- | A publish settled: drop its pending marker. The log line is written by
 -- the caller ('pushLog' above); this only clears the marker.
@@ -214,6 +243,9 @@ stepNavKey v st = case v of
   V.EvKey (V.KChar 'y') [] -> yankSelected st
   V.EvKey (V.KChar '\t') [] -> cycleScreen st
   V.EvKey V.KBackTab []     -> cycleScreenBack st
+  V.EvKey (V.KChar 'n') [] -> case asScreen st of
+    SThread _ -> listMentions st
+    _         -> st
   V.EvKey (V.KChar c) [] | asScreen st == SLists, c >= '1', c <= '3' ->
     st { asListTab = fromEnum c - fromEnum '1' }
   _ -> st
@@ -232,7 +264,7 @@ cycleScreenBack s = case asScreen s of
   SOutbox -> s { asScreen = SDm }
   SDm     -> s { asScreen = SLists }
   SLists  -> s { asScreen = SRelays }
-  SRelays -> s { asScreen = SFeed }
+  SRelays -> s { asScreen = SFeed, asUnread = 0 }
   _       -> s
 
 -- | Cycle through screens: Feed → Relays → Lists → DM → Outbox → Help → Feed
@@ -243,7 +275,7 @@ cycleScreen s = case asScreen s of
   SLists  -> s { asScreen = SDm }
   SDm     -> s { asScreen = SOutbox }
   SOutbox -> s { asScreen = SHelp }
-  SHelp   -> s { asScreen = SFeed }
+  SHelp   -> s { asScreen = SFeed, asUnread = 0 }
   _       -> s
 
 -- | Back to the feed, restoring its widget from the model. Search results
@@ -255,6 +287,7 @@ popScreen st = st
   , asSearchQuery = ""
   , asCompose = editor NComposeEdit Nothing ""
   , asList = listReplace (asFeed st) Nothing (asList st)
+  , asUnread = 0
   }
 
 -- | Open compose for the focused event, or log that nothing is focused.

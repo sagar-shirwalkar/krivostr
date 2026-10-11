@@ -15,6 +15,7 @@ module Krivostr.Tui.Types
   , initialState
   , feedCap
   , logCap
+  , ResolveTarget(..)
   ) where
 
 import Brick.Widgets.Edit (Editor, editor)
@@ -27,6 +28,7 @@ import Data.Text (Text)
 import Data.Time.Clock.POSIX (POSIXTime)
 import qualified Graphics.Vty.Input.Events as V
 import Krivostr.Event (Event)
+import Krivostr.Nip.Nip27 (Mention)
 import Krivostr.Filter (Filter)
 import Krivostr.Key (PrivateKey)
 import Krivostr.Logging (LogEntry)
@@ -54,6 +56,14 @@ data Screen
   | SHelp
   deriving (Show, Eq)
 
+-- | What we can resolve a mention into.
+data ResolveTarget
+  = RTAuthor Text       -- hex pubkey
+  | RTEvent Text        -- event id
+  | RTAddress Text      -- kind:pubkey:slug
+  | RTOpaque Text       -- fallback
+  deriving (Show, Eq)
+
 -- | What a compose screen will send.
 data ComposeTarget
   = CTNote
@@ -76,6 +86,8 @@ data TuiEvent
   | EvTick
   | EvLog LogEntry
   | EvVty V.Event
+  | EvResolveMentions [Mention]
+  | EvResolvedMention ResolveTarget
 -- No Eq/Show: vty events and key material do not promise them, and tests
 -- read fields, not whole values.
 
@@ -105,6 +117,8 @@ data AppState = AppState
   , asPins      :: !(Set Text)
   , asBookmarks :: !(Set Text)
   , asListTab   :: !Int
+  , asUnread    :: !Int
+  , asMentions  :: ![Mention]
   }
 
 -- | Feed cap: newest events kept, oldest dropped with a log line.
@@ -141,4 +155,6 @@ initialState now f key = AppState
   , asPins      = Set.empty
   , asBookmarks = Set.empty
   , asListTab   = 0
+  , asUnread    = 0
+  , asMentions  = []
   }

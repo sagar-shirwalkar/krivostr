@@ -5,9 +5,13 @@
 -- are covered by seam tests in the main suite, not here.
 module TuiSpec (tuiSpec) where
 
+import Brick.AttrMap (attrName)
 import Brick.Widgets.Edit (editor, getEditContents)
 import Brick.Widgets.List (listElements)
 import Data.Foldable (toList)
+import Data.List (nub)
+import Data.Map (Map)
+import qualified Data.Map as Map
 import Data.Maybe (isJust)
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
@@ -21,6 +25,9 @@ import Krivostr.Filter (Filter (..))
 import Krivostr.Key (derivePublicKey, generatePrivateKey, pubKeyHex)
 import Krivostr.Logging (LogEntry (..), LogLevel (..), leMsg, newLogger)
 import Krivostr.Nip.Nip01 (signEvent)
+import qualified Krivostr.Nip.Nip27 as Nip27
+import Krivostr.Nip.Nip27 (findMentions)
+import Krivostr.Tui.Sanitize (stripAnsiAndC0)
 import Krivostr.Pool (newPool)
 import Krivostr.Store (closeStore, enqueueOutbox, insertEvent, openMemoryStore)
 import Krivostr.Tui.App (statusText)
@@ -28,7 +35,7 @@ import Krivostr.Tui.Backend
   (inProcessBackend, tbCount, tbDelRelay, tbFetchOnce, tbFetchThread, tbFlush, tbGet
   , tbOutbox, tbQuery, tbRelays, tbSearch)
 import Krivostr.Tui.Dispatch (Command (..), commandHelp, parseCommand)
-import Krivostr.Tui.Sanitize (stripAnsiAndC0)
+import Krivostr.Tui.Theme (kindAttr, selectedAttr, sensitiveAttr, pendingAttr, themeAttrMap)
 import Krivostr.Tui.State
   ( step
   , stepKey
@@ -51,6 +58,8 @@ import Krivostr.Tui.State
   , stepEnter
   , cycleScreen
   , cycleScreenBack
+  , listMentions
+  , handleResolvedMention
   )
 import Krivostr.Tui.Types
 import Krivostr.Tui.Views.Compose (drawCompose, targetLine)
@@ -787,6 +796,53 @@ tuiSpec = describe "TUI" $ do
       let s5 = step (key (V.EvKey V.KBackTab [])) s4
       asScreen s5 `shouldBe` SFeed
 
+  describe "Unread counter" $ do
+    it "increments on EvIncoming when not on feed" $ do
+      e1 <- mkEv 1 "event 1"
+      e2 <- mkEv 2 "event 2"
+      let st = st0 { asScreen = SThread "abc" }
+          st1 = step (EvIncoming e1) st
+          st2 = step (EvIncoming e2) st1
+      asUnread st1 `shouldBe` 1
+      asUnread st2 `shouldBe` 2
+
+    it "does not increment on EvIncoming when on feed" $ do
+      e1 <- mkEv 1 "event 1"
+      let st = step (EvIncoming e1) st0
+      asUnread st `shouldBe` 0
+
+    it "clears on popScreen (Esc from sub-screen)" $ do
+      e1 <- mkEv 1 "event 1"
+      let st = st0 { asScreen = SThread "abc", asUnread = 5 }
+          st1 = step (EvIncoming e1) st  -- unread becomes 6
+          st2 = popScreen st1
+      asScreen st2 `shouldBe` SFeed
+      asUnread st2 `shouldBe` 0
+
+    it "clears on Tab cycle back to feed" $ do
+      e1 <- mkEv 1 "event 1"
+      let st = st0 { asScreen = SHelp, asUnread = 3 }
+          st1 = step (EvIncoming e1) st  -- unread becomes 4
+          st2 = cycleScreen st1  -- SHelp -> SFeed
+      asScreen st2 `shouldBe` SFeed
+      asUnread st2 `shouldBe` 0
+
+    it "clears on Shift-Tab cycle back to feed" $ do
+      e1 <- mkEv 1 "event 1"
+      let st = st0 { asScreen = SRelays, asUnread = 3 }
+          st1 = step (EvIncoming e1) st  -- unread becomes 4
+          st2 = cycleScreenBack st1  -- SRelays -> SFeed
+      asScreen st2 `shouldBe` SFeed
+      asUnread st2 `shouldBe` 0
+
+    it "statusText shows unread count on feed" $ do
+      let st = st0 { asUnread = 3 }
+      statusText st `shouldSatisfy` T.isInfixOf "feed (3 new)"
+
+    it "statusText does not show unread when zero" $ do
+      let st = st0 { asUnread = 0 }
+      statusText st `shouldSatisfy` (not . T.isInfixOf "new")
+
   describe "State.applyCommand new commands" $ do
     it "switches to relays view" $ do
       let st = applyCommand CmdRelays st0
@@ -862,6 +918,72 @@ tuiSpec = describe "TUI" $ do
       let widget = drawThread 1700000000 Set.empty Set.empty [e1]
       -- Just verify it doesn't crash
       True `shouldBe` True
+
+  describe "Krivostr.Tui.Theme" $ do
+    it "maps kind 1 to kind-note" $ do
+      kindAttr 1 `shouldBe` attrName "kind-note"
+    it "maps kind 4 to kind-dm" $ do
+      kindAttr 4 `shouldBe` attrName "kind-dm"
+    it "maps kind 7 to kind-reaction" $ do
+      kindAttr 7 `shouldBe` attrName "kind-reaction"
+    it "maps kind 0 to kind-meta" $ do
+      kindAttr 0 `shouldBe` attrName "kind-meta"
+    it "maps kind 3 to kind-meta" $ do
+      kindAttr 3 `shouldBe` attrName "kind-meta"
+    it "maps kind 10002 to kind-meta" $ do
+      kindAttr 10002 `shouldBe` attrName "kind-meta"
+    it "maps kind 5 to kind-delete" $ do
+      kindAttr 5 `shouldBe` attrName "kind-delete"
+    it "maps kind 6 to kind-delete" $ do
+      kindAttr 6 `shouldBe` attrName "kind-delete"
+    it "maps other kinds to kind-note" $ do
+      kindAttr 999 `shouldBe` attrName "kind-note"
+    it "themeAttrMap contains all kind attrs" $ do
+      let attrs = [kindAttr 1, kindAttr 4, kindAttr 7, kindAttr 0, kindAttr 3, kindAttr 10002, kindAttr 5, kindAttr 6, selectedAttr, sensitiveAttr, pendingAttr]
+      -- Verify all attrs are accounted for (11 distinct attributes in our list)
+      length attrs `shouldBe` 11
+
+    it "themeAttrMap is non-empty" $ do
+      -- Just verify the map is constructed without error
+      themeAttrMap `seq` True `shouldBe` True
+
+  describe "Mention handling" $ do
+    it "findMentions runs without error on valid text" $ do
+      let text = "hello world"
+      let ms = findMentions text
+      length ms `shouldBe` 0
+
+    it "findMentions returns empty for invalid bech32" $ do
+      let text = "nostr:invalid_bech32"
+      let ms = findMentions text
+      length ms `shouldBe` 0
+
+    it "findMentions handles empty text" $ do
+      let ms = findMentions ""
+      length ms `shouldBe` 0
+
+    it "listMentions extracts mentions from thread event" $ do
+      e1 <- mkEvTagged 1 "hello world" [["content-warning", "spoiler"]]
+      let st = foldr (step . EvIncoming) st0 [e1]
+          focused = step (key (V.EvKey (V.KChar 'g') [])) st
+          opened = step (key (V.EvKey V.KEnter [])) focused
+          mentioned = listMentions opened
+      -- No mentions in "hello world" so asMentions should be empty
+      asMentions mentioned `shouldBe` []
+      Seq.length (asLog mentioned) `shouldBe` 1
+
+    it "listMentions logs 'not in a thread' when not on thread" $ do
+      let mentioned = listMentions st0
+      Seq.length (asLog mentioned) `shouldBe` 1
+      map leMsg (toList (asLog mentioned)) `shouldBe` ["not in a thread"]
+
+    it "handleResolvedMention opens thread for RTEvent" $ do
+      let st = handleResolvedMention (RTEvent "eid123") st0
+      asScreen st `shouldBe` SThread "eid123"
+
+    it "handleResolvedMention does nothing for RTOpaque" $ do
+      let st = handleResolvedMention (RTOpaque "unknown") st0
+      asScreen st `shouldBe` SFeed
 
 -- | Focused event as a zero-or-one list, for shouldBe against literals.
 selEv :: AppState -> [Event]

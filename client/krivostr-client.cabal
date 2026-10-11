@@ -37,6 +37,7 @@ executable krivostr
       Krivostr.Tui.Dispatch
       Krivostr.Tui.Sanitize
       Krivostr.Tui.State
+      Krivostr.Tui.Theme
       Krivostr.Tui.Types
       Krivostr.Tui.Views.Compose
       Krivostr.Tui.Views.Feed
@@ -109,6 +110,7 @@ test-suite spec
       Krivostr.Tui.Dispatch
       Krivostr.Tui.Sanitize
       Krivostr.Tui.State
+      Krivostr.Tui.Theme
       Krivostr.Tui.Types
       Krivostr.Tui.Views.Compose
       Krivostr.Tui.Views.Feed

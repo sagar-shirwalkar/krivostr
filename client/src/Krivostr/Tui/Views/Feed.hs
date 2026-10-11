@@ -11,7 +11,7 @@ module Krivostr.Tui.Views.Feed
   ) where
 
 import Brick.Types (Widget)
-import Brick.Widgets.Core (str, txt)
+import Brick.Widgets.Core (str, txt, withAttr, (<+>))
 import Brick.Widgets.List (renderList)
 import Data.Foldable (toList)
 import Data.Set (Set)
@@ -23,6 +23,7 @@ import Krivostr.Cli.Render (oneLine, relativeTime, shortHex)
 import Krivostr.Event (Event, evContent, evCreatedAt, evId, evKind, evPubkey)
 import Krivostr.Nip.Nip36 (isSensitive)
 import Krivostr.Tui.Sanitize (stripAnsiAndC0)
+import Krivostr.Tui.Theme (kindAttr, selectedAttr, sensitiveAttr, pendingAttr)
 import Krivostr.Tui.Types (AppState (..), Name)
 
 -- | The feed: rows newest-first, or the empty state when the store has
@@ -38,7 +39,22 @@ drawFeed now st = case toList (asFeed st) of
 -- clipping (vty text width, not characters) is an M4 refinement — see the
 -- design doc's wide-char risk.
 drawRow :: POSIXTime -> Set Text -> Set Text -> Bool -> Event -> Widget Name
-drawRow now pending revealed _selected e = txt (rowText now pending revealed e)
+drawRow now pending revealed selected e =
+  let kindTag = withAttr (kindAttr (evKind e)) (txt ("#" <> T.pack (show (evKind e))))
+      pubkeyTag = txt (shortHex 8 (evPubkey e))
+      ageTag = txt (relativeTime now (evCreatedAt e))
+      bodyTag = case () of
+        _ | isSensitive e && not (Set.member (evId e) revealed) ->
+            withAttr sensitiveAttr (txt "[hidden — content-warning]")
+          | otherwise ->
+            txt (oneLine 80 (stripAnsiAndC0 (evContent e)))
+      pendingTag = if Set.member (evId e) pending
+        then withAttr pendingAttr (txt "  [sending]")
+        else txt ""
+      row = txt (relativeTime now (evCreatedAt e)) <+> kindTag <+> txt (shortHex 8 (evPubkey e)) <+> bodyTag <+> pendingTag
+  in if selected
+    then withAttr selectedAttr row
+    else row
 
 -- | The row as text: @age  #kind  abcd…wxyz  content@, plus a pending
 -- marker while a publish is in flight. The marker is its own segment so
