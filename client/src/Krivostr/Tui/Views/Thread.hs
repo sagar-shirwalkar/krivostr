@@ -11,10 +11,11 @@ module Krivostr.Tui.Views.Thread
 
 import Brick.Types (Widget)
 import Brick.Widgets.Core (str, vBox)
+import Data.List (sortOn)
 import Data.Set (Set)
 import Data.Text (Text)
 import Data.Time.Clock.POSIX (POSIXTime)
-import Krivostr.Event (Event, evTags)
+import Krivostr.Event (Event, evCreatedAt, evTags)
 import Krivostr.Nip.Nip36 (isSensitive)
 import Krivostr.Tui.Types (Name)
 import Krivostr.Tui.Views.Feed (drawRow)
@@ -23,7 +24,7 @@ import Krivostr.Tui.Views.Feed (drawRow)
 -- @e@ counts — positional and marked alike — because old clients only
 -- wrote positional tags and both must thread.
 threadReplies :: Text -> [Event] -> [Event]
-threadReplies rid = filter cites
+threadReplies rid = sortOn evCreatedAt . filter cites
   where
     cites e = any isReply (evTags e)
     isReply (t : rest) = t == "e" && rid `elem` rest

@@ -68,7 +68,6 @@ executable krivostr
     , http-client-tls
     , http-types
     , krivostr-core
-    , microlens-platform
     , monad-logger
     , mtl
     , network
@@ -143,7 +142,6 @@ test-suite spec
     , http-client-tls
     , http-types
     , krivostr-core
-    , microlens-platform
     , monad-logger
     , mtl
     , network

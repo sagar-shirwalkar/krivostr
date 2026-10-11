@@ -35,13 +35,14 @@ import Brick.Widgets.Edit (editor)
 import Brick.Widgets.List
   (listMoveDown, listMoveToBeginning, listMoveToEnd, listMoveUp, listReplace, listSelectedElement)
 import Data.Foldable (toList)
+import Data.List (sortOn)
 import Data.Sequence ((<|), (|>))
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Graphics.Vty.Input.Events as V
-import Krivostr.Event (Event, evId, evKind, evPubkey, evTags, evContent)
+import Krivostr.Event (Event, evId, evKind, evPubkey, evTags, evContent, evCreatedAt)
 import Krivostr.Logging (LogEntry (..), LogLevel (..))
 import qualified Krivostr.Nip.Nip27 as Nip27
 import Krivostr.Nip.Nip27 (findMentions)
@@ -63,6 +64,7 @@ step ev st = case ev of
   EvVty v         -> stepKey v st
   EvResolveMentions ms -> st { asMentions = ms }
   EvResolvedMention rt -> handleResolvedMention rt st
+  EvComposeSent   -> popScreen st
 
 -- | Increment unread counter when a new event arrives and we're not on the feed.
 maybeIncrementUnread :: AppState -> AppState
@@ -95,13 +97,21 @@ clearPending eid st = st { asPending = Set.delete eid (asPending st) }
 -- | Insert a muted author into the mute set and retroactively purge all
 -- their events from the feed and open thread. Rebuilds the list widget
 -- with selection re-pointed by event id so the cursor doesn't jump.
+-- Only rebuilds the list widget when on the feed screen (search borrows it;
+-- popScreen re-syncs on Esc).
 purgeMutedAuthor :: Text -> AppState -> AppState
 purgeMutedAuthor hex st =
   let st' = st { asMuted = Set.insert hex (asMuted st) }
       feed = Seq.filter (\e -> evPubkey e /= hex) (asFeed st')
       thread = filter (\e -> evPubkey e /= hex) (asThread st')
-      sel = fst <$> listSelectedElement (asList st')
-      newList = listReplace feed sel (asList st')
+      -- Re-point selection by event id: find the event at the old index,
+      -- then find its new index in the filtered feed.
+      oldSel = fst <$> listSelectedElement (asList st')
+      oldEventId = oldSel >>= \i -> Seq.lookup i (asFeed st') >>= Just . evId
+      newSel = oldEventId >>= \eid -> Seq.findIndexL ((== eid) . evId) feed
+      newList = case asScreen st' of
+        SFeed -> listReplace feed newSel (asList st')
+        _     -> asList st'
   in st' { asFeed = feed, asThread = thread, asList = newList }
 
 -- | The focused event, if the widget has a selection at all.
@@ -226,8 +236,10 @@ stepSearchKey v st = case v of
 stepNavKey :: V.Event -> AppState -> AppState
 stepNavKey v st = case v of
   V.EvKey (V.KChar 'q') [] -> st { asQuit = True }
+  V.EvKey (V.KChar '?') [] -> st { asScreen = SHelp }
   V.EvKey (V.KChar ':') [] -> st { asCmdLine = Just "" }
   V.EvKey (V.KChar '~') [] -> st { asShowLog = not (asShowLog st) }
+  V.EvKey (V.KChar 'f') [] -> st { asFollowing = not (asFollowing st) }
   V.EvKey (V.KChar '/') [] -> st { asScreen = SSearch, asSearchQuery = "" }
   V.EvKey V.KEsc []        -> if asScreen st == SFeed then st else popScreen st
   V.EvKey V.KEnter []      -> stepEnter st
@@ -335,6 +347,6 @@ stepEnter st = case asScreen st of
     Nothing -> st
     Just e  -> st
       { asScreen = SThread (evId e)
-      , asThread = e : threadReplies (evId e) (toList (asFeed st))
+      , asThread = e : sortOn evCreatedAt (threadReplies (evId e) (toList (asFeed st)))
       }
   _ -> st

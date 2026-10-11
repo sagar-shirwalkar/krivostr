@@ -182,8 +182,8 @@ make docker
 docker compose -f docker/docker-compose.yml up
 ```
 
-The image is `debian:bookworm-slim` with `libgmp10`, `zlib1g`, and `ca-certificates`, and
-it runs under `tini` so the bridge gets correct signal handling. The container serves the
+The image is `debian:bookworm-slim` with `libgmp10`, `zlib1g`, `libtinfo6`, and
+`ca-certificates`, and it runs under `tini` so the bridge gets correct signal handling. The container serves the
 static UI and the bridge together, publishes `:8081`, and keeps the database at
 `/data/events.db` on the `krivostr-data` volume. Note the compose file publishes
 `8081:8081` on all interfaces — see the deployment note in
@@ -191,8 +191,8 @@ static UI and the bridge together, publishes `:8081`, and keeps the database at
 exposing it past loopback.
 
 The published Linux binary is built by `docker/Dockerfile.linux` and checked for a glibc
-floor of 2.34. It is **not** a fully static build: it links against glibc, `libgmp`, and
-`libz`, so it runs on any Linux with glibc 2.34 or newer.
+floor of 2.34. It is **not** a fully static build: it links against glibc, `libgmp`,
+`libz`, and `libtinfo` (ncurses), so it runs on any Linux with glibc 2.34 or newer.
 
 ---
 
@@ -780,7 +780,7 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
 - **The local signer keeps the secret in memory for the session only.** There is no
   at-rest encryption and nothing is written to disk, but there is also no keyring
   integration.
-- **The Linux binary is not static.** It needs glibc 2.34+, `libgmp`, and `libz`.
+- **The Linux binary is not static.** It needs glibc 2.34+, `libgmp`, `libz`, and `libtinfo` (ncurses).
 - **Upstream `search` depends on the relay.** The bridge answers from FTS5; remote
   relays without NIP-50 ignore the `search` key and return unfiltered matches.
 - **`_headers` applies to Cloudflare Pages only.** `krivostr serve` serves the same files

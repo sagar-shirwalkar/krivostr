@@ -19,7 +19,6 @@ import Control.Concurrent.STM.TQueue (isEmptyTQueue, newTQueueIO, readTQueue, wr
 import Control.Monad (forM_)
 import Data.Either (partitionEithers)
 import Data.List (sortOn)
-import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime, diffUTCTime)
 import Krivostr.Cli.Nostr (publishNoteResults)
@@ -115,16 +114,16 @@ flushVia pool st = do
       Left _  -> pure ()
 
 -- | Thread from the store plus one network pass: the root by id and its
--- replies by @e@ tag, newest first. Store answers instantly; the two relay
--- fetches run concurrently in the caller's worker thread (the UI stays live
--- throughout). Deduplicated by id throughout.
+-- replies by @e@ tag, oldest first (a thread reads down). Store answers
+-- instantly; the two relay fetches run concurrently in the caller's worker
+-- thread (the UI stays live throughout). Deduplicated by id throughout.
 fetchThreadVia :: Store -> Logger -> [Text] -> Text -> Int -> IO [Event]
 fetchThreadVia st lg relays rid wait = do
   local <- fetchThreadStore st rid
   (byId, byTag) <- concurrently
     (fetchOnceVia lg relays (byIds rid) wait)
     (fetchOnceVia lg relays (tagEq "e" [rid]) wait)
-  pure (sortOn (Down . evCreatedAt) (dedupe (local <> byId <> byTag)))
+  pure (sortOn evCreatedAt (dedupe (local <> byId <> byTag)))
   where
     byIds r = Filter
       { fIds = Just [r], fAuthors = Nothing, fKinds = Nothing
@@ -132,13 +131,14 @@ fetchThreadVia st lg relays rid wait = do
       , fTags = [], fSearch = Nothing }
     dedupe = foldr (\e acc -> if any ((== evId e) . evId) acc then acc else e : acc) []
 
--- | Thread from the store only: the root by id plus its replies by @e@ tag.
--- The fast path inside 'fetchThreadVia' and the seam-testable half of it.
+-- | Thread from the store only: the root by id plus its replies by @e@ tag,
+-- oldest first (a thread reads down). The fast path inside 'fetchThreadVia'
+-- and the seam-testable half of it.
 fetchThreadStore :: Store -> Text -> IO [Event]
 fetchThreadStore st rid = do
   root <- getEventById st rid
   replies <- queryEvents st (tagEq "e" [rid])
-  pure (sortOn (Down . evCreatedAt) (maybe id (:) root replies))
+  pure (sortOn evCreatedAt (maybe id (:) root replies))
 
 -- | One-shot fetch from relays: a throwaway pool on the fetch relays, one
 -- REQ, collect matches until the window ends. Slice-collected (250ms) with

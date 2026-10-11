@@ -51,7 +51,8 @@ drawRow now pending revealed selected e =
       pendingTag = if Set.member (evId e) pending
         then withAttr pendingAttr (txt "  [sending]")
         else txt ""
-      row = txt (relativeTime now (evCreatedAt e)) <+> kindTag <+> txt (shortHex 8 (evPubkey e)) <+> bodyTag <+> pendingTag
+      sep = txt "  "
+      row = ageTag <+> sep <+> kindTag <+> sep <+> pubkeyTag <+> sep <+> bodyTag <+> pendingTag
   in if selected
     then withAttr selectedAttr row
     else row

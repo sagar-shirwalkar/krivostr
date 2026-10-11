@@ -47,7 +47,6 @@ dependencies:
   - brick
   - vty
   - vty-crossplatform
-  - microlens-platform
 
 executables:
   krivostr:

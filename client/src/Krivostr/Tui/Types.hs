@@ -88,6 +88,7 @@ data TuiEvent
   | EvVty V.Event
   | EvResolveMentions [Mention]
   | EvResolvedMention ResolveTarget
+  | EvComposeSent
 -- No Eq/Show: vty events and key material do not promise them, and tests
 -- read fields, not whole values.
 

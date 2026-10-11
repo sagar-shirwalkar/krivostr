@@ -93,7 +93,7 @@ renderEvent colour reveal now e =
 warnBody :: Event -> Text
 warnBody e = case contentWarningOf e of
   Nothing     -> oneLine 100 (sanitized e)
-  Just reason -> "sensitive" <> (if T.null reason then "" else ": " <> oneLine 80 reason)
+  Just reason -> "sensitive" <> (if T.null reason then "" else ": " <> oneLine 80 (stripAnsiAndC0 reason))
 
 -- | Event content safe to print: no ANSI escapes, no control codes.
 sanitized :: Event -> Text
@@ -108,8 +108,8 @@ renderEventBlock colour reveal now e =
         Just _ | not reveal -> "    [content hidden: content-warning]"
         _ -> T.unlines (map ("    " <>) (T.lines (sanitized e)))
       tags   = if null (evTags e) then "" else
-                  "    " <> dim <> T.intercalate " " (map renderTag (evTags e))
-                  <> if colour then reset else ""
+        "    " <> dim <> T.intercalate " " (map (stripAnsiAndC0 . renderTag) (evTags e))
+        <> if colour then reset else ""
   in header <> "\n" <> body <> tags
   where
     renderTag t = "#" <> T.unwords (filter (not . T.null) t)

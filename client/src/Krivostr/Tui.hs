@@ -24,7 +24,7 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Graphics.Vty.Config (defaultConfig)
 import Graphics.Vty.CrossPlatform (mkVty)
 import Krivostr.Cli.Nostr (loadKey)
-import Krivostr.Cli.Options (buildFilter, emptyFilterOpts, resolveUpstreams)
+import Krivostr.Cli.Options (buildFilter, emptyFilterOpts, FilterOpts (foKinds), resolveUpstreams)
 import Krivostr.Event (Event)
 import Krivostr.Filter (Filter (..))
 import Krivostr.Key (PrivateKey, derivePublicKey, pubKeyHex)
@@ -37,9 +37,16 @@ import Krivostr.Tui.App (tuiApp)
 import Krivostr.Tui.Backend (inProcessBackend)
 import Krivostr.Tui.State (pushEvent)
 import Krivostr.Tui.Types (AppState (..), TuiEvent (..), initialState)
+import Krivostr.Tui.Types (AppState (..), TuiEvent (..), initialState)
 import Krivostr.Wire (ClientMessage (..))
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
+
+-- | Default kinds for the TUI live feed. Matches the web UI's FEED_KINDS
+-- to exclude firehose-dominating kinds (0, 3, 4, 1059, 10002, etc.) and
+-- encrypted content that renders as ciphertext.
+tuiDefaultKinds :: [Int]
+tuiDefaultKinds = [1, 5, 6, 7, 16, 1111, 9735, 30023]
 
 -- | TUI options from argv. @--no-ingest@ starts paused (read the archive,
 -- touch no relays); ingest is on by default — that is the local-first pitch.
@@ -58,7 +65,7 @@ runTui opts lg db = do
   key <- case keyE of
     Left e  -> hPutStrLn stderr ("cannot start tui: " ++ e) >> exitFailure
     Right k -> pure k
-  filt <- buildFilter emptyFilterOpts
+  filt <- buildFilter emptyFilterOpts { foKinds = tuiDefaultKinds }
   st <- openStore lg db
   flip finally (closeStore st) $ do
     saved <- getRelayConfig st
@@ -120,5 +127,5 @@ fillInitial st filt key = do
     listsOf s me kind = queryEvents s (byKindAuthor kind me)
     byKindAuthor kind me = Filter
       { fIds = Nothing, fAuthors = Just [me], fKinds = Just [kind]
-      , fSince = Nothing, fUntil = Nothing, fLimit = Just 5
+      , fSince = Nothing, fUntil = Nothing, fLimit = Just 1
       , fTags = [], fSearch = Nothing }

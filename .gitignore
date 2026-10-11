@@ -39,6 +39,9 @@ docker/.env
 AGENTS.md
 .kilocode/
 
-# Scripts
-scripts/
+# Planning
 planning/
+
+# scripts
+scripts/resolve-action-pins.sh
+scripts/resolve-action-shas.sh

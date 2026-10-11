@@ -38,7 +38,9 @@ import qualified Data.ByteString.Base16 as B16
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import Krivostr.Schnorr
-import System.IO (IOMode(ReadMode), withBinaryFile)
+import Crypto.Random (getRandomBytes)
+import Data.ByteArray (convert)
+import Data.ByteString (ByteString)
 
 -- | A secret scalar, always in @[1, groupOrder)@.
 newtype PrivateKey = PrivateKey Integer
@@ -52,12 +54,12 @@ newtype PublicKey = PublicKey Integer
 -- | Draw a uniformly random secret scalar.
 --
 -- This is the only impure function in the pure core. It reads 32 bytes from
--- the operating system's CSPRNG rather than pulling in a dependency, and
+-- the operating system's CSPRNG via 'crypton' (cross-platform), and
 -- rejection-samples until the scalar lands in range.
 generatePrivateKey :: IO PrivateKey
 generatePrivateKey = do
-  bytes <- withBinaryFile "/dev/urandom" ReadMode $ \h -> BS.hGet h 32
-  let d = intFromBytes' bytes
+  bs <- getRandomBytes 32 >>= pure . (convert :: ByteString -> BS.ByteString)
+  let d = intFromBytes' bs
   if isValidSecret d
     then pure (PrivateKey d)
     else generatePrivateKey

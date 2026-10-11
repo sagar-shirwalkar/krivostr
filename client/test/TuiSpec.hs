@@ -9,9 +9,6 @@ import Brick.AttrMap (attrName)
 import Brick.Widgets.Edit (editor, getEditContents)
 import Brick.Widgets.List (listElements)
 import Data.Foldable (toList)
-import Data.List (nub)
-import Data.Map (Map)
-import qualified Data.Map as Map
 import Data.Maybe (isJust)
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
@@ -19,7 +16,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Graphics.Vty.Input.Events as V
-import Krivostr.Cli.Options (buildFilter, emptyFilterOpts)
+import Krivostr.Cli.Options (FilterOpts (foKinds))
 import Krivostr.Event
 import Krivostr.Filter (Filter (..))
 import Krivostr.Key (derivePublicKey, generatePrivateKey, pubKeyHex)
@@ -62,6 +59,7 @@ import Krivostr.Tui.State
   , handleResolvedMention
   )
 import Krivostr.Tui.Types
+import Krivostr.Tui.Sanitize (stripAnsiAndC0)
 import Krivostr.Tui.Views.Compose (drawCompose, targetLine)
 import Krivostr.Tui.Views.Feed (drawFeed, drawRow, rowText)
 import Krivostr.Tui.Views.Lists (drawLists, tabName)
@@ -405,7 +403,7 @@ tuiSpec = describe "TUI" $ do
       pool <- newPool lg (const (pure ()))
       let backend = inProcessBackend lg ":memory:" st pool [] (\_ -> pure ())
       found <- tbFetchThread backend (evId e1) 0
-      found `shouldBe` [reply, e1]
+      found `shouldBe` [e1, reply]
       closeStore st
 
   describe "Backend seam on a memory store" $ do
@@ -455,6 +453,7 @@ tuiSpec = describe "TUI" $ do
     it "renders mute tab with entries" $ do
       let st = st0 { asListTab = 0, asMuted = Set.fromList ["abc123", "def456"] }
       let widget = drawLists st
+      pure $ widget `seq` ()
       -- We can't easily inspect Widget internals, but we can verify it doesn't crash
       -- and that tabName is called correctly
       tabName 0 `shouldBe` "mute"
@@ -465,59 +464,70 @@ tuiSpec = describe "TUI" $ do
     it "renders pin tab with entries" $ do
       let st = st0 { asListTab = 1, asPins = Set.fromList ["pin1", "pin2"] }
       let widget = drawLists st
+      pure $ widget `seq` ()
       tabName 1 `shouldBe` "pin"
 
     it "renders bookmark tab with entries" $ do
       let st = st0 { asListTab = 2, asBookmarks = Set.fromList ["bm1"] }
       let widget = drawLists st
+      pure $ widget `seq` ()
       tabName 2 `shouldBe` "bookmark"
 
     it "renders empty tab with helpful message" $ do
       let st = st0 { asListTab = 0, asMuted = Set.empty }
       let widget = drawLists st
+      pure $ widget `seq` ()
       tabName 0 `shouldBe` "mute"
 
   describe "Views.Compose.drawCompose" $ do
     it "renders compose view with target line and editor" $ do
       let ed = editor NComposeEdit Nothing "test content"
       let widget = drawCompose st0 CTNote ed
+      pure $ widget `seq` ()
       -- Verify it doesn't crash and targetLine is used
       targetLine CTNote `shouldBe` "note"
 
     it "renders reply compose with shortened event id" $ do
       let ed = editor NComposeEdit Nothing ""
       let widget = drawCompose st0 (CTReply "abcdef1234567890") ed
+      pure $ widget `seq` ()
       targetLine (CTReply "abcdef1234567890") `shouldBe` "reply → e:abcdef12"
 
     it "renders react compose with prefill" $ do
       let ed = editor NComposeEdit Nothing "+"
       let widget = drawCompose st0 (CTReact "abcdef1234567890") ed
+      pure $ widget `seq` ()
       targetLine (CTReact "abcdef1234567890") `shouldBe` "react → e:abcdef12"
 
     it "renders quote compose" $ do
       let ed = editor NComposeEdit Nothing ""
       let widget = drawCompose st0 (CTQuote "abcdef1234567890") ed
+      pure $ widget `seq` ()
       targetLine (CTQuote "abcdef1234567890") `shouldBe` "quote → q:abcdef12"
 
     it "renders comment compose" $ do
       let ed = editor NComposeEdit Nothing ""
       let widget = drawCompose st0 (CTComment "abcdef1234567890") ed
+      pure $ widget `seq` ()
       targetLine (CTComment "abcdef1234567890") `shouldBe` "comment → E:abcdef12"
 
     it "renders dm compose" $ do
       let ed = editor NComposeEdit Nothing ""
       let widget = drawCompose st0 (CTDm "abcdef1234567890") ed
+      pure $ widget `seq` ()
       targetLine (CTDm "abcdef1234567890") `shouldBe` "dm → p:abcdef12"
 
   describe "Views.Thread.drawThread and threadReplies edge cases" $ do
     it "renders empty thread with helpful message" $ do
       let widget = drawThread 1700000000 Set.empty Set.empty []
+      pure $ widget `seq` ()
       threadReplies "root" [] `shouldBe` []
 
     it "renders thread with root and replies" $ do
       e1 <- mkEv 1 "root"
       e2 <- mkEvTagged 2 "reply" [["e", evId e1]]
       let widget = drawThread 1700000000 Set.empty Set.empty [e1, e2]
+      pure $ widget `seq` ()
       map evId (threadReplies (evId e1) [e2]) `shouldBe` [evId e2]
 
     it "threadReplies handles empty tag list" $ do
@@ -533,6 +543,7 @@ tuiSpec = describe "TUI" $ do
   describe "Views.Feed.drawFeed, drawRow, and rowText edge cases" $ do
     it "renders empty feed with helpful message" $ do
       let widget = drawFeed 1700000000 st0
+      pure $ widget `seq` ()
       e <- mkEv 1 "test"
       rowText 1700000001 Set.empty Set.empty e `shouldSatisfy` T.isPrefixOf "now  #1  "
 
@@ -540,11 +551,13 @@ tuiSpec = describe "TUI" $ do
       e <- mkEv 1 "hello"
       let st = step (EvIncoming e) st0
       let widget = drawFeed 1700000001 st
+      pure $ widget `seq` ()
       rowText 1700000001 Set.empty Set.empty e `shouldSatisfy` T.isInfixOf "hello"
 
     it "drawRow delegates to rowText" $ do
       e <- mkEv 1 "test"
       let widget = drawRow 1700000001 Set.empty Set.empty False e
+      pure $ widget `seq` ()
       rowText 1700000001 Set.empty Set.empty e `shouldSatisfy` T.isInfixOf "test"
 
     it "rowText includes pending marker when true" $ do
@@ -916,6 +929,7 @@ tuiSpec = describe "TUI" $ do
     it "passes revealed set to drawRow" $ do
       e1 <- mkEvTagged 1 "secret" [["content-warning", "spoiler"]]
       let widget = drawThread 1700000000 Set.empty Set.empty [e1]
+      pure $ widget `seq` ()
       -- Just verify it doesn't crash
       True `shouldBe` True
 

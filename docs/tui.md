@@ -24,7 +24,7 @@ krivostr tui --no-color
 |--------|---------|-----------|
 | Feed | Timeline, newest first | default |
 | Thread | Note + replies | `Enter` on a note |
-| Search | FTS5 query | `/` or `:search` |
+| Search | FTS5 query | `/` |
 | DM | Inbox + send | `Tab` cycle or `:dm` |
 | Relays | Connected + configured + outbox depth | `Tab` cycle or `:relays` |
 | Lists | Mute / pin / bookmark tabs | `Tab` cycle or `:lists` |
@@ -32,13 +32,13 @@ krivostr tui --no-color
 | Help | Key table + command list | `Tab` cycle or `:help` |
 | Compose | Reply / react / quote / article / DM | `r` `A` `Q` `c` `E` |
 
-Global keys work everywhere:
-- `?` — help overlay
-- `q` — quit (or pop back from a sub-screen)
+Global keys work on feed-like screens (Feed, Thread, Search):
+- `?` — help screen
+- `q` — quit
 - `:` — command bar
 - `/` — enter search
 - `~` — toggle log pane
-- `Esc` — cancel any overlay
+- `Esc` — cancel overlay / pop screen
 - `Tab` — cycle screens (Feed→Relays→Lists→DM→Outbox→Help→Feed)
 - `Shift-Tab` — reverse cycle
 
@@ -81,19 +81,21 @@ Global keys work everywhere:
 | `:outbox` | Show outbox view |
 | `:dm` | Show DM view |
 | `:help` | Show help view |
-| `:search <query>` | Run FTS search |
-| `:verify <id> [--pubkey …]` | Async NIP-05 check |
-| `:publish <file.md>` | Article flow (prompts title/slug) |
-| `:resolve <ref>` | Open thread/author for `nostr:`/bech32/hex |
-| `:export [--format …] [--out …]` | Export current filter |
-| `:wallet …` | NIP-47 via `KRIVOSTR_NWC` |
-| `:reindex` | Rebuild FTS5 index |
-| `:keygen` | Generate keypair (reveals `nsec` on `v`) |
-| `:count` | Exact NIP-45 count for current filter |
-| `:bell on/off` | Terminal bell on matching events |
-| `:exec <cmd>` | Run shell command on match (substitution) |
-| `:limit N` | Cap feed display (default 500) |
-| `:ingest on/off` | Toggle live follow ingest |
+
+Commands marked ⬜ are not yet implemented (M3):
+- `:search <query>` — Run FTS search
+- `:verify <id> [--pubkey …]` — Async NIP-05 check
+- `:publish <file.md>` — Article flow (prompts title/slug)
+- `:resolve <ref>` — Open thread/author for `nostr:`/bech32/hex
+- `:export [--format …] [--out …]` — Export current filter
+- `:wallet …` — NIP-47 via `KRIVOSTR_NWC`
+- `:reindex` — Rebuild FTS5 index
+- `:keygen` — Generate keypair (reveals `nsec` on `v`)
+- `:count` — Exact NIP-45 count for current filter
+- `:bell on/off` — Terminal bell on matching events
+- `:exec <cmd>` — Run shell command on match (substitution)
+- `:limit N` — Cap feed display (default 500)
+- `:ingest on/off` — Toggle live follow ingest
 
 ## Security notes
 
@@ -132,9 +134,9 @@ The TUI and `serve` can run concurrently on the same database:
 | Relays view | ⬜ M3 stub |
 | Outbox view | ⬜ M3 stub |
 | Help view | ✅ |
-| `:wallet`, `:publish`, `:export` | ⬜ M3 |
-| Mention links (`n` key) | ✅ (lists mentions, resolution via `:resolve`) |
-| Unread counter | ✅ |
+| `:wallet`, `:publish`, `:export`, `:search`, `:verify`, `:resolve`, `:export`, `:wallet`, `:reindex`, `:keygen`, `:count`, `:bell`, `:exec`, `:limit`, `:ingest` | ⬜ M3 |
+| Mention links (`n` key) | ✅ (lists mentions, fetches referenced events) |
+| Unread counter | ✅ (shows on all screens) |
 | Theme attrs (kind colours) | ✅ |
 | NIP-36 content warning | ✅ |
 | Muting filter | ✅ |
@@ -142,9 +144,10 @@ The TUI and `serve` can run concurrently on the same database:
 ## Known limitations
 
 - DM/Relays/Outbox views are M3 stubs (show placeholder text)
-- Mention resolution via `Enter` on a mention not yet wired (use `:resolve` for now)
+- Mention resolution: `n` key lists mentions and fetches referenced events; `Enter` on a mention not yet wired
 - Article composer (`:publish`) not yet implemented
 - NIP-17 DMs not yet wired (CLI `dm` uses NIP-04)
+- `:search`, `:verify`, `:publish`, `:resolve`, `:export`, `:wallet`, `:reindex`, `:keygen`, `:count`, `:bell`, `:exec`, `:limit`, `:ingest` commands not yet implemented
 
 ## Debugging
 

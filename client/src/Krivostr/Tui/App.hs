@@ -13,37 +13,39 @@ import Brick.Main (App (..), halt, neverShowCursor, showCursorNamed, suspendAndR
 import Brick.Types (BrickEvent (..), CursorLocation, EventM, Widget, nestEventM')
 import Brick.Widgets.Core (emptyWidget, str, txt, vBox)
 import Brick.Widgets.Edit (editor, getEditContents, handleEditorEvent)
-import Brick.Widgets.List (listReplace)
+import Brick.Widgets.List (listReplace, listSelectedElement)
 import Control.Concurrent (forkIO)
 import Control.Exception (SomeException, try)
-import Control.Monad (void, when)
+import Control.Monad (forM_, void, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (get, gets, modify)
 import Data.Foldable (toList)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, maybeToList)
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import qualified Graphics.Vty.Attributes as Vty
 import qualified Graphics.Vty.Input.Events as V
-import Krivostr.Event (Event, UnsignedEvent (..), evId, evKind, evPubkey)
+import Krivostr.Event (Event, UnsignedEvent (..), evId, evKind, evPubkey, evContent)
 import Krivostr.Key (PrivateKey, derivePublicKey, pubKeyHex)
 import Krivostr.Logging (LogEntry (leMsg))
-import Krivostr.Nip.Nip09 (buildDeletionTags, deletionKind)
+import Krivostr.Nip.Nip09 (buildDeletionTags, deletionKind, parameterizedAddress)
 import Krivostr.Nip.Nip10 (buildReplyTags, replyRoot)
 import Krivostr.Nip.Nip18 (buildQuoteTags, buildRepostTags, embedOriginal)
 import Krivostr.Nip.Nip22 (ItemRef (..), buildCommentTags)
 import Krivostr.Tui.Theme (themeAttrMap)
 import Krivostr.Nip.Nip25 (buildReactionTags)
+import Krivostr.Nip.Nip27 (findMentions)
+import qualified Krivostr.Nip.Nip27 as Nip27
 import Krivostr.Nip.Nip51 (addEntry, muteKind)
 import Krivostr.Cli.Nostr (signUnsigned)
 import Krivostr.Store (StoreStats (ssTotal))
 import Krivostr.Tui.Backend (TuiBackend (..))
 import Krivostr.Tui.Dispatch (commandHelp)
-import Krivostr.Tui.State (findEvent, pushLogText, selectedEvent, step)
+import Krivostr.Tui.Sanitize (stripAnsiAndC0)
+import Krivostr.Tui.State (findEvent, popScreen, pushLogText, selectedEvent, step)
 import Krivostr.Tui.Types
 import Krivostr.Tui.Views.Compose (drawCompose)
 import Krivostr.Tui.Views.Feed (drawFeed)
@@ -105,9 +107,12 @@ routeKey :: TuiBackend -> AppState -> V.Event -> EventM Name AppState ()
 routeKey backend st v
   | isJustCmdline = forward
   | isComposeSend = sendCompose
+  | isComposeCancel = forward
   | isEditorPromote = promoteEditor
+  | isResolveMentions = resolveMentions >> forward
+  | isSearchOpenResult = openSearchResult
+  | isSearchRun = runSearch
   | isCompose = toEditor
-  | isSearchEnter = runSearch
   | isFetchRelatives = fetchRelatives
   | isImmediate = immediate
   | otherwise = forward
@@ -115,10 +120,13 @@ routeKey backend st v
     isJustCmdline = case asCmdLine st of Just _ -> True; Nothing -> False
     isCompose = case asScreen st of SCompose _ -> True; _ -> False
     isComposeSend = isCompose && isCtrl 'g' v
+    isComposeCancel = isCompose && v == V.EvKey V.KEsc []
     isEditorPromote = isCompose && isEmptyEditor && v == V.EvKey (V.KChar 'E') []
     isEmptyEditor = null (getEditContents (asCompose st))
-    isSearchEnter = v == V.EvKey V.KEnter [] && asCmdLine st == Nothing && asScreen st == SSearch
+    isSearchRun = v == V.EvKey V.KEnter [] && asCmdLine st == Nothing && asScreen st == SSearch && not (hasSelection st)
+    isSearchOpenResult = v == V.EvKey V.KEnter [] && asCmdLine st == Nothing && asScreen st == SSearch && hasSelection st
     isFetchRelatives = v == V.EvKey (V.KChar 'o') [] && asCmdLine st == Nothing && isThread
+    isResolveMentions = v == V.EvKey (V.KChar 'n') [] && asCmdLine st == Nothing && isThread
     isThread = case asScreen st of SThread _ -> True; _ -> False
     isImmediate = asCmdLine st == Nothing && inFeedView && isImmediateKey v
     inFeedView = asScreen st == SFeed || asScreen st == SSearch
@@ -126,10 +134,15 @@ routeKey backend st v
     checkQuit = do
       q <- gets asQuit
       when q halt
+    hasSelection s = case listSelectedElement (asList s) of
+      Just _ -> True
+      Nothing -> False
     sendCompose = sendComposeWorker backend
     promoteEditor = promoteEditorWorker
     runSearch = runSearchEdge backend
+    openSearchResult = openSearchResultWorker backend
     fetchRelatives = fetchRelativesWorker backend
+    resolveMentions = resolveMentionsWorker backend
     immediate = immediateWorker backend v
     toEditor = do
       ed <- gets asCompose
@@ -154,6 +167,16 @@ runSearchEdge backend = do
   results <- liftIO (tbSearch backend (asSearchQuery st) False Nothing Nothing 50)
   modify (\s -> s { asList = listReplace (Seq.fromList results) (if null results then Nothing else Just 0) (asList s) })
 
+-- | Open the thread for the currently selected search result.
+openSearchResultWorker :: TuiBackend -> EventM Name AppState ()
+openSearchResultWorker backend = do
+  st <- get
+  case selectedEvent st of
+    Nothing -> pure ()
+    Just e -> do
+      modify (\s -> s { asScreen = SThread (evId e), asThread = e : [] })
+      fetchRelativesWorker backend
+
 -- | Thread fetch edge: store plus network in a worker, typed back as
 -- EvFetched. The render loop never waits on relays.
 fetchRelativesWorker :: TuiBackend -> EventM Name AppState ()
@@ -163,6 +186,29 @@ fetchRelativesWorker backend = do
     SThread rid -> void $ liftIO $ forkIO $ do
       found <- tbFetchThread backend rid 8000000
       tbPost backend (EvFetched found)
+    _ -> pure ()
+
+-- | Mention resolution: extract mentions from the focused thread event,
+-- fetch each referenced event from the store/relays, and post EvResolvedMention
+-- for each resolved event so the pure step can open the appropriate view.
+resolveMentionsWorker :: TuiBackend -> EventM Name AppState ()
+resolveMentionsWorker backend = do
+  st <- get
+  case (asScreen st, selectedEvent st) of
+    (SThread _, Just e) -> void $ liftIO $ forkIO $ do
+      let mentions = findMentions (evContent e)
+      forM_ mentions $ \m -> case Nip27.meKind m of
+        Nip27.MentionEvent eid -> do
+          -- Fetch the full thread for this event
+          threadEvts <- tbFetchThread backend eid 8000000
+          -- Post the thread events so mergeFetched populates asThread
+          tbPost backend (EvFetched threadEvts)
+          -- Then trigger the screen switch
+          tbPost backend (EvResolvedMention (RTEvent eid))
+        Nip27.MentionPubkey pk -> tbPost backend (EvResolvedMention (RTAuthor pk))
+        Nip27.MentionProfile pk _ -> tbPost backend (EvResolvedMention (RTAuthor pk))
+        Nip27.MentionAddress addr -> tbPost backend (EvResolvedMention (RTAddress addr))
+        _ -> pure ()
     _ -> pure ()
 
 -- | Promote compose to $EDITOR: suspend brick, edit a temp file, resume with
@@ -196,29 +242,28 @@ promoteEditorWorker = do
 -- | Sign and publish an unsigned event: mark pending now, publish in a
 -- worker, post the verdict. Shared by every send path so pending markers
 -- and logging behave identically for compose and immediate sends.
-runPublish :: TuiBackend -> UnsignedEvent -> PrivateKey -> IO () -> EventM Name AppState ()
-runPublish backend unsigned sk onAccept = do
+runPublish :: TuiBackend -> UnsignedEvent -> PrivateKey -> EventM Name AppState ()
+runPublish backend unsigned sk = do
   now <- liftIO getPOSIXTime
   let me = pubKeyHex (derivePublicKey sk)
       ev = signUnsigned sk unsigned { uePubkey = me, ueCreatedAt = now }
   modify (\s -> s { asPending = Set.insert (evId ev) (asPending s) })
   void $ liftIO $ forkIO $ do
     r <- try (tbPublish backend ev) :: IO (Either SomeException (Either String ()))
-    postVerdict backend (evId ev) (either (Left . show) id r) onAccept
+    tbPost backend (EvPublishDone (evId ev) (either (Left . show) id r))
 
--- | Post a publish verdict, running the follow-up (local delete, mute
--- record) first on success. The follow-up runs in the worker so the edge
--- stays responsive; failures post bare.
-postVerdict :: TuiBackend -> Text -> Either String () -> IO () -> IO ()
-postVerdict backend eid result onAccept = do
-  case result of
-    Right () -> onAccept
-    Left _   -> pure ()
-  tbPost backend (EvPublishDone eid result)
+-- | Look up an event by id: first in the model (feed + thread), then in the store.
+lookupEvent :: TuiBackend -> AppState -> Text -> IO (Either String Event)
+lookupEvent backend st eid =
+  case findEvent eid st of
+    Just e  -> pure (Right e)
+    Nothing -> maybe (Left ("original not in store: " <> T.unpack eid)) Right <$> tbGet backend eid
 
 -- | Compose send (Ctrl-G): build the unsigned event for the target, sign
 -- with the loaded key, publish. Read-only mode and unknown targets log and
 -- keep the compose open — a failed send must never eat the draft.
+-- On successful send, pop back to the previous screen and reset the editor
+-- so a second Ctrl-G doesn't double-publish the same draft.
 sendComposeWorker :: TuiBackend -> EventM Name AppState ()
 sendComposeWorker backend = do
   st <- get
@@ -230,16 +275,28 @@ sendComposeWorker backend = do
         Left e -> modify (pushLogText (T.pack e))
         Right u -> case asKey st of
           Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
-          Just sk -> runPublish backend u sk (pure ())
+          Just sk -> do
+            now <- liftIO getPOSIXTime
+            let me = pubKeyHex (derivePublicKey sk)
+                ev = signUnsigned sk u { uePubkey = me, ueCreatedAt = now }
+            modify (\s -> s { asPending = Set.insert (evId ev) (asPending s) })
+            void $ liftIO $ forkIO $ do
+              r <- try (tbPublish backend ev) :: IO (Either SomeException (Either String ()))
+              case either (Left . show) id r of
+                Right () -> do
+                  tbPost backend (EvPublishDone (evId ev) (Right ()))
+                  tbPost backend EvComposeSent
+                Left err -> do
+                  tbPost backend (EvPublishDone (evId ev) (Left err))
     _ -> pure ()
 
 -- | Build the unsigned event for a compose target. Parent/root lookups hit
--- the store; unknown targets are Lefts, never exceptions.
+-- the model first, then the store; unknown targets are Lefts, never exceptions.
 buildUnsigned :: TuiBackend -> AppState -> ComposeTarget -> Text -> IO (Either String UnsignedEvent)
 buildUnsigned backend st target body = case target of
   CTNote -> pure (Right (UnsignedEvent "" 0 1 [] body))
   CTReply pid -> do
-    parent <- note (findEvent pid st) ("original not in store: " <> T.unpack pid)
+    parent <- liftIO (lookupEvent backend st pid)
     case parent of
       Left e -> pure (Left e)
       Right p -> do
@@ -249,29 +306,28 @@ buildUnsigned backend st target body = case target of
           else maybe "" evPubkey <$> tbGet backend rootId
         pure (Right (UnsignedEvent "" 0 1 (buildReplyTags rootId "" rootAuthor pid "" (evPubkey p)) body))
   CTReact eid -> do
-    t <- note (findEvent eid st) ("original not in store: " <> T.unpack eid)
+    t <- liftIO (lookupEvent backend st eid)
     case t of
       Left e -> pure (Left e)
       Right x ->
         let emoji = let s = T.strip body in if T.null s then "+" else s
         in pure (Right (UnsignedEvent "" 0 7 (buildReactionTags eid "" (evPubkey x) (evKind x)) emoji))
   CTQuote eid -> do
-    t <- note (findEvent eid st) ("original not in store: " <> T.unpack eid)
+    t <- liftIO (lookupEvent backend st eid)
     case t of
       Left e -> pure (Left e)
       Right _ -> pure (Right (UnsignedEvent "" 0 1 (buildQuoteTags eid "") body))
   CTComment eid -> do
-    t <- note (findEvent eid st) ("original not in store: " <> T.unpack eid)
+    t <- liftIO (lookupEvent backend st eid)
     case t of
       Left e -> pure (Left e)
       Right x
         | evKind x == 1 -> pure (Left "that is a kind 1 note: use reply, not comment")
-        | otherwise -> pure (Right (UnsignedEvent "" 0 1111
-            (buildCommentTags (ItemRef (Just eid) Nothing (evKind x) (evPubkey x) "") Nothing) body))
+        | otherwise -> do
+            let addr = parameterizedAddress x
+            pure (Right (UnsignedEvent "" 0 1111
+                (buildCommentTags (ItemRef (Just eid) addr (evKind x) (evPubkey x) "") Nothing) body))
   CTDm _ -> pure (Left "DM compose needs the DM view (M3)")
-  where
-    note Nothing msg  = pure (Left msg)
-    note (Just x) _   = pure (Right x)
 
 -- | Immediate sends (a/R/d/m) on the focused event. Compose-bound keys
 -- (r/A/Q/c) never reach here — they open screens through the pure step.
@@ -291,22 +347,24 @@ immediateWorker backend v = do
     sendKind7 st t emoji = case asKey st of
       Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
       Just sk -> runPublish backend
-        (UnsignedEvent "" 0 7 (buildReactionTags (evId t) "" (evPubkey t) (evKind t)) emoji) sk (pure ())
+        (UnsignedEvent "" 0 7 (buildReactionTags (evId t) "" (evPubkey t) (evKind t)) emoji) sk
     sendRepost :: AppState -> Event -> EventM Name AppState ()
     sendRepost st t = case asKey st of
       Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
       Just sk -> runPublish backend
         (UnsignedEvent "" 0 (if evKind t == 1 then 6 else 16)
-          (buildRepostTags (evId t) "" (evPubkey t) (evKind t)) (embedOriginal t)) sk (pure ())
+          (buildRepostTags (evId t) "" (evPubkey t) (evKind t)) (embedOriginal t)) sk
     sendDelete :: AppState -> Event -> EventM Name AppState ()
     sendDelete st t = case asKey st of
       Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
       Just sk
         | evPubkey t /= pubKeyHex (derivePublicKey sk) ->
             modify (pushLogText "not yours, refusing")
-        | otherwise -> runPublish backend
-            (UnsignedEvent "" 0 deletionKind (buildDeletionTags [evId t] []) "") sk
-            (tbDeleteEvent backend (evId t))
+        | otherwise -> do
+            let addrs = maybeToList (parameterizedAddress t)
+            runPublish backend
+              (UnsignedEvent "" 0 deletionKind (buildDeletionTags [evId t] addrs) "") sk
+            liftIO (tbDeleteEvent backend (evId t))
     sendMute :: AppState -> Event -> EventM Name AppState ()
     sendMute st t = case asKey st of
       Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
@@ -350,7 +408,7 @@ statusText st = T.intercalate " · "
     screenName (SCompose _) = "compose"
     screenName SHelp       = "help"
     unreadSuffix
-      | asScreen st == SFeed, asUnread st > 0 = " (" <> T.pack (show (asUnread st)) <> " new)"
+      | asUnread st > 0 = " (" <> T.pack (show (asUnread st)) <> " new)"
       | otherwise = ""
 
 -- | The command line, or nothing when closed.
@@ -363,7 +421,7 @@ cmdLine st = case asCmdLine st of
 logPane :: AppState -> Widget Name
 logPane st
   | not (asShowLog st) = emptyWidget
-  | otherwise = vBox (map (txt . leMsg) (toList (Seq.drop (Seq.length logs - 5) logs)))
+  | otherwise = vBox (map (txt . stripAnsiAndC0 . leMsg) (toList (Seq.drop (Seq.length logs - 5) logs)))
   where
     logs :: Seq LogEntry
     logs = asLog st
