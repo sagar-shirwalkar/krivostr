@@ -11,7 +11,7 @@ that also exists in the repo is a copy that goes stale.
 
 ```bash
 stack build --fast     # build
- stack test             # 733 examples: 613 core, 120 client
+ stack test             # 769 examples: 613 core, 156 client
 stack ghci krivostr-core   # REPL against the pure layer
 ```
 
@@ -83,7 +83,7 @@ The two sides behave differently, and the difference is worth understanding.
 across the board and passes.
 
 **Backend coverage is a ratchet.** `.hpc-threshold` pins the measured total
-— currently **58%** (846 of 1449) — and `scripts/check-coverage.sh` fails
+— currently **58%** (911 of 1569) — and `scripts/check-coverage.sh` fails
 the build when coverage drops below it. The threshold is a floor, not a
 goal: when new tests raise the measured number, raise the pin in the same
 change. Never lower it to make the build green.

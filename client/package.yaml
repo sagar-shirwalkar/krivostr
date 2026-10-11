@@ -43,6 +43,11 @@ dependencies:
   # spec's always-HTTPS rule requires.
   - http-client
   - http-client-tls
+  # TUI shell (brick): all in the lts snapshot, so no extra-deps.
+  - brick
+  - vty
+  - vty-crossplatform
+  - microlens-platform
 
 executables:
   krivostr:

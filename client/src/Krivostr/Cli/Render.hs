@@ -20,6 +20,7 @@ import qualified Data.Text as T
 import Data.Time.Clock.POSIX (POSIXTime)
 import Krivostr.Event
 import Krivostr.Nip.Nip36 (contentWarningOf)
+import Krivostr.Tui.Sanitize (stripAnsiAndC0)
 
 -- ANSI, hand-rolled: the escape sequences are short and pulling in
 -- ansi-terminal for four of them is not worth another dependency.
@@ -77,7 +78,7 @@ renderEvent colour reveal now e =
   let age  = relativeTime now (evCreatedAt e)
       kind = "#" <> T.pack (show (evKind e))
       who  = shortHex 8 (evPubkey e)
-      body = if reveal then oneLine 100 (evContent e) else warnBody e
+      body = if reveal then oneLine 100 (sanitized e) else warnBody e
       plain = T.concat
         [ padRight 6 age, " ", padRight 7 kind, " ", padRight 17 who, "  ", body ]
   in if colour
@@ -91,8 +92,12 @@ renderEvent colour reveal now e =
 -- | The body with a warning substituted when the event is sensitive.
 warnBody :: Event -> Text
 warnBody e = case contentWarningOf e of
-  Nothing     -> oneLine 100 (evContent e)
+  Nothing     -> oneLine 100 (sanitized e)
   Just reason -> "sensitive" <> (if T.null reason then "" else ": " <> oneLine 80 reason)
+
+-- | Event content safe to print: no ANSI escapes, no control codes.
+sanitized :: Event -> Text
+sanitized = stripAnsiAndC0 . evContent
 
 -- | A multi-line rendering that keeps the content's own line breaks, for
 -- @--long@ and for notifications.
@@ -101,7 +106,7 @@ renderEventBlock colour reveal now e =
   let header = renderEvent colour reveal now e
       body   = case contentWarningOf e of
         Just _ | not reveal -> "    [content hidden: content-warning]"
-        _ -> T.unlines (map ("    " <>) (T.lines (T.replace "\t" "  " (evContent e))))
+        _ -> T.unlines (map ("    " <>) (T.lines (sanitized e)))
       tags   = if null (evTags e) then "" else
                   "    " <> dim <> T.intercalate " " (map renderTag (evTags e))
                   <> if colour then reset else ""

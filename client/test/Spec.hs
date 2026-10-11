@@ -52,6 +52,7 @@ import Krivostr.Nip.Nip47 (Method (..), WalletConn (..))
 import Krivostr.Relay (parseUrl)
 import Krivostr.Store
 import Krivostr.Wire
+import TuiSpec (tuiSpec)
 import Data.Aeson (Value, toJSON)
 import Data.Aeson.Types (parseEither)
 
@@ -81,6 +82,7 @@ mkSignedAt sk created kind content =
 
 main :: IO ()
 main = hspec $ do
+  tuiSpec
   describe "Store" $ do
     it "round-trips an event" $ do
       lg <- newLogger Error

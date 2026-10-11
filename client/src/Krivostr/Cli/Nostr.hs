@@ -12,10 +12,18 @@ module Krivostr.Cli.Nostr
   , awaitOk
   , defaultRelays
   , fetchNip05Doc
+  , isHex64
+  , envText
+  , loadKey
+  , withStore
+  , requireEvent
+  , relayHints
+  , publishNoteResults
   ) where
 
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, finally, try)
+import Control.Monad (unless, when)
 import Crypto.Cipher.AES (AES256)
 -- crypton's API: a cipher is keyed on its own, then used with an explicit IV
 -- per operation. There is no `createCipherInit`, and padding lives under
@@ -31,16 +39,25 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Text (Text)
 import Krivostr.Event
+import Krivostr.Filter (Filter (..))
 import Krivostr.Key
 import Krivostr.Logging
 import Krivostr.Nip.Nip01 (signEvent)
 import Krivostr.Nip.Nip05 (Nip05Doc, wellKnownUrl)
-import Krivostr.Relay
+import Krivostr.Nip.Nip65 (RelayHint (rhMode, rhUrl), RelayMode (Both, Read, Write), parseRelayList)
+-- Hiding Relay.rhUrl: the RelayHandle accessor shares the name with the
+-- NIP-65 hint accessor and nothing here uses the former.
+import Krivostr.Relay hiding (rhUrl)
+import Krivostr.Store (Store, closeStore, getEventById, insertEvent, openStore, queryEvents)
 import Krivostr.Wire
 import qualified Data.Aeson as Aeson
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Client.TLS as TLS
 import qualified Network.HTTP.Types as HTTPT
+import System.Directory (createDirectoryIfMissing)
+import System.Environment (lookupEnv)
+import System.Exit (die)
+import System.FilePath (takeDirectory)
 import System.Timeout (timeout)
 
 -- | Relays used when nothing better is known. Same set the bridge defaults to.
@@ -196,3 +213,96 @@ fetchNip05Doc name domain = do
           | otherwise -> case Aeson.eitherDecode (HTTP.responseBody res) of
               Right doc -> pure (Right doc)
               Left err  -> pure (Left ("not a NIP-05 document: " ++ err))
+
+-- ═══════════════════════════════════════════════════ shared send helpers
+-- Moved here from Krivostr.Cli so both shells use them: the one-shot CLI
+-- prints the verdicts and exits, the TUI maps them onto status and log.
+-- Nothing below prints or exits except requireEvent's usage errors, which
+-- stay CLI-shaped on purpose (the TUI looks events up through its backend
+-- seam instead and never calls it).
+
+-- | 64 lowercase hex characters. Event ids and x-only pubkeys, nothing else.
+isHex64 :: Text -> Bool
+isHex64 t = T.length t == 64 && T.all isHexDigit t
+  where
+    isHexDigit c = (c >= '0' && c <= '9')
+                || (c >= 'a' && c <= 'f')
+                || (c >= 'A' && c <= 'F')
+
+-- | Read an env var, treating missing and blank alike as absent. Callers
+-- must not distinguish "unset" from "whitespace": both mean "not given".
+envText :: String -> IO (Maybe Text)
+envText k = do
+  v <- lookupEnv k
+  pure $ case v of
+    Nothing -> Nothing
+    Just s  -> let t = T.strip (T.pack s) in if T.null t then Nothing else Just t
+
+-- | Load the secret key without dying: absent reads as Nothing (read-only
+-- mode), malformed reads as Left. `requireKey` in Krivostr.Cli keeps the
+-- dying behavior for the one-shot commands.
+loadKey :: IO (Either String (Maybe PrivateKey))
+loadKey = do
+  env <- envText "KRIVOSTR_NSEC"
+  case env of
+    Nothing -> pure (Right Nothing)
+    Just t  -> case importNsec t of
+      Right sk -> pure (Right (Just sk))
+      Left e   -> pure (Left ("KRIVOSTR_NSEC is not an nsec: " ++ e))
+
+-- | Open the store, creating its directory, and always close it again.
+-- Both shells bracket every store access with this; nothing holds a Store
+-- across commands.
+withStore :: Logger -> FilePath -> (Store -> IO a) -> IO a
+withStore lg db act = do
+  createDirectoryIfMissing True (takeDirectory db)
+  st <- openStore lg db
+  act st `finally` closeStore st
+
+-- | Fetch an event from the store by hex id. Bech32 note ids arrive with
+-- NIP-27; until then hex is the input and anything else is a usage error,
+-- not a lookup miss.
+requireEvent :: Logger -> FilePath -> String -> IO Event
+requireEvent lg db raw = do
+  let eid = T.pack raw
+  unless (isHex64 eid) (die "event id must be 64 hex characters")
+  withStore lg db $ \st -> do
+    found <- getEventById st eid
+    case found of
+      Just e  -> pure e
+      Nothing -> die ("no event " ++ raw ++ " in the local store (try: krivostr feed first)")
+
+-- | Relays named for reading by the newest kind 10002 in the store.
+--
+-- This is the CLI half of the NIP-65 story: the store already holds the relay
+-- list metadata, so the tool follows it instead of carrying its own defaults.
+relayHints :: Store -> IO [Text]
+relayHints st = do
+  evs <- queryEvents st Filter
+    { fIds = Nothing, fAuthors = Nothing, fKinds = Just [10002]
+    , fSince = Nothing, fUntil = Nothing, fLimit = Just 20, fTags = [], fSearch = Nothing }
+  pure $ case evs of
+    []   -> []
+    list -> [ rhUrl h | ev <- list, h <- parseRelayList ev, readable (rhMode h) ]
+  where
+    readable Read  = True
+    readable Write = False
+    readable Both  = True
+
+-- | Publish a signed event and report each relay's answer as data. Resolves
+-- targets the same way everywhere (explicit relays, else stored kind-10002
+-- read hints, else the compiled-in defaults) and stores the event locally on
+-- at least one acceptance. Returns the per-relay verdicts and never prints
+-- or exits: the CLI edge reports and exits, the TUI edge posts status and log.
+publishNoteResults :: Logger -> FilePath -> Int -> Event -> [Text] -> Text -> IO [(Text, Either String Text)]
+publishNoteResults lg db timeoutSecs ev relays what = do
+  targets <- case relays of
+    [] -> withStore lg db $ \st -> do
+      hinted <- relayHints st
+      pure (if null hinted then defaultRelays else hinted)
+    xs -> pure xs
+  emit lg Info (what <> " via " <> T.intercalate ", " targets)
+  results <- publishAll lg (timeoutSecs * 1000000) ev targets
+  let accepted = any (either (const False) (const True) . snd) results
+  when accepted $ withStore lg db $ \st -> insertEvent st ev >> pure ()
+  pure results

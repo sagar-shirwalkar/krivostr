@@ -11,8 +11,15 @@
  */
 
 import { parseEvent } from './event';
-import { toWire } from './filter';
-import { RelayHandle, RelayState, RelayHandlers } from './relay';
+import { FilterSpec, toWire } from './filter';
+import {
+  DEFAULT_RECONNECT,
+  ReconnectPolicy,
+  RelayHandle,
+  RelayState,
+  RelayHandlers,
+  backoffMs,
+} from './relay';
 
 /**
  * Work out where the bridge lives.
@@ -42,22 +49,73 @@ export const BRIDGE_URL = resolveBridgeUrl(
   typeof window === 'undefined' ? undefined : window.location,
 );
 
-export const connectBridge = (h: RelayHandlers): RelayHandle => {
+export const connectBridge = (
+  h: RelayHandlers,
+  policy: ReconnectPolicy = DEFAULT_RECONNECT,
+): RelayHandle => {
   let state: RelayState = 'connecting';
-  const ws = new WebSocket(BRIDGE_URL);
   const queue: string[] = [];
+  /** Subscription id to filter, so a redial replays what the dead socket held. */
+  const subs = new Map<string, FilterSpec>();
+  let attempts = 0;
+  /** Set on any scheduled or manual redial; `onopen` replays exactly then. */
+  let redial = false;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** True once `close()` runs: a closed handle never redials. */
+  let userClosed = false;
 
   const set = (s: RelayState, detail?: string) => {
     state = s;
     h.onState(s, detail);
   };
 
-  ws.onopen = () => {
-    set('open');
-    while (queue.length) ws.send(queue.shift()!);
+  const failCounts = (): void => {
+    for (const [, waiter] of counting) waiter.reject(new Error('connection lost'));
+    counting.clear();
   };
-  ws.onclose = () => set('closed');
-  ws.onerror = (e) => set('error', String(e));
+
+  const scheduleRedial = (): void => {
+    if (userClosed || retryTimer !== undefined) return;
+    attempts += 1;
+    if (attempts > policy.maxAttempts) {
+      set('closed', 'reconnect budget exhausted');
+      return;
+    }
+    const delay = backoffMs(attempts, policy);
+    set('connecting', `reconnecting in ${Math.round(delay / 1000)}s (attempt ${attempts}/${policy.maxAttempts})`);
+    redial = true;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      dial();
+    }, delay);
+  };
+
+  let ws!: WebSocket;
+  const dial = (): void => {
+    ws = new WebSocket(BRIDGE_URL);
+
+    ws.onopen = () => {
+      const replay = redial;
+      redial = false;
+      attempts = 0;
+      if (replay) {
+        for (const [id, f] of subs) ws.send(JSON.stringify(['REQ', id, toWire(f)]));
+      }
+      set('open');
+      while (queue.length) ws.send(queue.shift()!);
+    };
+    ws.onclose = () => {
+      failCounts();
+      scheduleRedial();
+    };
+    ws.onerror = (e) => {
+      set(state, `socket error: ${String(e)}`);
+      failCounts();
+      scheduleRedial();
+    };
+  };
+
+  dial();
 
   /**
    * Outstanding COUNT requests by subscription id. A `Map`, not a plain
@@ -108,8 +166,13 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
   return {
     url: BRIDGE_URL,
     state: () => state,
-    subscribe: (id, f) => send(['REQ', id, toWire(f)]),
-    unsubscribe: (id) => send(['CLOSE', id]),
+    subscribe: (id, f) => {
+      subs.set(id, f);
+      send(['REQ', id, toWire(f)]);
+    },
+    unsubscribe: (id) => {
+      if (subs.delete(id)) send(['CLOSE', id]);
+    },
     count: (f) =>
       new Promise<number>((resolve, reject) => {
         const id = `count-${countSeq++}`;
@@ -120,10 +183,27 @@ export const connectBridge = (h: RelayHandlers): RelayHandle => {
         send(['COUNT', id, toWire(f)]);
       }),
     publish: (e) => send(['EVENT', e]),
+    reconnect: () => {
+      if (userClosed || state === 'open' || !redial) return;
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+      attempts = 0;
+      set('connecting', 'retrying now');
+      dial();
+    },
     close: () => {
+      userClosed = true;
+      redial = false;
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
       for (const [, waiter] of counting) waiter.reject(new Error('connection closed'));
       counting.clear();
       ws.close();
+      set('closed');
     },
   };
 };

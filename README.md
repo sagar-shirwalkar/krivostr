@@ -33,10 +33,10 @@ lambda terms through a stack of closures.
   Read your timeline on a flight; your follows, mutes, and DMs persist.
 - **A multiplexing bridge** — the browser speaks ordinary Nostr to `krivostr
   serve`, which answers from the local store and fans out to upstream relays.
-- **A headless CLI** — twenty-one subcommands over the same store: `serve`, `feed`,
+- **A headless CLI** — twenty-two subcommands over the same store: `serve`, `feed`,
   `search`, `dm`, `reply`, `react`, `repost`, `verify`, `publish`, `delete`, `resolve`,
   `comment`, `list`, `count`, `wallet`, `relay`, `export`, `watch`, `api`, `reindex`,
-  `keygen`. SQLite and FTS5 are linked in; no runtime to install.
+  `keygen`, `tui`. SQLite and FTS5 are linked in; no runtime to install.
 - **Signers at the boundary** — NIP-07 browser extension or NIP-46 remote bunker for
   real identities (the picker nudges you there); pasted local `nsec` is gated behind
   an explicit risk acknowledgment and meant for testing and burner keys.
@@ -230,6 +230,7 @@ Global flags come before the subcommand:
 | `api` | Run the JSON HTTP API on its own port |
 | `reindex` | Rebuild the full-text search index |
 | `keygen` | Generate an `nsec` / `npub` pair |
+| `tui` | Interactive terminal UI over the local store |
 
 ### Setup from scratch
 
@@ -448,7 +449,9 @@ UI variables are read by Vite at build time, so they must be set before `pnpm bu
 
 `?transport=bridge` in the URL sets the same choice at runtime. When neither is
 set, a page on `localhost` / loopback defaults to the bridge (the tarball case),
-and anywhere else defaults to direct relays (the hosted demo). The transport switch is
+and anywhere else defaults to direct relays (the hosted demo). Dropped sockets
+redial with backoff (six attempts, doubling); the bridge warning offers a manual
+retry. The transport switch is
 honoured by the relay-status element, which owns the browser's Nostr socket; the rest of
 the UI reads from that element.
 
@@ -471,7 +474,7 @@ flowchart LR
         POOL["Pool<br/>relay multiplexer<br/>one drain thread per relay"]
         STORE[("Store<br/>SQLite + FTS5<br/>30-day retention")]
         BRIDGE["Bridge<br/>WebSocket + static files<br/>hourly GC thread"]
-        CLI["Cli<br/>twenty-one subcommands"]
+        CLI["Cli<br/>twenty-two subcommands"]
         API["Cli.Api<br/>JSON on :8090"]
     end
 
@@ -538,7 +541,7 @@ than the `Rule` algebra — see [docs/architecture.md](docs/architecture.md).)
   NIP-57 zaps, NIP-59 gift wrap, NIP-11 relay info, NIP-65 relay hints,
   filter predicates, wire ADTs, `Writer`-based logging.
 - **`client/`** — effectful Haskell: relay pool, SQLite store (FTS5),
-  WebSocket bridge, HTTP API, CLI (21 subcommands).
+  WebSocket bridge, HTTP API, CLI (22 subcommands).
 - **`ui/`** — browser: Lit 3, hand-rolled `Maybe` / `Result` / `IO` / `Rule`, IndexedDB
   cache, signer picker (NIP-07 modal, NIP-46 bunker, risk-gated local `nsec`).
 
@@ -587,7 +590,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 733 hspec examples across core and client
+make test-backend  # 769 hspec examples across core and client
 make test-ui       # 297 unit tests (jsdom) + 28 browser tests (real Chromium)
 ```
 
@@ -615,7 +618,7 @@ Krivostr.Store               39 / 52      75.0%
 Krivostr.Key                 22 / 30      73.3%
 Krivostr.Filter              17 / 28      60.7%
 …
-TOTAL                      846 / 1449     58.4%
+TOTAL                      911 / 1569     58.1%
 ```
 
 That is the honest number, and it is lower than you would like. The cryptography and the

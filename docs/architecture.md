@@ -62,7 +62,7 @@ JSON API), `aeson` (JSON).
 | Module | Responsibility |
 |---|---|
 | `Main` (`client/src/Main.hs`) | Entry point. |
-| `Cli` | The twenty-one-subcommand parser and rendering. |
+| `Cli` | The twenty-two-subcommand parser and rendering. |
 | `Cli.Nostr` | Signing, publishing, `nsec` import, relay defaults, NIP-42 auth. |
 | `Cli.Api` | The JSON HTTP API on its own port (NIP-42 auth). |
 | `Cli.Render` | Terminal output. |

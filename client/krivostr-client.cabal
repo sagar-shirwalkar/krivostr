@@ -25,11 +25,24 @@ executable krivostr
       Krivostr.Cli
       Krivostr.Cli.Api
       Krivostr.Cli.Nostr
+      Krivostr.Cli.Options
       Krivostr.Cli.Render
       Krivostr.Cli.Wallet
       Krivostr.Pool
       Krivostr.Relay
       Krivostr.Store
+      Krivostr.Tui
+      Krivostr.Tui.App
+      Krivostr.Tui.Backend
+      Krivostr.Tui.Dispatch
+      Krivostr.Tui.Sanitize
+      Krivostr.Tui.State
+      Krivostr.Tui.Types
+      Krivostr.Tui.Views.Compose
+      Krivostr.Tui.Views.Feed
+      Krivostr.Tui.Views.Lists
+      Krivostr.Tui.Views.Search
+      Krivostr.Tui.Views.Thread
       Paths_krivostr_client
   autogen-modules:
       Paths_krivostr_client
@@ -43,6 +56,7 @@ executable krivostr
     , base >=4.19 && <5
     , base16-bytestring
     , base64-bytestring
+    , brick
     , bytestring
     , containers
     , crypton
@@ -53,6 +67,7 @@ executable krivostr
     , http-client-tls
     , http-types
     , krivostr-core
+    , microlens-platform
     , monad-logger
     , mtl
     , network
@@ -63,6 +78,8 @@ executable krivostr
     , streaming-commons
     , text
     , time
+    , vty
+    , vty-crossplatform
     , wai
     , wai-app-static
     , wai-websockets
@@ -75,15 +92,29 @@ test-suite spec
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      TuiSpec
       Krivostr.Bridge
       Krivostr.Cli
       Krivostr.Cli.Api
       Krivostr.Cli.Nostr
+      Krivostr.Cli.Options
       Krivostr.Cli.Render
       Krivostr.Cli.Wallet
       Krivostr.Pool
       Krivostr.Relay
       Krivostr.Store
+      Krivostr.Tui
+      Krivostr.Tui.App
+      Krivostr.Tui.Backend
+      Krivostr.Tui.Dispatch
+      Krivostr.Tui.Sanitize
+      Krivostr.Tui.State
+      Krivostr.Tui.Types
+      Krivostr.Tui.Views.Compose
+      Krivostr.Tui.Views.Feed
+      Krivostr.Tui.Views.Lists
+      Krivostr.Tui.Views.Search
+      Krivostr.Tui.Views.Thread
       Paths_krivostr_client
   autogen-modules:
       Paths_krivostr_client
@@ -98,6 +129,7 @@ test-suite spec
     , base >=4.19 && <5
     , base16-bytestring
     , base64-bytestring
+    , brick
     , bytestring
     , containers
     , crypton
@@ -109,6 +141,7 @@ test-suite spec
     , http-client-tls
     , http-types
     , krivostr-core
+    , microlens-platform
     , monad-logger
     , mtl
     , network
@@ -120,6 +153,8 @@ test-suite spec
     , temporary
     , text
     , time
+    , vty
+    , vty-crossplatform
     , wai
     , wai-app-static
     , wai-websockets

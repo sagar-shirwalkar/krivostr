@@ -23,6 +23,7 @@ module Krivostr.Cli
   , renderCsv
   , substitute
   , resolveUpstreams
+  , requireKey
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -40,17 +41,18 @@ import Krivostr.Cli.Wallet (walletRequest)
 import Data.Char (toLower)
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Lazy.Char8 as BLC
-import Data.List (dropWhileEnd, nub)
+import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
-import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime, utcTimeToPOSIXSeconds)
-import Data.Time.Format (defaultTimeLocale, parseTimeM)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Krivostr.Bridge
 import Krivostr.Cli.Api
 import Krivostr.Cli.Nostr
+import Krivostr.Cli.Options
+import Krivostr.Tui (TuiOpts (..), runTui)
 import Krivostr.Cli.Render
 import Krivostr.Event
 import Krivostr.Filter
@@ -59,7 +61,7 @@ import Krivostr.Key
 import Krivostr.Logging hiding (info)
 import Krivostr.Nip.Nip05 (parseIdentifier, verifyName, wellKnownUrl)
 import Krivostr.Nip.Nip09 (appliesTo, buildDeletionTags, parameterizedAddress)
-import Krivostr.Nip.Nip47 (Method (..), Request (..), Response (..), WalletConn (..), methodToText, parseWalletUri)
+import Krivostr.Nip.Nip47 (Method (..), Response (..), parseWalletUri)
 import Krivostr.Nip.Nip51 (addEntry, bookmarkKind, bookmarkedAddresses, bookmarkedIds, muteKind, mutedPubkeys, pinKind, pinnedIds, removeEntry)
 import Krivostr.Nip.Nip22 (ItemRef (..), buildCommentTags)
 import Krivostr.Nip.Nip27 (Mention (..), MentionKind (..), findMentions)
@@ -67,11 +69,9 @@ import Krivostr.Nip.Nip23 (buildArticleTags, slugify)
 import Krivostr.Nip.Nip10 (buildReplyTags, replyRoot)
 import Krivostr.Nip.Nip18 (buildQuoteTags, buildRepostTags, embedOriginal)
 import Krivostr.Nip.Nip25 (buildReactionTags)
-import Krivostr.Nip.Nip65 (RelayHint (..), RelayMode (..), parseRelayList)
 import Krivostr.Pool
 import Krivostr.Store
 import Options.Applicative
-import qualified Data.Map.Strict as M
 import qualified Data.Set as Set
 import System.Directory (createDirectoryIfMissing)
 import System.Environment (lookupEnv)
@@ -82,62 +82,7 @@ import System.Process (readProcessWithExitCode)
 
 -- ═══════════════════════════════════════════════════════════ time
 
--- | An absolute instant, or an age relative to now.
---
--- Kept symbolic until dispatch, so @--since 2h@ means "two hours before this
--- command ran" rather than two hours after the epoch.
-data TimeSpec
-  = At POSIXTime
-  | Ago Integer          -- ^ seconds in the past
-  deriving (Show, Eq)
-
-resolveTime :: TimeSpec -> IO POSIXTime
-resolveTime (At t)  = pure t
-resolveTime (Ago n) = fmap (subtract (fromIntegral n)) getPOSIXTime
-
--- | @2026-01-01@, a unix timestamp, or a relative age: @90s@, @15m@, @2h@,
--- @7d@, @3w@, @6mo@, @1y@.
-parseWhen :: String -> Either String TimeSpec
-parseWhen s
-  | not (null s), all isDigit s = Right (At (fromIntegral (read s :: Integer)))
-  | otherwise =
-      case (span isDigit s, reads (fst (span isDigit s)) :: [(Integer, String)]) of
-        (numS, [(n, "")]) | not (null numS), Just m <- multiplier (snd (span isDigit s)) ->
-          Right (Ago (n * m))
-        _ ->
-          case parseTimeM True defaultTimeLocale "%Y-%m-%d" s of
-            Just t  -> Right (At (fromIntegral (floor (utcTimeToPOSIXSeconds t) :: Integer)))
-            Nothing -> Left (timeErr s)
-  where
-    isDigit c = c >= '0' && c <= '9'
-    multiplier u = case u of
-      "s"  -> Just 1
-      "m"  -> Just 60
-      "h"  -> Just 3600
-      "d"  -> Just 86400
-      "w"  -> Just 604800
-      "mo" -> Just 2592000
-      "y"  -> Just 31536000
-      _    -> Nothing
-    timeErr x =
-      "cannot read time: " <> x
-        <> " (try 2h, 7d, 2026-01-01, or a unix timestamp)"
-
 -- ═══════════════════════════════════════════════════════════ options
-
--- | Filter options shared by feed, search, export and watch.
-data FilterOpts = FilterOpts
-  { foKinds   :: [Int]
-  , foAuthors :: [Text]
-  , foTags    :: [(Text, Text)]
-  , foSince   :: Maybe TimeSpec
-  , foUntil   :: Maybe TimeSpec
-  , foLimit   :: Int
-  , foSearch  :: Maybe Text
-  }
-
-emptyFilterOpts :: FilterOpts
-emptyFilterOpts = FilterOpts [] [] [] Nothing Nothing 100 Nothing
 
 data Command
   = CmdServe ServeOpts
@@ -161,6 +106,7 @@ data Command
   | CmdApi ApiOpts
   | CmdReindex
   | CmdKeygen
+  | CmdTui TuiOpts
 
 data ServeOpts = ServeOpts
   { soPort     :: Maybe Int
@@ -372,6 +318,7 @@ commandP = hsubparser
  <> command "api"     (info (CmdApi     <$> apiP)     (progDesc "Run the JSON HTTP API on its own port"))
  <> command "reindex" (info (pure CmdReindex)         (progDesc "Rebuild the full-text search index"))
  <> command "keygen"  (info (pure CmdKeygen)          (progDesc "Generate an nsec / npub pair"))
+ <> command "tui"     (info (CmdTui <$> tuiP)          (progDesc "Interactive terminal UI over the local store"))
   )
 
 serveP :: Parser ServeOpts
@@ -536,6 +483,11 @@ apiP = ApiOpts
   <*> (T.pack <$> strOption (long "host" <> metavar "ADDR" <> value "127.0.0.1" <> showDefault
              <> help "Interface to bind (env: KRIVOSTR_API_HOST)"))
 
+tuiP :: Parser TuiOpts
+tuiP = TuiOpts
+  <$> many (urlOption "relay" "Relay to follow (repeatable; defaults come from `relay list`, then built-ins)")
+  <*> switch (long "no-ingest" <> help "Read the archive without streaming from relays")
+
 -- | Filter options shared by feed, search, export and watch.
 --
 -- No kind restriction and no time window by default: @krivostr feed@ on an
@@ -558,107 +510,6 @@ filterP = FilterOpts
                 <> help "Full-text search (NIP-50); FTS5 locally, forwarded to relays"))
 
 -- ═══════════════════════════════════════════════════════════ value parsers
-
-parseKind :: String -> Either String Int
-parseKind s = case s of
-  "note"     -> Right 1
-  "dm"       -> Right 4
-  "delete"   -> Right 5
-  "repost"   -> Right 6
-  "like"     -> Right 7
-  "metadata" -> Right 0
-  "follow"   -> Right 3
-  "relays"   -> Right 10002
-  "giftwrap" -> Right 1059
-  -- A kind is a 16-bit unsigned integer (NIP-01). reads would happily accept
-  -- "-1" and a value past 65535, neither of which can match a stored event.
-  _ | not (null s), all isDigitAscii s ->
-        case reads s of
-          [(n, "")] | n >= 0, n <= maxKind -> Right n
-          _          -> Left (unknownKind s)
-    | otherwise -> Left (unknownKind s)
-
--- | NIP-01 fixes the kind range at 16 bits.
-maxKind :: Int
-maxKind = 65535
-
-unknownKind :: String -> String
-unknownKind s =
-  "unknown kind: " <> s <> " (try note, dm, like, repost, metadata, relays)"
-
-isDigitAscii :: Char -> Bool
-isDigitAscii c = c >= '0' && c <= '9'
-
--- | Accept @e=<value>@, @#e=<value>@ and bare @name=value@.
-parseTag :: String -> Either String (Text, Text)
-parseTag s =
-  let cleaned = case s of ('#' : rest) -> rest; _ -> s
-      (k, v)  = break (== '=') cleaned
-  in if null k || null v
-       then Left ("tag filter must look like e=<value>, got: " <> s)
-       else Right (T.pack k, T.pack (drop 1 v))
-
--- | Turn a nostr identifier into the hex pubkey the store indexes.
-resolveAuthor :: String -> Either String Text
-resolveAuthor s =
-  case importNpub (T.pack s) of
-    Right pk -> Right (pubKeyHex pk)
-    Left _
-      | isHex64 t -> Right t
-      | otherwise -> Left (s <> " is neither an npub nor a 64-character hex pubkey")
-      where t = T.pack s
-
--- | The same, but keeping the parsed key: encrypting needs the curve point.
-resolveRecipient :: String -> Either String PublicKey
-resolveRecipient s =
-  case importNpub (T.pack s) of
-    Right pk -> Right pk
-    Left _
-      | isHex64 t ->
-          case B16.decode (TE.encodeUtf8 t) of
-            Right bs -> maybe (Left "that pubkey is not a point on the curve") Right
-                           (publicKeyFromBytes bs)
-            Left e  -> Left ("bad hex pubkey: " <> show e)
-      | otherwise -> Left (s <> " is neither an npub nor a 64-character hex pubkey")
-      where t = T.pack s
-
-isHex64 :: Text -> Bool
-isHex64 t = T.length t == 64 && T.all isHexDigit t
-  where
-    isHexDigit c = (c >= '0' && c <= '9')
-                || (c >= 'a' && c <= 'f')
-                || (c >= 'A' && c <= 'F')
-
-parseLevel :: String -> Either String LogLevel
-parseLevel s = case map lower s of
-  "debug"   -> Right Debug
-  "info"    -> Right Info
-  "warn"    -> Right Warn
-  "warning" -> Right Warn
-  "error"   -> Right Error
-  _         -> Left ("unknown log level: " <> s)
-  where
-    lower c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
-
--- | Turn parsed options into a 'Filter', resolving relative times against now.
-buildFilter :: FilterOpts -> IO Filter
-buildFilter fo = do
-  since  <- traverse resolveTime (foSince fo)
-  until' <- traverse resolveTime (foUntil fo)
-  pure Filter
-    { fIds     = Nothing
-    , fAuthors = if null (foAuthors fo) then Nothing else Just (foAuthors fo)
-    , fKinds   = if null (foKinds fo) then Nothing else Just (foKinds fo)
-    , fSince   = since
-    , fUntil   = until'
-    , fLimit   = Just (foLimit fo)
-    , fTags    = groupTags (foTags fo)
-    , fSearch  = foSearch fo
-    }
-
--- | @--tag e=a --tag e=@ means @e@ matches either, not that @e@ must be both.
-groupTags :: [(Text, Text)] -> [(Text, [Text])]
-groupTags = M.toList . M.fromListWith (flip (<>)) . map (\(k, v) -> (k, [v]))
 
 -- | A @wss://@ URL as Text, repeatable.
 urlOption :: String -> String -> Parser Text
@@ -729,6 +580,9 @@ dispatch (Opts g cmd) = do
       CmdReindex  -> withStore lg' db $ \st -> do
                        n <- reindexEvents st
                        TIO.putStrLn ("indexed " <> T.pack (show n) <> " events")
+      -- The TUI owns the terminal: pass the quiet queue logger, never the
+      -- stderr printer, or log lines shred the brick screen.
+      CmdTui o    -> runTui o lg db
       CmdKeygen   -> do
                        sk <- generatePrivateKey
                        TIO.putStrLn ("nsec: " <> exportNsec sk)
@@ -774,14 +628,6 @@ resolveLevel g = case gLevel g of
       -- An unparseable level in the environment should not stop the tool.
       Just v  -> either (const Info) id (parseLevel (T.unpack v))
 
--- | An environment variable as trimmed Text; unset or blank reads as absent.
-envText :: String -> IO (Maybe Text)
-envText k = do
-  v <- lookupEnv k
-  pure $ case v of
-    Nothing -> Nothing
-    Just s  -> let t = T.strip (T.pack s) in if T.null t then Nothing else Just t
-
 -- | Colour when asked for, when stdout is a terminal, and not when @NO_COLOR@
 -- is set. Guessing the other way puts escape codes into a pipe.
 -- | A port from the environment, falling back to @def@ when unset or unparseable.
@@ -810,13 +656,6 @@ resolveColour g = case gColor g of
     tty     <- hIsTerminalDevice stdout
     noColor <- lookupEnv "NO_COLOR"
     pure (tty && noColor == Nothing)
-
--- | Open the store, creating its directory, and always close it again.
-withStore :: Logger -> FilePath -> (Store -> IO a) -> IO a
-withStore lg db act = do
-  createDirectoryIfMissing True (takeDirectory db)
-  st <- openStore lg db
-  act st `finally` closeStore st
 
 die :: String -> IO a
 die msg = hPutStrLn stderr msg >> exitFailure
@@ -881,23 +720,6 @@ cmdFeed lg db colour o
             mapM_ closeStore store
       flip finally shutdown $ forever $ threadDelay 1000000
 
--- | Relays named for reading by the newest kind 10002 in the store.
---
--- This is the CLI half of the NIP-65 story: the store already holds the relay
--- list metadata, so the tool follows it instead of carrying its own defaults.
-relayHints :: Store -> IO [Text]
-relayHints st = do
-  evs <- queryEvents st Filter
-    { fIds = Nothing, fAuthors = Nothing, fKinds = Just [10002]
-    , fSince = Nothing, fUntil = Nothing, fLimit = Just 20, fTags = [], fSearch = Nothing }
-  pure $ case evs of
-    []   -> []
-    list -> [ rhUrl h | ev <- list, h <- parseRelayList ev, readable (rhMode h) ]
-  where
-    readable Read  = True
-    readable Write = False
-    readable Both  = True
-
 -- ═══════════════════════════════════════════════════════════ search
 
 cmdSearch :: Logger -> FilePath -> Bool -> SearchOpts -> IO ()
@@ -928,17 +750,9 @@ cmdDm lg db o
         (Just who, Just msg) -> send who (T.pack msg)
         _ -> die "usage: krivostr dm <npub|hex> \"message\"   (or: krivostr dm --inbox)"
   where
-    loadKey = do
-      env <- envText "KRIVOSTR_NSEC"
-      case env of
-        Nothing -> die "no secret key: set KRIVOSTR_NSEC=nsec1... (see: krivostr keygen)"
-        Just t  -> case importNsec t of
-          Right sk -> pure sk
-          Left e   -> die ("KRIVOSTR_NSEC is not an nsec: " ++ e)
-
     inbox =
       withStore lg db $ \st -> do
-        sk <- loadKey
+        sk <- requireKey
         let mine = pubKeyHex (derivePublicKey sk)
         evs <- queryEvents st Filter
           { fIds = Nothing, fAuthors = Nothing, fKinds = Just [4]
@@ -963,7 +777,7 @@ cmdDm lg db o
       []      -> ""
 
     send who msg = do
-      sk <- loadKey
+      sk <- requireKey
       recipient <- either die pure (resolveRecipient who)
       now <- getPOSIXTime
       plain <- either (\e -> die ("encryption failed: " ++ e)) pure
@@ -1006,33 +820,18 @@ requireKey = do
       Right sk -> pure sk
       Left e   -> die ("KRIVOSTR_NSEC is not an nsec: " ++ e)
 
--- | Fetch an event from the store by hex id. Bech32 note ids arrive with
--- NIP-27; until then hex is the input and anything else is a usage error,
--- not a lookup miss.
-requireEvent :: Logger -> FilePath -> String -> IO Event
-requireEvent lg db raw = do
-  let eid = T.pack raw
-  unless (isHex64 eid) (die "event id must be 64 hex characters")
-  withStore lg db $ \st -> do
-    found <- getEventById st eid
-    case found of
-      Just e  -> pure e
-      Nothing -> die ("no event " ++ raw ++ " in the local store (try: krivostr feed first)")
-
 -- | Publish a signed event and report each relay's answer. Exits non-zero
 -- when every relay refused, so scripts can test the outcome. On at least
 -- one acceptance, the event is also stored locally: your own sends belong
 -- in your store, or `feed`, `dm --inbox`, and `delete` could never find
 -- what you just published.
+--
+-- Thin CLI edge over 'Krivostr.Cli.Nostr.publishNoteResults': shared
+-- resolution, publishing, and storing live there and return verdicts; here
+-- prints them and exits.
 publishNote :: Logger -> FilePath -> Int -> Event -> [Text] -> Text -> IO ()
 publishNote lg db timeoutSecs ev relays what = do
-  targets <- case relays of
-    [] -> withStore lg db $ \st -> do
-      hinted <- relayHints st
-      pure (if null hinted then defaultRelays else hinted)
-    xs -> pure xs
-  emit lg Info (what <> " via " <> T.intercalate ", " targets)
-  results <- publishAll lg (timeoutSecs * 1000000) ev targets
+  results <- publishNoteResults lg db timeoutSecs ev relays what
   forM_ results $ \(url, r) ->
     -- The relay's own words matter more than our verdict, so print both and
     -- let the relay explain itself.
@@ -1040,7 +839,6 @@ publishNote lg db timeoutSecs ev relays what = do
       Right ok -> "ok    " <> url <> ": " <> ok
       Left e   -> "fail  " <> url <> ": " <> T.pack e
   let accepted = any (either (const False) (const True) . snd) results
-  when accepted $ withStore lg db $ \st -> void (insertEvent st ev)
   unless accepted exitFailure
 
 cmdReply :: Logger -> FilePath -> ReplyOpts -> IO ()
@@ -1368,14 +1166,6 @@ cmdRelay lg db o = withStore lg db $ \st -> case roAction o of
       | "ws://127.0.0.1" `T.isPrefixOf` u = Right u
       | otherwise = Left ("not a relay URL: " ++ T.unpack u ++ " (try wss://…)")
 
--- | The effective upstream set from flags and the saved table: their
--- union, or the compiled-in defaults when both are empty. Pure so the rule
--- is testable; `bridgeConfig` and `relay list` share it, so they agree.
-resolveUpstreams :: [Text] -> [Text] -> [Text]
-resolveUpstreams flags saved = case nub (flags <> saved) of
-  [] -> defaultRelays
-  xs -> xs
-
 publicKeyFromHex :: Text -> Maybe PublicKey
 publicKeyFromHex t = do
   bs <- either (const Nothing) Just (B16.decode (TE.encodeUtf8 t))
@@ -1401,38 +1191,6 @@ cmdExport lg db o = withStore lg db $ \st -> do
     json :: ToJSON a => a -> String
     json = BLC.unpack . encode
     ndjson = unlines . map json
-
--- | RFC 4180 quoting: double the quotes, wrap anything holding a comma or a
--- newline. Without this a note containing a comma silently shifts every column.
-csvField :: Text -> Text
-csvField t
-  | T.any (\c -> c == ',' || c == '"' || c == '\n' || c == '\r') t =
-      "\"" <> T.replace "\"" "\"\"" t <> "\""
-  | otherwise = t
-
-renderCsv :: [Event] -> String
-renderCsv evs = T.unpack (T.unlines rows)
-  where
-    headerRow = "id,pubkey,created_at,kind,tags,content,sig"
-    rows =
-      headerRow :
-      [ T.intercalate ","
-          [ csvField (evId e)
-          , csvField (evPubkey e)
-          , T.pack (show (floor (evCreatedAt e) :: Integer))
-          , T.pack (show (evKind e))
-          , csvField (T.intercalate " " (map tagCell (evTags e)))
-          , csvField (evContent e)
-          , csvField (evSig e)
-          ]
-      | e <- evs
-      ]
-
--- | One tag as @name=value|value@: CSV has no nesting, and @|@ cannot appear
--- unquoted in a tag value often enough to be worth escaping here.
-tagCell :: [Text] -> Text
-tagCell []       = ""
-tagCell (k : vs) = k <> "=" <> T.intercalate "|" vs
 
 -- ═══════════════════════════════════════════════════════════ watch
 
@@ -1484,18 +1242,6 @@ cmdWatch lg db colour o
 listToMaybe' :: [a] -> Maybe a
 listToMaybe' []      = Nothing
 listToMaybe' (x : _) = Just x
-
--- | Replace the documented placeholders.
---
--- Deliberately not a template engine: four fixed names, and shell quoting stays
--- the caller's problem because the command is handed to a shell anyway.
-substitute :: String -> Event -> Text
-substitute cmd e =
-  T.replace "{content}" (evContent e)
-  $ T.replace "{author}" (evPubkey e)
-  $ T.replace "{kind}" (T.pack (show (evKind e)))
-  $ T.replace "{json}" (TE.decodeUtf8 (BLC.toStrict (encode e)))
-  $ T.pack cmd
 
 -- | A ready-to-install systemd user unit: a watcher is only useful if it
 -- survives logout.

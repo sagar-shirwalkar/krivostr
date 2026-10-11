@@ -166,6 +166,10 @@ initialise conn = do
   _ <- initialiseSearch conn
   execute_ conn "PRAGMA journal_mode = WAL"
   execute_ conn "PRAGMA synchronous  = NORMAL"
+  -- Two writers (a running serve plus a CLI or TUI pass) must wait on a
+  -- locked page instead of surfacing SQLITE_BUSY: five seconds, then the
+  -- error is real and worth seeing.
+  execute_ conn "PRAGMA busy_timeout = 5000"
 
 -- | Full-text index over event content, kept in step by triggers.
 --

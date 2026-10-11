@@ -166,6 +166,7 @@ describe('<krivostr-relay-status>', () => {
 
   it('names the escape hatches when the bridge slot fails', async () => {
     const sockets: Array<{ open: () => void; close: () => void }> = [];
+    const instances: Array<{ sent: string[] }> = [];
     vi.stubGlobal(
       'WebSocket',
       class {
@@ -173,6 +174,7 @@ describe('<krivostr-relay-status>', () => {
         onclose: (() => void) | null = null;
         onerror: ((e: unknown) => void) | null = null;
         onmessage: ((m: { data: string }) => void) | null = null;
+        sent: string[] = [];
         constructor(public url: string) {
           sockets.push({
             open: () => {
@@ -182,8 +184,11 @@ describe('<krivostr-relay-status>', () => {
               this.onclose?.();
             },
           });
+          instances.push(this);
         }
-        send() {}
+        send(data: string) {
+          this.sent.push(data);
+        }
         close() {}
       },
     );
@@ -201,8 +206,19 @@ describe('<krivostr-relay-status>', () => {
     await el.updateComplete;
     const warn = el.shadowRoot!.querySelector('.warn');
     expect(warn).toBeTruthy();
+    expect(warn!.textContent).toContain('bridge unreachable at ws://');
     expect(warn!.textContent).toContain('VITE_BRIDGE_URL=ws://localhost:8081/ws');
     expect(warn!.textContent).toContain('?transport=relay');
+    // Retry redials now; the warning persists until the redial opens.
+    (warn!.querySelector('button') as HTMLButtonElement).click();
+    await el.updateComplete;
+    expect(instances).toHaveLength(2);
+    expect(el.shadowRoot!.querySelector('.warn')).toBeTruthy();
+    sockets[1].open();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.warn')).toBeNull();
+    const replayed = instances[1].sent.map((s) => JSON.parse(s) as unknown[]);
+    expect(replayed.find((m) => m[0] === 'REQ' && m[1] === 'global')).toBeDefined();
     el.remove();
   });
 });
