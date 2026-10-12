@@ -126,7 +126,7 @@ jobs:
             *) echo "::error::no verification path for ${{ matrix.platform }}"; exit 1 ;;
           esac
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: ui-dist
           path: dist/_uidist
@@ -207,7 +207,7 @@ jobs:
           stack build --copy-bins --local-bin-path dist
           ./dist/krivostr --version
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: ui-dist
           path: dist/_uidist
@@ -275,7 +275,7 @@ jobs:
           stack build --copy-bins --local-bin-path dist
           ./dist/krivostr.exe --version
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: ui-dist
           path: dist/_uidist
@@ -328,7 +328,7 @@ jobs:
           # enough that the cost is negligible.
           fetch-depth: 0
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: krivostr-*
           path: archives
