@@ -58,8 +58,9 @@ We assume:
   metadata, never keys.
 - **The local disk is partially trusted.** We assume it can be read by another
   process on the same machine. NIP-49 `ncryptsec` (scrypt + XChaCha20-Poly1305)
-  exists in the Haskell core, but the UI's IndexedDB still holds keys in the
-  clear — at-rest encryption is not wired into the browser yet.
+  exists in the Haskell core and the UI's `nip49.ts`, but the signer picker does
+  not use it — the local signer holds a raw pasted key in memory for the session
+  and nothing writes a key to IndexedDB at all.
 
 We do **not** assume:
 
@@ -71,16 +72,19 @@ We do **not** assume:
 
 ## Key handling
 
-### Local signer (NIP-49 `ncryptsec`)
+### Local signer (raw pasted `nsec`)
 
-The `nsec1…` is bech32-decoded, then encrypted with NIP-49 (scrypt +
-XChaCha20-Poly1305) and stored in IndexedDB as `ncryptsec1...`. On unlock,
-the passphrase derives the key via scrypt, decrypts the private key, and holds
-it in a closure for the lifetime of the tab.
+The `nsec1…` is bech32-decoded to 32 bytes and held in the `localSigner`
+closure for the lifetime of the tab. There is **no passphrase, no key
+wrapping, no unlock step, and nothing written to IndexedDB** — none of that
+code exists in the UI. The picker gates the option behind an explicit,
+session-only risk acknowledgment.
 
-There is **no passphrase, no key wrapping, and no unlock step** for the legacy
-local signer (which stores the raw key in memory). The new NIP-49 flow is the
-recommended path.
+NIP-49 `ncryptsec` (scrypt + XChaCha20-Poly1305) exists in the Haskell core
+and in the TypeScript `nip49.ts` module, checked against the spec vector, but
+it is **not wired into the signer picker** — encrypted-at-rest keys are a
+CLI-side reality and a UI-side module awaiting an unlock flow. See
+[signers.md](../signers.md).
 
 Use NIP-07, or a bunker, if memory exposure matters.
 
@@ -141,24 +145,34 @@ Warp and never reads that file, so a self-hosted bridge sends **no CSP, no
 The policy is:
 
 ```text
-default-src 'none'; script-src 'self';
+default-src 'none';
+script-src 'self' 'sha256-Xr8ZXGdI114NdtLEpSRiuIfaCG+8K1JUU1dbe1s/LAg=' https://static.cloudflareinsights.com;
 style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
 font-src 'self' https://fonts.gstatic.com data:;
 img-src 'self' data:; connect-src 'self' wss:;
 base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'
 ```
 
-`'unsafe-inline'` for styles is required by Lit's shadow DOM.
-`connect-src` needs `wss:` rather than `'self'` because `'self'` does not
-resolve to WebSocket schemes in every browser, and the bridge is often on a
-different origin. Serving those same headers from `krivostr serve` is a small
-addition — a Warp middleware over `setBeforeMainLoop` — and worth doing if you
-self-host.
+`_headers` also sets `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+no-referrer`, and `X-Frame-Options: DENY`.
+
+Two of the script allowances are not the app's own code: Cloudflare Pages
+injects its Web Analytics (Insights) beacon into the served HTML, so the policy
+carries a `sha256-…` hash for that inline script and the
+`static.cloudflareinsights.com` host. The source has neither.
+`'unsafe-inline'` for styles is required by Lit's shadow DOM (two components
+also set inline `style="…"`). `connect-src` needs `wss:` rather than `'self'`
+because `'self'` does not resolve to WebSocket schemes in every browser, and
+the bridge is often on a different origin. Serving those same headers from
+`krivostr serve` is a small addition — a Warp middleware over
+`setBeforeMainLoop` — and worth doing if you self-host.
 
 ## What we don't do
 
-- No telemetry, no analytics, no beacon. The UI makes no `fetch`, `XHR` or
-  `sendBeacon` call to any origin.
+- No telemetry from our code — no analytics library, no beacon. The UI makes no
+  `fetch`, `XHR` or `sendBeacon` call to any origin. The Cloudflare Pages
+  deployment does carry Cloudflare's own Web Analytics beacon, injected at the
+  edge rather than by the source; the CSP names it explicitly.
 - No phone home. The only outbound connections are the relays you configure and
   the bridge or bunker you name.
 - No remote script imports; Vite emits local bundles.

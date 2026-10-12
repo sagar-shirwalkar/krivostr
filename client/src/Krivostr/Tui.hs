@@ -75,7 +75,8 @@ runTui opts lg db = do
     pool <- newPool lg (postEvent lg chan)
     mapM_ (addRelay pool) relays
     let backend = inProcessBackend lg db st pool relays (writeBChan chan)
-    initial <- fillInitial st filt key
+    initial0 <- fillInitial st filt key
+    let initial = initial0 { asIngest = not (toNoIngest opts) }
     unless (toNoIngest opts) $
       broadcast pool (CReq "tui-feed" [filt])
     void $ forkIO $ forever $ do

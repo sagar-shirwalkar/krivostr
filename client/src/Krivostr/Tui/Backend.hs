@@ -35,6 +35,7 @@ import Krivostr.Store
   , deleteEvent
   , dequeueOutbox
   , getEventById
+  , getEventByAddress
   , outboxCount
   , queryEvents
   , removeOutbox
@@ -61,6 +62,8 @@ data TuiBackend = TuiBackend
   , tbFetchThread :: Text -> Int -> IO [Event]
   , tbDeleteEvent :: Text -> IO ()
   , tbMuteTags :: Text -> IO [[Text]]
+  , tbAddress  :: Text -> IO (Maybe Event)
+  , tbSetIngest :: Bool -> Filter -> IO ()
   }
 
 -- | At most one flush pass moves this many events, so a huge backlog cannot
@@ -88,6 +91,10 @@ inProcessBackend lg db st pool relays post = TuiBackend
   , tbFetchThread = fetchThreadVia st lg relays
   , tbDeleteEvent = deleteEvent st
   , tbMuteTags = muteTagsVia st
+  , tbAddress = getEventByAddress st
+  , tbSetIngest = \on filt ->
+      if on then broadcast pool (CReq "tui-feed" [filt])
+            else broadcast pool (CClose "tui-feed")
   }
 
 -- | Publish through the shared core, collapsing per-relay verdicts the way

@@ -29,9 +29,12 @@ import Data.Aeson (Value, decode, encode, eitherDecodeStrict, object, toJSON, (.
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import Data.List (isSuffixOf)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Data.Version (showVersion)
+import qualified Paths_krivostr_core as Paths
 import Krivostr.Event
 import Krivostr.Filter
 import Krivostr.Key
@@ -102,6 +105,18 @@ main = hspec $ do
   nip49Spec
   nip59Spec
   nip40Spec
+
+  describe "package paths" $ do
+    it "reports the package version" $
+      showVersion Paths.version `shouldBe` "0.7.4.0"
+    it "resolves every install directory" $ do
+      dirs <- sequence
+        [ Paths.getBinDir, Paths.getLibDir, Paths.getDynLibDir, Paths.getDataDir
+        , Paths.getLibexecDir, Paths.getSysconfDir ]
+      dirs `shouldSatisfy` all (not . null)
+    it "joins a data file name onto the data directory" $ do
+      p <- Paths.getDataFileName "sample.json"
+      p `shouldSatisfy` ("sample.json" `isSuffixOf`)
 
   describe "NIP-01 canonical serialization" $ do
     it "is deterministic" $
@@ -318,6 +333,15 @@ main = hspec $ do
       length entries `shouldBe` 2
       map leLevel entries `shouldBe` [Info, Warn]
 
+    it "records debug and error entries too" $ do
+      let ((), entries) = runPureLog $ do
+            debug "noisy"
+            info "start"
+            warn "careful"
+            errorL "broken"
+      map leLevel entries `shouldBe` [Debug, Info, Warn, Error]
+      map leMsg entries `shouldBe` ["noisy", "start", "careful", "broken"]
+
     it "respects the minimum level in IO" $ do
       lg <- newLogger Warn
       emit lg Debug "hidden"
@@ -380,10 +404,58 @@ main = hspec $ do
       Aeson.parseEither decodeRelay (toJSON (["COUNT", "c1", object ["count" .= ("many" :: Text)]] :: [Value]))
         `shouldSatisfy` isLeft
 
+    it "encodes an EVENT message" $
+      BL.toStrict (encode (encodeClient (CEvent sampleEvent)))
+        `shouldSatisfy` BS.isInfixOf "\"EVENT\""
+
+    it "decodes CLOSED and AUTH" $ do
+      Aeson.parseEither decodeRelay (toJSON (["CLOSED", "s1", "auth required"] :: [Value]))
+        `shouldBe` Right (RClosed "s1" "auth required")
+      Aeson.parseEither decodeRelay (toJSON (["AUTH", "challenge-1"] :: [Value]))
+        `shouldBe` Right (RChallenge "challenge-1")
+
+    it "rejects an unknown relay message and a non-integer COUNT" $ do
+      Aeson.parseEither decodeRelay (toJSON (["WHAT", "s1"] :: [Value]))
+        `shouldSatisfy` isLeft
+      Aeson.parseEither decodeRelay (toJSON (["COUNT", "c1", object ["count" .= (1.5 :: Double)]] :: [Value]))
+        `shouldSatisfy` isLeft
+
     it "rejects an unknown relay message" $
       Aeson.parseEither decodeRelay (toJSON (["NOPE"] :: [Value]))
         `shouldSatisfy` isLeft
 
-  describe "Event JSON" $
+  describe "Event JSON" $ do
     it "round-trips through Aeson" $
       eitherDecodeStrict (BL.toStrict (encode sampleEvent)) `shouldBe` Right sampleEvent
+
+    it "labels the well-known kinds and falls back to unknown" $ do
+      kindText 0 `shouldBe` "metadata"
+      kindText 1 `shouldBe` "text note"
+      kindText 3 `shouldBe` "follow list"
+      kindText 4 `shouldBe` "encrypted DM"
+      kindText 5 `shouldBe` "deletion"
+      kindText 6 `shouldBe` "repost"
+      kindText 7 `shouldBe` "reaction"
+      kindText 40 `shouldBe` "channel create"
+      kindText 42 `shouldBe` "channel message"
+      kindText 1059 `shouldBe` "gift wrap"
+      kindText 10002 `shouldBe` "relay list"
+      kindText 65535 `shouldBe` "unknown"
+
+    it "lifts an unsigned event, leaving id and sig empty" $ do
+      let u = UnsignedEvent "pub" 1700000000 1 [["t", "x"]] "body"
+          e = mkEvent u
+      evPubkey e `shouldBe` "pub"
+      evCreatedAt e `shouldBe` 1700000000
+      evKind e `shouldBe` 1
+      evTags e `shouldBe` [["t", "x"]]
+      evContent e `shouldBe` "body"
+      evId e `shouldBe` ""
+      evSig e `shouldBe` ""
+
+    it "encodes an unsigned event with its wire keys" $ do
+      let u = UnsignedEvent "pub" 1700000000 1 [["t", "x"]] "body"
+          bytes = BL.toStrict (encode u)
+      bytes `shouldSatisfy` BS.isInfixOf "\"pubkey\":\"pub\""
+      bytes `shouldSatisfy` BS.isInfixOf "\"content\":\"body\""
+      bytes `shouldSatisfy` (not . BS.isInfixOf "\"sig\"")

@@ -105,6 +105,7 @@ data AppState = AppState
   , asMuted     :: !(Set Text)
   , asOutbox    :: !Int
   , asStats     :: !(Maybe StoreStats)
+  , asIngest    :: !Bool
   , asCmdLine   :: !(Maybe Text)
   , asLog       :: !(Seq LogEntry)
   , asList      :: !(GenericList Name Seq Event)
@@ -143,6 +144,7 @@ initialState now f key = AppState
   , asMuted     = Set.empty
   , asOutbox    = 0
   , asStats     = Nothing
+  , asIngest    = False
   , asCmdLine   = Nothing
   , asLog       = Seq.empty
   , asList      = list NFeedList Seq.empty 1

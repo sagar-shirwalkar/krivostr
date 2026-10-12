@@ -6,7 +6,17 @@
 -- (c) turns @asQuit@ into 'halt'. Nothing here decides.
 module Krivostr.Tui.App
   ( tuiApp
+  , chooseCursor
+  , isCtrl
+  , isImmediateKey
+  , KeyPlan (..)
+  , planKey
+  , statusBar
   , statusText
+  , cmdLine
+  , logPane
+  , drawUI
+  , drawHelp
   , buildUnsigned
   , lookupEvent
   ) where
@@ -15,12 +25,12 @@ import Brick.Main (App (..), halt, neverShowCursor, showCursorNamed, suspendAndR
 import Brick.Types (BrickEvent (..), CursorLocation, EventM, Widget, nestEventM')
 import Brick.Widgets.Core (emptyWidget, str, txt, vBox)
 import Brick.Widgets.Edit (editor, getEditContents, handleEditorEvent)
-import Brick.Widgets.List (listReplace, listSelectedElement)
+import Brick.Widgets.List (list, listReplace, listSelectedElement)
 import Control.Concurrent (forkIO)
 import Control.Exception (SomeException, try)
 import Control.Monad (forM_, void, when)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.State (get, gets, modify)
+import Control.Monad.State (get, gets, modify, put)
 import Data.Foldable (toList)
 import Data.Maybe (fromMaybe, maybeToList)
 import Data.Sequence (Seq)
@@ -39,15 +49,19 @@ import Krivostr.Nip.Nip18 (buildQuoteTags, buildRepostTags, embedOriginal)
 import Krivostr.Nip.Nip22 (ItemRef (..), buildCommentTags)
 import Krivostr.Tui.Theme (themeAttrMap)
 import Krivostr.Nip.Nip25 (buildReactionTags)
-import Krivostr.Nip.Nip27 (findMentions)
+import Krivostr.Nip.Nip27 (Mention, findMentions)
 import qualified Krivostr.Nip.Nip27 as Nip27
 import Krivostr.Nip.Nip51 (addEntry, muteKind)
-import Krivostr.Cli.Nostr (signUnsigned)
+import Krivostr.Cli.Nostr (fetchNip05Doc, signUnsigned)
+import Krivostr.Cli.Options (parseKind, resolveAuthor)
+import Krivostr.Filter (Filter (..))
+import Krivostr.Nip.Nip05 (parseIdentifier, verifyName)
+import Krivostr.Nip.Nip23 (buildArticleTags, slugify)
 import Krivostr.Store (StoreStats (ssTotal))
 import Krivostr.Tui.Backend (TuiBackend (..))
-import Krivostr.Tui.Dispatch (commandHelp)
+import Krivostr.Tui.Dispatch (Command (..), commandHelp, parseCommand)
 import Krivostr.Tui.Sanitize (stripAnsiAndC0)
-import Krivostr.Tui.State (findEvent, popScreen, pushLogText, selectedEvent, step)
+import Krivostr.Tui.State (applyCommand, findEvent, popScreen, pushEvent, pushLogText, selectedEvent, step)
 import Krivostr.Tui.Types
 import Krivostr.Tui.Views.Compose (drawCompose)
 import Krivostr.Tui.Views.Feed (drawFeed)
@@ -58,6 +72,7 @@ import System.Directory (getTemporaryDirectory, removeFile)
 import System.Environment (lookupEnv)
 import System.IO (hClose, openTempFile)
 import System.Process (callProcess)
+import qualified Data.Text.IO as TIO
 
 -- | The application. The backend is captured for the tick edge (outbox
 -- depth is a cheap SQL count); everything else is pure.
@@ -106,25 +121,67 @@ handleEvent backend ev = case ev of
 
 -- | Key routing. See the module header for the order and why.
 routeKey :: TuiBackend -> AppState -> V.Event -> EventM Name AppState ()
-routeKey backend st v
-  | isJustCmdline = forward
-  | isComposeSend = sendCompose
-  | isComposeCancel = forward
-  | isEditorPromote = promoteEditor
-  | isResolveMentions = resolveMentions >> forward
-  | isSearchOpenResult = openSearchResult
-  | isSearchRun = runSearch
-  | isCompose = toEditor
-  | isFetchRelatives = fetchRelatives
-  | isImmediate = immediate
-  | otherwise = forward
+routeKey backend st v = case planKey st v of
+  PlanForward          -> forward
+  PlanCommand          -> runCommand backend
+  PlanSendCompose      -> sendComposeWorker backend
+  PlanPromoteEditor    -> promoteEditorWorker
+  PlanResolveMentions  -> resolveMentionsWorker backend >> forward
+  PlanOpenSearchResult -> openSearchResultWorker backend
+  PlanRunSearch        -> runSearchEdge backend
+  PlanToEditor         -> toEditor
+  PlanFetchRelatives   -> fetchRelativesWorker backend
+  PlanImmediate        -> immediateWorker backend v
+  where
+    forward = modify (step (EvVty v)) >> checkQuit
+    checkQuit = do
+      q <- gets asQuit
+      when q halt
+    toEditor = do
+      ed <- gets asCompose
+      ed' <- nestEventM' ed (handleEditorEvent (VtyEvent v))
+      modify (\s -> s { asCompose = ed' })
+
+-- | Which edge handles a key. The guards are ordered so the innermost
+-- context wins: an open command line, then compose, then the focused view,
+-- then the global immediate keys. Split out of 'routeKey' so the priority
+-- order is unit-testable without a terminal; 'routeKey' is a thin
+-- interpreter over this plan.
+data KeyPlan
+  = PlanForward
+  | PlanCommand
+  | PlanSendCompose
+  | PlanPromoteEditor
+  | PlanResolveMentions
+  | PlanOpenSearchResult
+  | PlanRunSearch
+  | PlanToEditor
+  | PlanFetchRelatives
+  | PlanImmediate
+  deriving (Show, Eq)
+
+planKey :: AppState -> V.Event -> KeyPlan
+planKey st v
+  | isCmdEnter = PlanCommand
+  | isJustCmdline = PlanForward
+  | isComposeSend = PlanSendCompose
+  | isComposeCancel = PlanForward
+  | isEditorPromote = PlanPromoteEditor
+  | isResolveMentions = PlanResolveMentions
+  | isSearchOpenResult = PlanOpenSearchResult
+  | isSearchRun = PlanRunSearch
+  | isCompose = PlanToEditor
+  | isFetchRelatives = PlanFetchRelatives
+  | isImmediate = PlanImmediate
+  | otherwise = PlanForward
   where
     isJustCmdline = case asCmdLine st of Just _ -> True; Nothing -> False
+    isCmdEnter = isJustCmdline && v == V.EvKey V.KEnter []
     isCompose = case asScreen st of SCompose _ -> True; _ -> False
     isComposeSend = isCompose && isCtrl 'g' v
     isComposeCancel = isCompose && v == V.EvKey V.KEsc []
     isEditorPromote = isCompose && isEmptyEditor && v == V.EvKey (V.KChar 'E') []
-    isEmptyEditor = null (getEditContents (asCompose st))
+    isEmptyEditor = all T.null (getEditContents (asCompose st))
     isSearchRun = v == V.EvKey V.KEnter [] && asCmdLine st == Nothing && asScreen st == SSearch && not (hasSelection st)
     isSearchOpenResult = v == V.EvKey V.KEnter [] && asCmdLine st == Nothing && asScreen st == SSearch && hasSelection st
     isFetchRelatives = v == V.EvKey (V.KChar 'o') [] && asCmdLine st == Nothing && isThread
@@ -132,24 +189,9 @@ routeKey backend st v
     isThread = case asScreen st of SThread _ -> True; _ -> False
     isImmediate = asCmdLine st == Nothing && inFeedView && isImmediateKey v
     inFeedView = asScreen st == SFeed || asScreen st == SSearch
-    forward = modify (step (EvVty v)) >> checkQuit
-    checkQuit = do
-      q <- gets asQuit
-      when q halt
     hasSelection s = case listSelectedElement (asList s) of
       Just _ -> True
       Nothing -> False
-    sendCompose = sendComposeWorker backend
-    promoteEditor = promoteEditorWorker
-    runSearch = runSearchEdge backend
-    openSearchResult = openSearchResultWorker backend
-    fetchRelatives = fetchRelativesWorker backend
-    resolveMentions = resolveMentionsWorker backend
-    immediate = immediateWorker backend v
-    toEditor = do
-      ed <- gets asCompose
-      ed' <- nestEventM' ed (handleEditorEvent (VtyEvent v))
-      modify (\s -> s { asCompose = ed' })
 
 -- | Ctrl-modified character, without other modifiers.
 isCtrl :: Char -> V.Event -> Bool
@@ -168,6 +210,143 @@ runSearchEdge backend = do
   st <- get
   results <- liftIO (tbSearch backend (asSearchQuery st) False Nothing Nothing 50)
   modify (\s -> s { asList = listReplace (Seq.fromList results) (if null results then Nothing else Just 0) (asList s) })
+
+-- | Command-bar dispatch. The pure state change happens first
+-- ('applyCommand'), then the commands that need the world run through the
+-- backend. Every command therefore has exactly one state transition the pure
+-- tests exercise; the edge only adds the IO that transition cannot.
+runCommand :: TuiBackend -> EventM Name AppState ()
+runCommand backend = do
+  st <- get
+  case asCmdLine st of
+    Nothing  -> pure ()
+    Just buf -> do
+      let cmd = parseCommand buf
+      modify (applyCommand cmd)
+      case cmd of
+        CmdSearch _           -> runSearchEdge backend
+        CmdCount m            -> runCount backend m
+        CmdResolve ref        -> resolveRefWorker backend ref
+        CmdVerify ident mpk   -> verifyWorker backend ident mpk
+        CmdPublish file title -> publishFileWorker backend (T.unpack file) title
+        CmdLimit n            -> refillLimit backend n
+        CmdIngest _           -> applyIngest backend
+        _                     -> pure ()
+      q <- gets asQuit
+      when q halt
+
+-- | Count stored events, optionally of one kind, and log the total.
+runCount :: TuiBackend -> Maybe Text -> EventM Name AppState ()
+runCount backend mkind = case mkind of
+  Nothing -> total emptyFilter
+  Just k  -> case parseKind (T.unpack k) of
+    Right n -> total (emptyFilter { fKinds = Just [n] })
+    Left e  -> modify (pushLogText ("count: " <> T.pack e))
+  where
+    emptyFilter :: Filter
+    emptyFilter = Filter Nothing Nothing Nothing Nothing Nothing Nothing [] Nothing
+    total :: Filter -> EventM Name AppState ()
+    total filt = do
+      n <- liftIO (tbCount backend filt)
+      modify (pushLogText ("count: " <> T.pack (show n)))
+
+-- | Resolve a @nostr:@ reference and act on it: an event (or article
+-- address) opens its thread, an author is logged. Bare bech32 is accepted
+-- the way the CLI's @resolve@ accepts it.
+resolveRefWorker :: TuiBackend -> Text -> EventM Name AppState ()
+resolveRefWorker backend raw = void $ liftIO $ forkIO $
+  case refMentions raw of
+    (m : _) -> case Nip27.meKind m of
+      Nip27.MentionEvent eid -> openResolved eid
+      Nip27.MentionPubkey pk -> tbPost backend (EvResolvedMention (RTAuthor pk))
+      Nip27.MentionProfile pk _ -> tbPost backend (EvResolvedMention (RTAuthor pk))
+      Nip27.MentionAddress addr -> do
+        found <- tbAddress backend addr
+        case found of
+          Just e  -> openResolved (evId e)
+          Nothing -> tbPost backend (EvAsyncResult "resolve" (Left ("nothing at " <> T.unpack addr)))
+      Nip27.MentionOpaque hrp ->
+        tbPost backend (EvAsyncResult "resolve" (Left (T.unpack hrp <> " is not a resolvable reference")))
+    [] -> case resolveAuthor (T.unpack raw) of
+      Right hex -> tbPost backend (EvResolvedMention (RTAuthor hex))
+      Left _    -> tbPost backend (EvAsyncResult "resolve" (Left (T.unpack raw <> " is not a nostr: reference")))
+  where
+    openResolved eid = do
+      evs <- tbFetchThread backend eid 8000000
+      tbPost backend (EvResolvedMention (RTEvent eid))
+      tbPost backend (EvFetched evs)
+
+-- | The references inside a user-typed string: a full @nostr:…@ URL, or a
+-- bare bech32 (which gets the prefix for the scan).
+refMentions :: Text -> [Mention]
+refMentions raw =
+  let t = T.strip raw
+      direct = findMentions t
+  in if null direct then findMentions ("nostr:" <> t) else direct
+
+-- | NIP-05 check over the network; the verdict is logged when it lands. An
+-- explicit key wins, else the loaded signing key is the claim.
+verifyWorker :: TuiBackend -> Text -> Maybe Text -> EventM Name AppState ()
+verifyWorker backend ident mpk = do
+  st <- get
+  let keyT = case mpk of
+        Just k  -> Just k
+        Nothing -> pubKeyHex . derivePublicKey <$> asKey st
+      post r = tbPost backend (EvAsyncResult "verify" r)
+  void $ liftIO $ forkIO $ case parseIdentifier ident of
+    Left e -> post (Left e)
+    Right (name, domain) -> case keyT of
+      Nothing -> post (Left "no key: set KRIVOSTR_NSEC or pass a pubkey")
+      Just k -> case resolveAuthor (T.unpack k) of
+        Left e -> post (Left e)
+        Right pub -> do
+          r <- fetchNip05Doc name domain
+          case r of
+            Left e  -> post (Left e)
+            Right d -> post (case verifyName name pub d of
+              Left e   -> Left e
+              Right () -> Right (ident <> " verifies for " <> pub))
+
+-- | Publish a Markdown file as a NIP-23 article. A missing file or blank
+-- title logs instead of throwing; the send path is the same 'runPublish'
+-- every other send uses.
+publishFileWorker :: TuiBackend -> FilePath -> Maybe Text -> EventM Name AppState ()
+publishFileWorker backend file mtitle = do
+  st <- get
+  case asKey st of
+    Nothing -> modify (pushLogText "read-only mode: set KRIVOSTR_NSEC to send")
+    Just sk -> do
+      r <- liftIO (try (TIO.readFile file) :: IO (Either SomeException Text))
+      now <- liftIO getPOSIXTime
+      let title = fromMaybe "" mtitle
+          slug = slugify title
+      case r of
+        Left ex -> modify (pushLogText ("cannot read " <> T.pack file <> ": " <> T.pack (show ex)))
+        Right body
+          | T.null (T.strip body) -> modify (pushLogText "empty article file")
+          | T.null slug           -> modify (pushLogText "no title: :publish FILE TITLE")
+          | otherwise -> runPublish backend
+              (UnsignedEvent "" 0 30023 (buildArticleTags slug title "" "" (Just now)) body)
+              sk
+              (tbPost backend EvComposeSent)
+
+-- | Reload the newest N stored events after @:limit@: reset the feed and its
+-- widget to the fresh query, so the cap and selection match what is shown.
+refillLimit :: TuiBackend -> Int -> EventM Name AppState ()
+refillLimit backend n = do
+  st <- get
+  evs <- liftIO (tbQuery backend (asFilter st))
+  let base = st { asFeed = Seq.empty, asList = list NFeedList Seq.empty 1 }
+      st' = foldr pushEvent base evs
+  put (pushLogText ("limit " <> T.pack (show n)) st')
+
+-- | (Un)subscribe the live feed. The pure step already flipped 'asIngest';
+-- this tells the pool to open or close the REQ.
+applyIngest :: TuiBackend -> EventM Name AppState ()
+applyIngest backend = do
+  st <- get
+  liftIO (tbSetIngest backend (asIngest st) (asFilter st))
+  modify (pushLogText ("ingest " <> (if asIngest st then "on" else "off")))
 
 -- | Open the thread for the currently selected search result.
 openSearchResultWorker :: TuiBackend -> EventM Name AppState ()
@@ -201,12 +380,13 @@ resolveMentionsWorker backend = do
       let mentions = findMentions (evContent e)
       forM_ mentions $ \m -> case Nip27.meKind m of
         Nip27.MentionEvent eid -> do
-          -- Fetch the full thread for this event
+          -- Fetch the full thread for this event, then swap the screen
+          -- FIRST and merge after: mergeFetched keys off the open thread's
+          -- id, so posting the fetch first would filter it against the old
+          -- thread and drop every new event.
           threadEvts <- tbFetchThread backend eid 8000000
-          -- Post the thread events so mergeFetched populates asThread
-          tbPost backend (EvFetched threadEvts)
-          -- Then trigger the screen switch
           tbPost backend (EvResolvedMention (RTEvent eid))
+          tbPost backend (EvFetched threadEvts)
         Nip27.MentionPubkey pk -> tbPost backend (EvResolvedMention (RTAuthor pk))
         Nip27.MentionProfile pk _ -> tbPost backend (EvResolvedMention (RTAuthor pk))
         Nip27.MentionAddress addr -> tbPost backend (EvResolvedMention (RTAddress addr))

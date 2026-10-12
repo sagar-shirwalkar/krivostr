@@ -156,11 +156,14 @@ yesterday, which is all a supply chain compromise needs to be.
 
 ## What is not pinned
 
-1. **Docker base images.** `haskell:9.10.3-slim-bookworm` is a mutable tag.
-Pinning it to a digest would be more correct and is a change worth making;
-it is not currently done because the digest changes with every base image
-security update and the pin would need to be refreshed constantly. The
-tradeoff is explicit: base image drift is accepted, action drift is not.
+1. **Docker base images — mostly pinned.** [`docker/Dockerfile`](../../docker/Dockerfile)
+pins every stage by digest: `haskell:9.10.3-slim-bookworm@sha256:…`,
+`node:22-alpine@sha256:…`, and `debian:bookworm-slim@sha256:…`. The remaining
+gap is [`docker/Dockerfile.linux`](../../docker/Dockerfile.linux), which still
+builds from the mutable `haskell:9.10.3-slim-bookworm` tag. Pinning that too
+would be more correct; it is left as a tag because the digest has to be
+refreshed with every base-image security update. The tradeoff is explicit: the
+release-binary builder tracks a moving tag, everything else is pinned.
 2. **Haskell and npm dependencies.** These are resolved through
 `stack.yaml.lock `and `pnpm-lock.yaml,` both of which are committed. The
 lockfiles pin exact versions with cryptographic hashes, which is the
@@ -236,10 +239,10 @@ without GitHub:
 
 ```bash
 cosign verify-blob \
-  --bundle krivostr-0.6.2-linux-amd64.tar.gz.bundle \
+  --bundle krivostr-0.7.4-linux-amd64.tar.gz.bundle \
   --certificate-identity-regexp 'https://github.com/sagar-shirwalkar/krivostr/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  krivostr-0.6.2-linux-amd64.tar.gz
+  krivostr-0.7.4-linux-amd64.tar.gz
 ```
 
 A missing or failing attestation means the file did not come from this

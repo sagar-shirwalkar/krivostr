@@ -35,7 +35,8 @@ import Brick.Widgets.Edit (editor)
 import Brick.Widgets.List
   (listMoveDown, listMoveToBeginning, listMoveToEnd, listMoveUp, listReplace, listSelectedElement)
 import Data.Foldable (toList)
-import Data.List (sortOn)
+import Data.List (nubBy, sortOn)
+import Data.Maybe (maybeToList)
 import Data.Sequence ((<|), (|>))
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
@@ -43,6 +44,7 @@ import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Graphics.Vty.Input.Events as V
 import Krivostr.Event (Event, evId, evKind, evPubkey, evTags, evContent, evCreatedAt)
+import Krivostr.Filter (Filter (fLimit))
 import Krivostr.Logging (LogEntry (..), LogLevel (..))
 import qualified Krivostr.Nip.Nip27 as Nip27
 import Krivostr.Nip.Nip27 (findMentions)
@@ -72,13 +74,29 @@ maybeIncrementUnread st
   | asScreen st == SFeed = st
   | otherwise            = st { asUnread = asUnread st + 1 }
 
--- | Handle a resolved mention by opening the appropriate screen.
+-- | Handle a resolved mention by opening the appropriate screen. The App
+-- edge posts this before its fetch, so the thread is swapped here and the
+-- later 'EvFetched' merges into the new thread; see 'openThread'. Authors
+-- and addresses have no view to open yet, so they are logged in full rather
+-- than silently dropped.
 handleResolvedMention :: ResolveTarget -> AppState -> AppState
 handleResolvedMention rt st = case rt of
-  RTAuthor pk -> st { asScreen = SFeed } -- TODO: open author feed
-  RTEvent eid -> st { asScreen = SThread eid }
-  RTAddress addr -> st { asScreen = SFeed } -- TODO: open article
-  RTOpaque _  -> st
+  RTAuthor hex  -> pushLogText ("author " <> hex) st
+  RTEvent eid   -> openThread eid st
+  RTAddress addr -> pushLogText ("address " <> addr <> " (open with :resolve)") st
+  RTOpaque hrp  -> pushLogText (hrp <> " is not a resolvable reference") st
+
+-- | Open the thread rooted at @eid@: the root when the model already holds
+-- it, plus the replies the model has, oldest first. Jumping to a mention
+-- uses this instead of the old thread's contents, and 'mergeFetched' fills
+-- the rest — the root included, since the fetch may carry it.
+openThread :: Text -> AppState -> AppState
+openThread eid st = st
+  { asScreen = SThread eid
+  , asThread = root <> sortOn evCreatedAt (threadReplies eid (toList (asFeed st)))
+  }
+  where
+    root = maybeToList (findEvent eid st)
 
 -- | List mentions in the focused thread event. Pure: extracts mentions from
 -- the focused event's content and posts them to the log pane.
@@ -127,19 +145,24 @@ findEvent eid st =
     []      -> Nothing
 
 -- | Merge fetched events into the feed and, when a thread is open, into it
--- too (deduplicated by id on both sides).
+-- too. A fetched event belongs to the open thread when it is the root
+-- (@id == rid@) or cites it (@e@ tag contains @rid@) — including the root
+-- matters because a mention jump reaches the thread only through this fetch.
+-- Order is preserved (root first, then replies), so dedupe keeps the first
+-- occurrence.
 mergeFetched :: [Event] -> AppState -> AppState
 mergeFetched evs st =
   let fed = foldr pushEvent st evs
   in case asScreen st of
-    SThread rid -> fed { asThread = dedupe (asThread fed <> filter (cites rid) evs) }
+    SThread rid -> fed { asThread = dedupe (asThread fed <> filter (relevant rid) evs) }
     _           -> fed
   where
+    relevant r e = evId e == r || cites r e
     cites r e = any isReply (evTags e)
       where
         isReply (t : rest) = t == "e" && r `elem` rest
         isReply []         = False
-    dedupe = foldr (\e acc -> if any ((== evId e) . evId) acc then acc else e : acc) []
+    dedupe = nubBy (\a b -> evId a == evId b)
 
 -- | Prepend an event to the feed unless its id is already there or its
 -- author is muted; cap at 'feedCap' newest. Newest-first is the invariant
@@ -182,6 +205,9 @@ closeCmd :: AppState -> AppState
 closeCmd st = st { asCmdLine = Nothing }
 
 -- | Route a parsed ':' command. Unknown input is a log line, not an error.
+-- Every command's pure state change lands here; the commands that also need
+-- IO (search, count, resolve, verify, publish, ingest, limit-refresh) are
+-- run by the App edge after this returns, reading the same 'Command'.
 applyCommand :: Command -> AppState -> AppState
 applyCommand cmd st = case cmd of
   CmdQuit        -> st { asQuit = True, asCmdLine = Nothing }
@@ -190,6 +216,13 @@ applyCommand cmd st = case cmd of
   CmdOutbox      -> closeCmd (st { asScreen = SOutbox })
   CmdDm          -> closeCmd (st { asScreen = SDm })
   CmdHelp        -> closeCmd (st { asScreen = SHelp })
+  CmdSearch q    -> closeCmd (st { asScreen = SSearch, asSearchQuery = q })
+  CmdLimit n     -> closeCmd (st { asFilter = (asFilter st) { fLimit = Just n } })
+  CmdIngest m    -> closeCmd (st { asIngest = maybe (not (asIngest st)) id m })
+  CmdCount _     -> closeCmd st
+  CmdResolve _   -> closeCmd st
+  CmdVerify _ _  -> closeCmd st
+  CmdPublish _ _ -> closeCmd st
   CmdUnknown raw -> closeCmd (pushLogText ("unknown command: " <> raw) st)
 
 -- | Key handling. Three layers, checked in order: an open command line
@@ -345,8 +378,5 @@ stepEnter :: AppState -> AppState
 stepEnter st = case asScreen st of
   SFeed -> case selectedEvent st of
     Nothing -> st
-    Just e  -> st
-      { asScreen = SThread (evId e)
-      , asThread = e : sortOn evCreatedAt (threadReplies (evId e) (toList (asFeed st)))
-      }
+    Just e  -> openThread (evId e) st
   _ -> st

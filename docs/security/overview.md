@@ -88,8 +88,10 @@ command still sends NIP-04 kind 4; all relay traffic is `wss://`.
 Cloudflare Pages deployment, they can read whatever is in the page's memory.
 Mitigations: the signer picker steers main identities toward NIP-07 and
 NIP-46, both of which keep the key off the origin entirely; a strict
-Content-Security-Policy; no third-party scripts; no `dangerouslySetInnerHTML`
-equivalents on remote data (Lit's `html` escapes by default).
+Content-Security-Policy; no third-party scripts of our own (the only external
+script the policy names is Cloudflare's edge-injected Web Analytics beacon); no
+`dangerouslySetInnerHTML` equivalents on remote data (Lit's `html` escapes by
+default).
 
 **A stolen bridge database file.** The SQLite store is unencrypted. It holds
 public events and ciphertexts, not plaintext or keys. The metadata — who you

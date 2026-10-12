@@ -12,6 +12,7 @@ module Krivostr.Store
   , queryEventsWith
   , countEvents
   , getEventById
+  , getEventByAddress
   , deleteEvent
   , evictExpired
   , storeStats
@@ -558,6 +559,24 @@ getEventById st eid = do
   pure $ case rows of
     (e:_) -> Just e
     _     -> Nothing
+
+-- | Newest stored event at a @kind:pubkey:identifier@ address (the NIP-01
+-- coordinate that NIP-23 articles and other replaceable kinds share), or
+-- 'Nothing' when the address is malformed or nothing lives there. Address
+-- references (@naddr@, NIP-27) resolve through this; the newest published
+-- revision is the live one.
+getEventByAddress :: Store -> Text -> IO (Maybe Event)
+getEventByAddress st addr = case T.splitOn ":" addr of
+  [kindT, pub, ident] -> case reads (T.unpack kindT) of
+    [(n, "")] -> listToMaybe <$> queryEvents st Filter
+      { fIds = Nothing, fAuthors = Just [pub], fKinds = Just [n]
+      , fSince = Nothing, fUntil = Nothing, fLimit = Just 1
+      , fTags = [("d", [ident])], fSearch = Nothing }
+    _ -> pure Nothing
+  _ -> pure Nothing
+  where
+    listToMaybe []      = Nothing
+    listToMaybe (x : _) = Just x
 
 deleteEvent :: Store -> Text -> IO ()
 deleteEvent st eid =

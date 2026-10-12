@@ -1186,3 +1186,99 @@ nip46CoverageSpec = describe "NIP-46 coverage" $ do
 
     it "shares one conversation key in both directions" $
       conversationKey clientSk signerHex `shouldBe` conversationKey signerSk clientHex
+
+  -- The spec above pins the protocol's wire shapes. These sweep every record
+  -- selector and constructor variant so none of them is left unreached: a
+  -- field no test reads is a field that can be renamed or dropped without a
+  -- failing example.
+  describe "record and constructor sweep" $ do
+    it "reads every BunkerUri field, and its Show and Eq" $ do
+      let b = BunkerUri specSigner ["wss://a.example"] (Just "s")
+      buPubkey b `shouldBe` specSigner
+      buRelays b `shouldBe` ["wss://a.example"]
+      buSecret b `shouldBe` Just "s"
+      b `shouldBe` BunkerUri specSigner ["wss://a.example"] (Just "s")
+      show b `shouldSatisfy` (not . null)
+
+    it "reads every ClientMetadata field and its Show" $ do
+      let m = ClientMetadata (Just "n") (Just "u") (Just "i")
+      cmName m `shouldBe` Just "n"
+      cmUrl m `shouldBe` Just "u"
+      cmImage m `shouldBe` Just "i"
+      show m `shouldSatisfy` (not . null)
+
+    it "reads every Permission field and its Show" $ do
+      let p = Permission MSignEvent (Just "4")
+      permMethod p `shouldBe` MSignEvent
+      permArg p `shouldBe` Just "4"
+      show p `shouldSatisfy` (not . null)
+
+    it "reads every ConnectRequest field and its Show" $ do
+      let r = ConnectRequest "i" MPing []
+      crId r `shouldBe` "i"
+      crMethod r `shouldBe` MPing
+      crParams r `shouldBe` []
+      show r `shouldSatisfy` (not . null)
+
+    it "reads every ConnectParams field and its Show" $ do
+      let c =
+            ConnectParams
+              specSigner
+              (Just "s")
+              (Just [Permission MPing Nothing])
+              (Just (ClientMetadata (Just "C") Nothing Nothing))
+      cpRemoteSigner c `shouldBe` specSigner
+      cpSecret c `shouldBe` Just "s"
+      cpPerms c `shouldBe` Just [Permission MPing Nothing]
+      cpMetadata c `shouldBe` Just (ClientMetadata (Just "C") Nothing Nothing)
+      show c `shouldSatisfy` (not . null)
+
+    it "reads every SignEventParams field and round-trips its JSON" $ do
+      let p = SignEventParams 7 "hi" [["e", "x"]] 42
+      spKind p `shouldBe` 7
+      spContent p `shouldBe` "hi"
+      spTags p `shouldBe` [["e", "x"]]
+      spCreatedAt p `shouldBe` 42
+      show p `shouldSatisfy` (not . null)
+      (AT.parseEither AT.parseJSON (toJSON p) :: Either String SignEventParams)
+        `shouldBe` Right p
+
+    it "reads every ConnectResponse field and its Show" $ do
+      let r = ConnectResponse "i" "ack" (Just "e")
+      resId r `shouldBe` "i"
+      resResult r `shouldBe` "ack"
+      resError r `shouldBe` Just "e"
+      show r `shouldSatisfy` (not . null)
+
+    it "forces every MethodResult variant through render and show" $ do
+      let results =
+            [ (MConnect, Ack)
+            , (MConnect, ConnectToken "t")
+            , (MPing, Pong)
+            , (MGetPublicKey, Pubkey userHex)
+            , (MNip44Encrypt, Ciphertext "c")
+            , (MNip44Decrypt, Plaintext "p")
+            , (MSignEvent, SignedEvent (signEventFor userSk specSignEventParams))
+            , (MSwitchRelays, Relays Nothing)
+            , (MSwitchRelays, Relays (Just ["wss://a.example"]))
+            ]
+      mapM_
+        ( \(m, r) -> do
+            show r `shouldSatisfy` (not . null)
+            renderMethodResult m r `shouldSatisfy` isRight
+        )
+        results
+
+    it "forces every MethodParams variant and its Show" $ do
+      let ps =
+            [ ParamsConnect (ConnectParams specSigner Nothing Nothing Nothing)
+            , ParamsSignEvent specSignEventParams
+            , ParamsNoArgs MPing
+            , ParamsCipher "a" "b"
+            ]
+      mapM_ (\p -> show p `shouldSatisfy` (not . null)) ps
+
+    it "walks Method through Enum and Bounded" $ do
+      ([minBound .. maxBound] :: [Method]) `shouldBe` allMethods
+      mapM_ (\m -> show m `shouldSatisfy` (not . null)) allMethods
+      fromEnum MLogout `shouldSatisfy` (> fromEnum MConnect)

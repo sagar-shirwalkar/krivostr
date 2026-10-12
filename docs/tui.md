@@ -30,7 +30,7 @@ krivostr tui --no-color
 | Lists | Mute / pin / bookmark tabs | `Tab` cycle or `:lists` |
 | Outbox | Queued events, retry/drop | `Tab` cycle or `:outbox` |
 | Help | Key table + command list | `Tab` cycle or `:help` |
-| Compose | Reply / react / quote / article / DM | `r` `A` `Q` `c` `E` |
+| Compose | Reply / react / quote / comment | `r` `A` `Q` `c` |
 
 Global keys work on Feed and Thread screens:
 - `?` — help screen
@@ -61,7 +61,7 @@ Global keys work on Feed and Thread screens:
 | `R` | Immediate repost |
 | `d` | Immediate delete (own events only) |
 | `m` | Immediate mute author (publishes kind 10000) |
-| `f` | Toggle live follow mode |
+| `f` | Toggle live follow mode (cosmetic — see Known limitations) |
 | `n` | List mentions in focused thread event |
 | `1`–`3` | Switch Lists tab (mute / pin / bookmark) when on Lists screen |
 
@@ -78,26 +78,30 @@ Global keys work on Feed and Thread screens:
 | Command | Effect |
 |---------|--------|
 | `:q` / `:quit` | Leave the TUI |
+| `:search <query>` | Open the search view on `<query>` |
+| `:count [kind]` | Log the number of stored events, optionally for one kind |
+| `:limit N` | Set the feed query limit and reload (default 500) |
+| `:resolve <ref>` | Resolve `npub`/`note`/`naddr`/hex/`nostr:` refs, logging the result |
+| `:verify <name> [pubkey]` | Fetch a NIP-05 document and check the optional key |
+| `:publish <file> [title]` | Publish a NIP-23 article from a file (needs `KRIVOSTR_NSEC`) |
+| `:ingest [on\|off]` | Start/stop live follow ingest (no argument toggles) |
 | `:relays` | Show relays view |
 | `:lists` | Show mute/pin/bookmark lists view |
 | `:outbox` | Show outbox view |
 | `:dm` | Show DM view |
 | `:help` | Show help view |
 
-Commands marked ⬜ are not yet implemented (M3):
-- `:search <query>` — Run FTS search
-- `:verify <id> [--pubkey …]` — Async NIP-05 check
-- `:publish <file.md>` — Article flow (prompts title/slug)
-- `:resolve <ref>` — Open thread/author for `nostr:`/bech32/hex
+The parser is total: an unrecognized line is logged as `unknown command`,
+never a crash. The wider parity set is **not implemented yet** — each logs
+`unknown command`:
 - `:export [--format …] [--out …]` — Export current filter
 - `:wallet …` — NIP-47 via `KRIVOSTR_NWC`
 - `:reindex` — Rebuild FTS5 index
 - `:keygen` — Generate keypair (reveals `nsec` on `v`)
-- `:count` — Exact NIP-45 count for current filter
 - `:bell on/off` — Terminal bell on matching events
 - `:exec <cmd>` — Run shell command on match (substitution)
-- `:limit N` — Cap feed display (default 500)
-- `:ingest on/off` — Toggle live follow ingest
+
+Use the CLI subcommand of the same name until these land.
 
 ## Security notes
 
@@ -111,7 +115,7 @@ Commands marked ⬜ are not yet implemented (M3):
 The TUI and `serve` can run concurrently on the same database:
 - SQLite WAL mode with `PRAGMA busy_timeout = 5000` prevents lock contention
 - Both processes deduplicate via `insertEvent` (id PK, verify choke point) — double ingest is harmless
-- Follow-mode ingest in the TUI is ON by default (`:ingest off` to disable)
+- Follow-mode ingest in the TUI is ON by default; start with `--no-ingest` to disable it, or toggle it at run time with `:ingest off` / `:ingest on`.
 - The bridge serves the UI on `:8081`; the TUI uses the same store directly
 
 ## Environment variables
@@ -136,8 +140,9 @@ The TUI and `serve` can run concurrently on the same database:
 | Relays view | ⬜ M3 stub |
 | Outbox view | ⬜ M3 stub |
 | Help view | ✅ |
-| `:wallet`, `:publish`, `:export`, `:search`, `:verify`, `:resolve`, `:reindex`, `:keygen`, `:count`, `:bell`, `:exec`, `:limit`, `:ingest` | ⬜ M3 |
-| Mention links (`n` key) | ✅ (lists mentions, fetches referenced events) |
+| `:search`, `:count`, `:limit`, `:resolve`, `:verify`, `:publish`, `:ingest` | ✅ |
+| `:wallet`, `:export`, `:reindex`, `:keygen`, `:bell`, `:exec` | ⬜ M3 |
+| Mention links (`n` key) | ✅ (lists mentions; event mentions open their thread) |
 | Unread counter | ✅ (shows on all screens) |
 | Theme attrs (kind colours) | ✅ |
 | NIP-36 content warning | ✅ |
@@ -145,11 +150,12 @@ The TUI and `serve` can run concurrently on the same database:
 
 ## Known limitations
 
-- DM/Relays/Outbox views are M3 stubs (show placeholder text)
-- Mention resolution: `n` key lists mentions and fetches referenced events; `Enter` on a mention not yet wired
-- Article composer (`:publish`) not yet implemented
-- NIP-17 DMs not yet wired (CLI `dm` uses NIP-04)
-- `:search`, `:verify`, `:publish`, `:resolve`, `:export`, `:wallet`, `:reindex`, `:keygen`, `:count`, `:bell`, `:exec`, `:limit`, `:ingest` commands not yet implemented
+- DM/Relays/Outbox views are placeholders (they render `// … arrives in M3`).
+- `f` toggles an `asFollowing` flag that only feeds the status bar; it does not pause the live ingest subscription. Use `:ingest off` to actually stop ingest; the `f` toggle stays cosmetic until it is wired to the same seam.
+- Mention resolution: `n` lists mentions; `RTEvent` mentions open the referenced event's thread. `RTAuthor` and `RTAddress` mentions have no view yet, so they are logged (`author <hex>`, `address <coord> (open with :resolve)`) rather than silently dropped.
+- Article composer and DM compose are not implemented (compose targets are reply / react / quote / comment).
+- NIP-17 DMs are not wired (CLI `dm` uses NIP-04).
+- The unimplemented `:` commands (`:export`, `:wallet`, `:reindex`, `:keygen`, `:bell`, `:exec`) each log `unknown command` (see the command bar above).
 
 ## Debugging
 

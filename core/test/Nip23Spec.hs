@@ -39,6 +39,11 @@ nip23Spec = describe "NIP-23 articles" $ do
       articleOf (article [["d", "s"], ["published_at", "yesterday"]] "b")
         `shouldBe` Just (Article "s" "" "" "" Nothing "b" "author")
 
+    it "recognises a well-formed article and nothing else" $ do
+      isArticle (article [["d", "slug"]] "body") `shouldBe` True
+      isArticle (article [["title", "no slug"]] "body") `shouldBe` False
+      isArticle (article [["d", "slug"]] "body") {evKind = 1} `shouldBe` False
+
   describe "articleAddress" $ do
     it "addresses 30023:pubkey:slug" $
       articleAddress (article [["d", "my-post"]] "body")

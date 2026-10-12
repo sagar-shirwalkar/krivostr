@@ -7,6 +7,9 @@
 -- outlives the browser, and anything the store can answer can be scripted.
 module Krivostr.Cli
   ( runCLI
+  , runCLIWith
+  , parserInfo
+  , Opts
   , TimeSpec(..)
   , resolveTime
   , parseWhen
@@ -263,11 +266,19 @@ runCLI = do
   hSetEncoding stderr utf8
   execParser parserInfo >>= dispatch
 
+-- | Parse an explicit argv and dispatch it, the seam 'runCLI' wraps around
+-- 'getArgs'. Kept exported so the test suite can drive real subcommands in
+-- process; a malformed argv still exits through 'handleParseResult' exactly
+-- as the binary would, so tests assert on 'ExitCode'.
+runCLIWith :: [String] -> IO ()
+runCLIWith args =
+  handleParseResult (execParserPure defaultPrefs parserInfo args) >>= dispatch
+
 -- | Version reported by @--version@. Kept here rather than generated from
 -- client/package.yaml because hpack does not expose the package version to the
 -- source; the release workflow reads the tag, so the two are the same string.
 version :: String
-version = "0.6.2.0"
+version = "0.7.4.0"
 
 -- | @--version@ answers without needing a subcommand, so `krivostr --version`
 -- works in a script that knows nothing about the command set.
@@ -992,8 +1003,13 @@ cmdResolve lg db o = do
       MentionProfile hex relays -> do
         TIO.putStrLn ("author " <> hex)
         forM_ relays $ \r -> TIO.putStrLn ("relay " <> r)
+      MentionAddress addr -> withStore lg db $ \st -> do
+        found <- getEventByAddress st addr
+        case found of
+          Just e  -> TIO.putStrLn (renderEventBlock False True now e)
+          Nothing -> TIO.putStrLn ("address " <> addr <> " (not in the local store)")
       MentionOpaque hrp ->
-        TIO.putStrLn (hrp <> " references resolve in phase 2.3 (nevent/naddr entities)")
+        TIO.putStrLn (hrp <> " is not a resolvable reference")
     -- No bech32 at all: a hex event id, or a hex pubkey.
     [] -> withStore lg db $ \st -> do
       found <- getEventById st raw
@@ -1032,17 +1048,9 @@ cmdComment lg db o = do
     resolveTarget raw
       | isHex64 (T.pack raw) = requireEvent lg db raw
       | otherwise = case T.splitOn ":" (T.pack raw) of
-          [kindT, pub, slug] -> withStore lg db $ \st -> do
-            kinds <- case reads (T.unpack kindT) of
-              [(n, "")] -> pure [n :: Int]
-              _         -> die "address must be kind:pubkey:slug"
-            cands <- queryEvents st Filter
-              { fIds = Nothing, fAuthors = Just [pub], fKinds = Just kinds
-              , fSince = Nothing, fUntil = Nothing, fLimit = Just 10
-              , fTags = [("d", [slug])], fSearch = Nothing }
-            case cands of
-              (e : _) -> pure e
-              []      -> die ("nothing at that address in the local store: " ++ raw)
+          [_, _, _] -> withStore lg db $ \st -> do
+            found <- getEventByAddress st (T.pack raw)
+            maybe (die ("nothing at that address in the local store: " ++ raw)) pure found
           _ -> die "target must be a hex event id or kind:pubkey:slug"
 
 cmdList :: Logger -> FilePath -> ListOpts -> IO ()

@@ -44,7 +44,7 @@ with NIP-44 and opaque to the store.
 
 [`ui/src/nostr/cache.ts`](../ui/src/nostr/cache.ts). Database `krivostr`,
 version 1, object store `events` keyed on `id`, with **one** index:
-`created_at`, used to read newest-first. Verification-gated (`put` refuses
+`by_created_at`, used to read newest-first. Verification-gated (`put` refuses
 forgeries) and retention-mirroring — but **currently wired to nothing**: no
 component imports it, so the bridge's SQLite is the only durable store in
 practice. The paragraphs below describe what the module does, not what the

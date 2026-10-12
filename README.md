@@ -6,7 +6,6 @@
 
 [![Haskell](https://img.shields.io/badge/Haskell-5D4F85?style=for-the-badge&logo=haskell&logoColor=white)](https://haskell.org)
 [![Lit](https://img.shields.io/badge/lit-324FFF?style=for-the-badge&logo=lit&logoColor=white)](https://lit.dev)
-[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![License](https://img.shields.io/badge/AGPL--3.0-red?style=for-the-badge)](LICENSE)
 [![GitHub Release](https://img.shields.io/github/v/release/sagar-shirwalkar/krivostr?display_name=release&style=for-the-badge&labelColor=black&color=%23fbb22b)](https://github.com/sagar-shirwalkar/krivostr/actions/workflows/release.yml)
 [![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/sagar-shirwalkar/krivostr/ci.yml?branch=main&style=for-the-badge&labelColor=%23404040&color=%232d9e37)](https://github.com/sagar-shirwalkar/krivostr/actions/workflows/ci.yml)
@@ -33,7 +32,7 @@ lambda terms through a stack of closures.
   Read your timeline on a flight; your follows, mutes, and DMs persist.
 - **A multiplexing bridge** — the browser speaks ordinary Nostr to `krivostr
   serve`, which answers from the local store and fans out to upstream relays.
-- **A headless CLI** — twenty-two subcommands over the same store: `serve`, `feed`,
+- **A headless CLI & TUI** — twenty-two subcommands over the same store: `serve`, `feed`,
   `search`, `dm`, `reply`, `react`, `repost`, `verify`, `publish`, `delete`, `resolve`,
   `comment`, `list`, `count`, `wallet`, `relay`, `export`, `watch`, `api`, `reindex`,
   `keygen`, `tui`. SQLite and FTS5 are linked in; no runtime to install.
@@ -73,7 +72,7 @@ account. Extract and run; the archive mirrors the repo layout (`ui/dist`), so
 `serve` finds the UI with zero flags:
 
 ```bash
-mkdir krivostr && tar -xzf krivostr-0.6.2-linux-amd64.tar.gz -C krivostr
+mkdir krivostr && tar -xzf krivostr-0.7.4-linux-amd64.tar.gz -C krivostr
 cd krivostr
 ./krivostr serve
 ```
@@ -196,7 +195,7 @@ floor of 2.34. It is **not** a fully static build: it links against glibc, `libg
 
 ---
 
-## Commands
+## Commands (CLI)
 
 Global flags come before the subcommand:
 
@@ -219,7 +218,7 @@ Global flags come before the subcommand:
 | `verify` | Check a NIP-05 identifier against its domain |
 | `publish` | Publish a Markdown file as a long-form article (NIP-23) |
 | `delete` | Request deletion of your events (NIP-09), removes locally |
-| `resolve` | Resolve a `nostr:` reference, bech32, or hex (NIP-27; `nevent`/`naddr` report as unimplemented) |
+| `resolve` | Resolve a `nostr:` reference, bech32, or hex (NIP-27; `nevent` and `naddr` both resolve from the store) |
 | `comment` | Comment on a non-note event by id or address (NIP-22) |
 | `list` | Show or edit a NIP-51 list: `mute`, `pin`, `bookmark` |
 | `count` | Count stored events matching a filter (NIP-45; ignores `--limit`) |
@@ -348,7 +347,7 @@ on re-publish per slug. Like `dm`, every send here is stored locally on acceptan
 
 ```bash
 krivostr verify alice@example.com --pubkey npub1…   # NIP-05 over HTTPS; --pubkey defaults to your own key
-krivostr resolve nostr:npub1…                       # authors, relays, stored events (nevent/naddr: not yet)
+krivostr resolve nostr:npub1…                       # authors, relays, stored events (nevent and naddr: yes)
 krivostr list mute --add npub1… --del npub1…        # mute | pin | bookmark; no --add/--del prints the list
 krivostr count -k note --since 7d                   # NIP-45; --limit is ignored, everything matching counts
 krivostr wallet balance                             # needs KRIVOSTR_NWC=nostr+walletconnect://…
@@ -406,7 +405,7 @@ krivostr export -k note --since 30d --format csv --out notes.csv
 krivostr watch -a npub1… --exec 'notify-send "{content}"'   # {json} {content} {author} {kind}
 krivostr watch --bell --interval 5 --existing               # ring, poll cadence, include history
 krivostr watch --print-unit > ~/.config/systemd/user/krivostr-watch.service
-krivostr api --port 8090                      # GET /health /stats /events /events/:id /search
+krivostr api --port 8090                      # GET /api/health /api/stats /api/events /api/events/:id /api/search
 krivostr reindex                              # rebuild FTS5 after an import
 krivostr keygen
 ```
@@ -417,10 +416,12 @@ quoting. `watch --exec` substitutes exactly `{json} {content} {author} {kind}` t
 `sh -c` (quoting is the caller's problem); note the generated systemd unit only carries
 `--kind/--author/--tag/--bell` and silently drops `--exec`, `--interval`, `--limit`,
 `--search`, and `--existing`, so re-add what the unit needs. The `api` answers
-permissive CORS (`Access-Control-Allow-Origin: *`); `/search` requires `?q=` and answers
+permissive CORS (`Access-Control-Allow-Origin: *`); `/api/search` requires `?q=` and answers
 503 with a `run: krivostr reindex` hint when the store has no search index.
 
-### `tui`
+---
+
+## TUI
 
 ```bash
 krivostr tui                                    # start the TUI
@@ -433,28 +434,30 @@ The TUI is a brick-based terminal interface over the same SQLite store and relay
 pool. It shares the store with `serve` and the CLI (WAL mode with
 `busy_timeout = 5000` allows concurrent access).
 
-**Screens and global keys**
+### Screens and global keys
 
 | Screen | Purpose | Enter via |
-|---|---|---|
+| --- | --- | --- |
 | Feed | Timeline, newest first | default |
 | Thread | Note + replies | `Enter` on a note |
-| Search | FTS5 query | `/` or `:search` |
-| DM | Inbox + send | `Tab` cycle or `:dm` |
-| Relays | Connected + configured + outbox depth | `Tab` cycle or `:relays` |
+| Search | FTS5 query | `/` |
 | Lists | Mute / pin / bookmark tabs | `Tab` cycle or `:lists` |
-| Outbox | Queued events, retry/drop | `Tab` cycle or `:outbox` |
 | Help | Key table + command list | `Tab` cycle or `:help` |
-| Compose | Reply / react / quote / article / DM | `r` `A` `Q` `c` `E` |
+| Compose | Reply / react / quote / comment | `r` `A` `Q` `c` |
+| DM | *placeholder* — `:dm` shows "arrives in M3" | `Tab` cycle or `:dm` |
+| Relays | *placeholder* — `:relays` shows "arrives in M3" | `Tab` cycle or `:relays` |
+| Outbox | *placeholder* — depth is in the status bar | `Tab` cycle or `:outbox` |
 
-Global keys work everywhere: `?` shows the help overlay, `q` quits (or pops back
-from a sub-screen), `:` opens the command bar, `/` enters search, `~` toggles
-the log pane, `Esc` cancels any overlay.
+Global keys work on the feed-like screens: `?` shows the help screen, `q` quits,
+`:` opens the command bar, `/` enters search, `~` toggles the log pane, `Esc`
+cancels an overlay (or pops a sub-screen), `Tab` / `Shift-Tab` cycle screens
+(Feed → Relays → Lists → DM → Outbox → Help → Feed). The Search screen owns every
+key while it is open, so the globals are inert there until `Esc`.
 
-**Feed keys** (Feed, Search, Thread screens):
+### Feed keys (Feed, Search, Thread screens):
 
 | Key | Action |
-|---|---|
+| --- | --- |
 | `j` / `k` | Move selection down / up |
 | `g` / `G` | Jump to top / bottom |
 | `Enter` | Open thread for focused note |
@@ -468,54 +471,61 @@ the log pane, `Esc` cancels any overlay.
 | `R` | Immediate repost |
 | `d` | Immediate delete (own events only) |
 | `m` | Immediate mute author (publishes kind 10000) |
-| `f` | Toggle live follow mode |
+| `f` | Toggle live follow mode (cosmetic — see the note below) |
+| `n` | List mentions in the focused event (Thread screen only) |
+| `o` | Fetch missing thread relatives from the store (Thread screen only) |
 | `1`–`3` | Switch Lists tab (mute / pin / bookmark) when on Lists screen |
 
-**Compose keys** (multiline editor):
+### Compose keys (multiline editor)
 
 | Key | Action |
-|---|---|
+| --- | --- |
 | `Ctrl-G` | Sign and send |
 | `Esc` | Cancel, return to previous screen |
 | `E` | Promote to `$EDITOR` (only on empty editor) |
 
-**Command bar** (opened with `:`):
+### Command bar (opened with `:`) 
+
+The parser is total — anything it does not recognize is logged as `unknown command` rather than failing. Only these are
+wired:
 
 | Command | Effect |
-|---|---|
+| --- | --- |
 | `:q` / `:quit` | Leave the TUI |
-| `:relays` | Show relays view |
-| `:lists` | Show mute/pin/bookmark lists view |
-| `:outbox` | Show outbox view |
-| `:dm` | Show DM view |
-| `:help` | Show help view |
-| `:search <query>` | Run FTS search |
-| `:verify <id> [--pubkey …]` | Async NIP-05 check |
-| `:publish <file.md>` | Article flow (prompts title/slug) |
-| `:resolve <ref>` | Open thread/author for `nostr:`/bech32/hex |
-| `:export [--format …] [--out …]` | Export current filter |
-| `:wallet …` | NIP-47 via `KRIVOSTR_NWC` |
-| `:reindex` | Rebuild FTS5 index |
-| `:keygen` | Generate keypair (reveals `nsec` on `v`) |
-| `:count` | Exact NIP-45 count for current filter |
-| `:bell on/off` | Terminal bell on matching events |
-| `:exec <cmd>` | Run shell command on match (substitution) |
-| `:limit N` | Cap feed display (default 500) |
-| `:ingest on/off` | Toggle live follow ingest |
+| `:search <text>` | Open the search view on `<text>` |
+| `:count [kind]` | Log the number of stored events (optionally of one kind) |
+| `:limit <n>` | Set the feed query limit and reload the feed |
+| `:resolve <ref>` | Resolve `npub`/`note`/`naddr`/hex/`nostr:` refs, logging the result |
+| `:verify <name> [pubkey]` | Fetch a NIP-05 document and check the optional key |
+| `:publish <file> [title]` | Publish a NIP-23 article from a file (needs `KRIVOSTR_NSEC`) |
+| `:ingest [on\|off]` | Start/stop the live ingest subscription (default toggles) |
+| `:relays` | Show the (placeholder) relays view |
+| `:lists` | Show the mute/pin/bookmark lists view |
+| `:outbox` | Show the (placeholder) outbox view |
+| `:dm` | Show the (placeholder) DM view |
+| `:help` | Show the help view |
 
-**Security notes**
+The wider CLI parity the TUI is aiming at — `:export`, `:wallet`, `:reindex`,
+`:keygen`, `:bell`, `:exec` — is **not implemented yet**; each currently logs
+`unknown command`. Use the CLI subcommand of the same name meanwhile.
+
+### Security notes
 
 - Muted authors are filtered from the feed (same as CLI `feed` and web UI).
 - Sensitive content (NIP-36 `content-warning` tag) renders as `[hidden — content-warning]` until `v` is pressed; reveals are session-only, never persisted.
 - The log pane (`~`) captures all publish verdicts, async results, and yanks — nothing is printed to stderr (would shred the screen).
 - `KRIVOSTR_NSEC` enables sending; without it the TUI is read-only (same as CLI).
 
+**One known TUI quirk.** `f` toggles an `asFollowing` flag that only feeds
+the status bar — it does *not* pause the live ingest subscription. Use `:ingest off` for
+that; the `f` toggle is cosmetic until the key is wired to the same seam.
+
 ---
 
 ## Configuration
 
 | Variable | Default | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `KRIVOSTR_DB` | `.krivostr/events.db` | SQLite path (serve and CLI must agree — it is relative to your shell's directory) |
 | `KRIVOSTR_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `KRIVOSTR_PORT` | `8081` | Bridge port (`serve`) |
@@ -533,7 +543,7 @@ pass `--host` explicitly. See [Known limitations](#known-limitations).
 UI variables are read by Vite at build time, so they must be set before `pnpm build`:
 
 | Variable | Default | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `VITE_BRIDGE_URL` | same origin | Where the browser opens its WebSocket, e.g. `ws://localhost:8081` |
 | `VITE_KRIVOSTR_TRANSPORT` | `relay` | `bridge` or `relay` |
 
@@ -549,73 +559,67 @@ the UI reads from that element.
 
 ## Architecture
 
-```mermaid
-%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "lineColor": "#94a3b8"}}}%%
-flowchart LR
-    subgraph RELAYS["🌐 Nostr relays"]
-        direction TB
-        R1["relay.damus.io"]
-        R2["nos.lol"]
-        R3["relay.primal.net"]
-    end
+<!-- Architecture diagram as plain HTML. GitHub's sanitizer strips inline `style`
+     and `bgcolor`, so this uses only tags and attributes it keeps (`<table>`,
+     `<font color>`, `align`, `colspan`) plus the client's design-token accents.
+     Palette legend: relay/external = mute #767a82, client = amber-dim #a87f3f,
+     core = sage-dim #5a8e87, browser = indigo #6b7de0. See
+     .agents/skills/krivostr-client-visual-design/references/design-tokens.md. -->
 
-    subgraph CLIENT["🖥️ krivostr-client — effectful Haskell"]
-        direction TB
-        POOL["Pool<br/>relay multiplexer<br/>one drain thread per relay"]
-        STORE[("Store<br/>SQLite + FTS5<br/>30-day retention")]
-        BRIDGE["Bridge<br/>WebSocket + static files<br/>hourly GC thread"]
-        CLI["Cli<br/>twenty-two subcommands"]
-        API["Cli.Api<br/>JSON on :8090"]
-    end
+<table width="100%" cellpadding="8" cellspacing="0" border="0">
+  <tr>
+    <td align="center" valign="top" width="20%">
+      <font color="#767a82"><b>Nostr relays</b></font><br>
+      <sub>external · untrusted</sub><br><br>
+      <code>REQ · EVENT · EOSE</code>
+    </td>
+    <td align="center" valign="middle" width="8%">⇄<br><sub>wss://</sub></td>
+    <td align="center" valign="top" width="36%">
+      <font color="#a87f3f"><b>krivostr-client</b></font><br>
+      <sub>effectful Haskell</sub><br><br>
+      <code>Pool</code> — one drain thread per relay<br>
+      <code>Store</code> — SQLite + FTS5, 30-day retention<br>
+      <code>Bridge</code> — WebSocket + static UI<br>
+      <code>Cli</code> — 22 subcommands · <code>Cli.Api</code> — JSON on :8090
+    </td>
+    <td align="center" valign="middle" width="8%">↔<br><sub>pure</sub></td>
+    <td align="center" valign="top" width="28%">
+      <font color="#5a8e87"><b>krivostr-core</b></font><br>
+      <sub>pure Haskell · no IO</sub><br><br>
+      <code>Wire</code> — NIP-01 encode / decode<br>
+      <code>Event</code> — event ADT, accessors<br>
+      <code>Filter</code> — matches predicate<br>
+      <code>Nip01 · Schnorr · Key</code>
+    </td>
+  </tr>
+</table>
 
-    subgraph CORE["λ krivostr-core — pure Haskell, no IO"]
-        direction TB
-        WIRE["Wire<br/>NIP-01 encode / decode"]
-        EVENT["Event<br/>event ADT, accessors"]
-        SCHNORR["Nip01 + Schnorr + Key<br/>id, sign, verify, bech32"]
-        FILTER["Filter<br/>matches predicate"]
-    end
-
-    subgraph BROWSER["🌍 Browser — Lit 3 UI"]
-        direction TB
-        SHELL["app-shell<br/>composer, feed, signer picker"]
-        STATUS["nostr-relay-status<br/>owns the socket"]
-        SIGNER["signer<br/>local nsec · NIP-07 · NIP-46"]
-        IDB[("IndexedDB cache<br/>30-day retention")]
-    end
-
-    R1 & R2 & R3 <-->|"REQ / EVENT / EOSE"| POOL
-    POOL <--> STORE
-    CLI <--> STORE
-    API <--> STORE
-    STORE <--> BRIDGE
-
-    POOL -.->|"pure calls"| WIRE
-    BRIDGE -.->|"pure calls"| WIRE
-    CLI -.->|"pure calls"| WIRE
-    WIRE --> EVENT
-    WIRE --> FILTER
-    EVENT --> SCHNORR
-
-    BRIDGE <==>|"wss://host/ws<br/>relay-shaped"| STATUS
-    STATUS --> SHELL
-    SHELL <--> IDB
-    SHELL --> SIGNER
-    SIGNER -->|"publish"| STATUS
-    SIGNER -.->|"NIP-46 bunker"| RELAYS
-
-    classDef relay fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0c4a6e
-    classDef client fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#4c1d95
-    classDef core fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
-    classDef ui fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f
-    classDef data fill:#f1f5f9,stroke:#475569,stroke-width:2px,color:#0f172a
-
-    class R1,R2,R3 relay
-    class POOL,BRIDGE,CLI,API client
-    class WIRE,EVENT,SCHNORR,FILTER core
-    class SHELL,STATUS,SIGNER ui
-    class STORE,IDB data
-```
+<table width="100%" cellpadding="8" cellspacing="0" border="0">
+  <tr>
+    <td align="center" valign="top" width="20%">
+      <font color="#6b7de0"><b>Browser — Lit 3 UI</b></font><br>
+      <sub>the client's other half</sub><br><br>
+      <code>app-shell</code><br>
+      <code>nostr-relay-status</code> — owns the socket<br>
+      <code>signer</code> — local nsec · NIP-07 · NIP-46
+    </td>
+    <td align="center" valign="middle" width="8%">⇄<br><sub>wss://host/ws</sub></td>
+    <td align="center" valign="top" width="36%">
+      <b>Bridge, relay-shaped</b><br>
+      <sub>answers from SQLite first, then fans out upstream</sub><br><br>
+      A browser speaks ordinary Nostr to <code>krivostr serve</code>; the bridge
+      replays matching history, sends <code>EOSE</code>, then broadcasts the
+      <code>REQ</code> to the effective upstream set.
+    </td>
+    <td align="center" valign="middle" width="8%">⇄</td>
+    <td align="center" valign="top" width="28%">
+      <b>IndexedDB cache</b><br>
+      <sub>30-day retention, verified on put</sub><br><br>
+      <code>ui/src/nostr/cache.ts</code> — module present but not wired into a
+      component; the bridge's SQLite is the durable store in practice.
+    </td>
+  </tr>
+</table>
 
 The Haskell and TypeScript sides deliberately mirror each other: fallible operations are
 `Result`s, effects are `IO`s, and optionality is `Maybe`. Same shape on both sides,
@@ -642,7 +646,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 ## Protocol support
 
 | NIP | Title | Status |
-|---|---|---|
+| --- | --- | --- |
 | 01 | Basic protocol | ✅ full — variadic `REQ` filters, `EVENT`, `EOSE`, `OK`, `NOTICE`, `CLOSED` |
 | 02 | Follow list | ❌ not implemented |
 | 04 | Encrypted direct messages | ◐ CLI can send; UI cannot read (NIP-04 only) |
@@ -680,7 +684,7 @@ See [docs/architecture.md](docs/architecture.md) for more detail.
 
 ```bash
 make test          # backend (stack test) + UI unit + UI browser
-make test-backend  # 862 hspec examples (613 core + 249 client)
+make test-backend  # 1093 hspec examples (647 core + 446 client)
 make test-ui       # 310 unit tests (jsdom) + 29 browser tests (real Chromium)
 ```
 
@@ -697,34 +701,29 @@ cd ui && pnpm coverage # v8, thresholds 80/80/80/80
 ```
 
 Backend coverage is reported by `scripts/hpc-coverage.py`, which reads the HTML index
-that `stack test --coverage` writes:
-
-```
-coverage index: .stack-work/install/…/9.10.3/hpc/combined/all/hpc_index.html
-module                       covered / total
-Krivostr.Schnorr              16 / 16     100.0%
-Krivostr.Nip.Nip01             4 / 4      100.0%
-Krivostr.Store                39 / 52      75.0%
-Krivostr.Key                  22 / 30      73.3%
-Krivostr.Filter               17 / 28      60.7%
-Krivostr.Tui.State            28 / 28     100.0%
-…
-TOTAL                        941 / 1623    58.0%
-```
-
-That is the honest number, and it is lower than you would like. The cryptography and the
-NIP modules are well covered; the IO layers — the relay pool, the bridge, the CLI, and
-the HTTP API — dominate the total and are mostly untested. `.hpc-threshold` pins the
-measured total as a ratchet (currently `min: 58`): coverage may rise, and `make coverage`
-fails if it drops. If your change raises the measured number, raise the pin in the same
-change; never lower it.
+that `stack test --coverage` writes. The cryptography and the NIP modules are well
+covered; the IO layers — the relay pool, the bridge, the CLI, and the HTTP API — dominate
+the total and are mostly untested. `.hpc-threshold` pins the measured total as a ratchet
+(currently `min: 70`): coverage may rise, and `make coverage` fails if it drops. If your
+change raises the measured number, raise the pin in the same change; never lower it.
 
 UI coverage is a different story, because the vitest config measures the pure logic
-(`src/fp` and `src/nostr`, excluding the bridge transport):
+(`src/fp` and `src/nostr`, excluding the bridge transport) with thresholds of 80 across
+statements, branches, functions, and lines.
 
-```
-All files    |   95.73 |    93.27 |   89.13 |   95.73 |
-```
+The printed percentages are deliberately not copied here, so they cannot drift out of
+date. To surface the number as a badge instead, either:
+
+- **Static** — a `shields.io` badge whose value you bump by hand when the ratchet moves:
+  `https://img.shields.io/badge/coverage-<pct>%25-<color>`. Update it in the same change
+  that edits `.hpc-threshold`.
+- **Dynamic** — have CI write a shields.io endpoint document
+  (`{"schemaVersion":1,"label":"coverage","message":"<pct>%","color":"<color>"}`) and point
+  the badge at `https://img.shields.io/endpoint?url=<raw-url>`. Nothing to keep in sync by
+  hand; the workflow owns the file.
+
+`shields.io` badges render instantly with no third-party account. Codecov is the heavier
+option if you later want history and PR annotations.
 
 ---
 
@@ -774,9 +773,9 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
 
 - **Ingest trusts nothing.** `Store.insertEvent` verifies every signature and answers
   `Inserted` / `Duplicate` / `InvalidSignature`; the browser cache refuses forgeries too.
-- **Backend test coverage is 58%**, pinned by a ratchet (`.hpc-threshold`): the build
-  fails when coverage drops. The NIP modules are well covered; the relay pool, bridge,
-  CLI, and HTTP API are not.
+- **Backend test coverage is gated by a ratchet** (`.hpc-threshold`): the build fails
+  when coverage drops below the pinned floor. The NIP modules are well covered; the relay
+  pool, bridge, CLI, and HTTP API are not. Run `make coverage` for the current number.
 - **The local signer keeps the secret in memory for the session only.** There is no
   at-rest encryption and nothing is written to disk, but there is also no keyring
   integration.
@@ -789,8 +788,9 @@ Worth stating plainly, because the rest of this README is otherwise optimistic.
 - **Two `--help` texts name environment variables the runners ignore.**
   `KRIVOSTR_BRIDGE_HOST` is shadowed by the parser default and `KRIVOSTR_API_HOST` is
   never read by the `api` dispatch — pass `--host` explicitly until those are wired up.
-- **`resolve` does not resolve `nevent`/`naddr` yet.** They parse as opaque and print a
-  phase-2.3 stub instead of an id or coordinate.
+- **`resolve` answers from the local store.** `nevent` and `naddr` pointers are decoded
+  and the referenced event is looked up locally; it is never fetched from a relay, so an
+  event you have not ingested resolves to "not in the local store".
 
 ---
 

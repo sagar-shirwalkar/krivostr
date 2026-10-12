@@ -154,7 +154,8 @@ maintained, integrates with GitHub Actions, and produces findings worth
 acting on. The type system catches whole classes of bugs that SAST tools
 target in other languages, and the remaining risk is logic and resource
 management, which no scanner reads well. The compensating controls are
-`-Wall`, `-Werror` in CI, and review.
+`-Wall` (warnings are reviewed, not fatal — there is no `-Werror` in the
+build) and human review.
 
 **Container image CVE scanning.** The Linux release pipeline builds
 `docker/Dockerfile.linux`, but no workflow scans the resulting image for

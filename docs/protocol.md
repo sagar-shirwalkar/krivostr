@@ -153,8 +153,10 @@ Two security fixes over the reference spec:
 and the UI's hand-rolled [`bech32.ts`](../ui/src/nostr/bech32.ts); the TLV
 pointers are `Krivostr.Nip.Nip19` and matching `nevent`/`naddr` codecs in
 `bech32.ts` (type 0 id/identifier, 1 relays, 2 author, 3 uint32 kind).
-Mentions resolve them: `nevent` to its id, `naddr` to its coordinate, and
-`krivostr resolve` understands both.
+Mentions resolve them: `nevent` to its id, `naddr` to its coordinate.
+`krivostr resolve` handles both by looking up the local store — an `nevent`
+by id, an `naddr` by `kind:pubkey:d` (see `Store.getEventByAddress`) — and
+reports a miss as "not in the local store" rather than failing.
 
 **NIP-21 `nostr:` URIs open in the client.** `parseNostrUri` accepts exactly
 one reference and nothing else; clicks dispatch `mention-open`, and the app
@@ -256,8 +258,10 @@ feed and renders comment threads.
 **NIP-27 mentions** scan `nostr:` URIs out of free text: `npub` to hex
 authors, `note` to ids, `nprofile` through its TLV. `nsec` parses as opaque
 and is never decoded. `krivostr resolve` prints authors, relays, and stored
-events; `nevent`/`naddr` still print a phase-2.3 stub instead of resolving.
-The UI renders mentions as labelled spans (click-through is NIP-21's phase).
+events: `nevent` resolves to its event id and `naddr` to its
+`kind:pubkey:d` coordinate, and both are looked up in the local store
+(`Store.getEventByAddress` answers the address form). The UI renders mentions
+as labelled spans; click-through is NIP-21's job.
 
 **NIP-36 sensitive content** is the `content-warning` tag — presence is the
 signal, the reason advisory, and a reasonless tag still counts. `feed` hides

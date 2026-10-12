@@ -32,6 +32,12 @@ nip09Spec = describe "NIP-09 deletion" $ do
       deletionOf (note "d" "alice" 5 [["e", ""], ["p", "bob"]])
         `shouldBe` Just (Deletion [] [])
 
+  describe "isDeletion" $ do
+    it "is true for a kind 5 and false otherwise" $ do
+      isDeletion (note "d" "alice" 5 [["e", "target-1"]]) `shouldBe` True
+      isDeletion (note "d" "alice" 5 []) `shouldBe` True
+      isDeletion (note "d" "alice" 1 [["e", "target-1"]]) `shouldBe` False
+
   describe "parameterizedAddress" $ do
     it "addresses replaceable events as kind:pubkey:d" $
       parameterizedAddress (note "x" "alice" 30023 [["d", "slug"]])

@@ -166,6 +166,14 @@ nip13Spec = describe "NIP-13 proof of work" $ do
       leadingZeroBitsHex "xyz" `shouldBe` Nothing
       leadingZeroBitsHex "00 11" `shouldBe` Nothing
 
+  describe "difficultyOfHash" $ do
+    it "is the leading zero bits of the hash bytes" $ do
+      difficultyOfHash (BS.pack [0, 0, 0x06, 0xd8]) `shouldBe` 21
+      difficultyOfHash (BS.pack [0xff]) `shouldBe` 0
+
+    it "caps the mining budget at 64 bits" $
+      maxReasonableDifficulty `shouldBe` 64
+
   describe "the nonce tag" $ do
     it "builds a three element tag" $
       nonceTag 776797 20 `shouldBe` ["nonce", "776797", "20"]

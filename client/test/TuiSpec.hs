@@ -8,7 +8,10 @@
 module TuiSpec (tuiSpec) where
 
 import Brick.AttrMap (attrName)
+import Brick.Main (appAttrMap, appChooseCursor, appDraw)
+import Brick.Types (CursorLocation (..), Location (..), cursorLocationName)
 import Brick.Widgets.Edit (editor, getEditContents)
+import Brick.Widgets.List (list)
 import Data.Either (isLeft)
 import Data.Foldable (toList)
 import Data.List (sort)
@@ -52,10 +55,25 @@ import Krivostr.Nip.Nip27 (findMentions)
 import Krivostr.Pool (newPool)
 import Krivostr.Store (closeStore, enqueueOutbox, insertEvent, openMemoryStore)
 import Krivostr.Tui (fillInitial, tuiDefaultKinds)
-import Krivostr.Tui.App (buildUnsigned, lookupEvent, statusText)
+import Krivostr.Tui.App
+  ( KeyPlan (..)
+  , buildUnsigned
+  , chooseCursor
+  , cmdLine
+  , drawHelp
+  , drawUI
+  , isCtrl
+  , isImmediateKey
+  , logPane
+  , lookupEvent
+  , planKey
+  , statusBar
+  , statusText
+  , tuiApp
+  )
 import Krivostr.Tui.Backend
-  (inProcessBackend, tbCount, tbDelRelay, tbFetchOnce, tbFetchThread, tbFlush, tbGet
-  , tbOutbox, tbQuery, tbRelays, tbSearch)
+  (inProcessBackend, tbAddress, tbCount, tbDelRelay, tbFetchOnce, tbFetchThread, tbFlush, tbGet
+  , tbOutbox, tbQuery, tbRelays, tbSearch, tbSetIngest)
 import Krivostr.Tui.Dispatch (Command (..), commandHelp, parseCommand)
 import Krivostr.Tui.Sanitize (stripAnsiAndC0)
 import Krivostr.Tui.State
@@ -159,6 +177,32 @@ tuiSpec = describe "TUI" $ do
     it "keeps unknown and empty input as values, never failures" $ do
       parseCommand "bogus" `shouldBe` CmdUnknown "bogus"
       parseCommand "" `shouldBe` CmdUnknown ""
+
+    it "keeps unknown and empty input as values, never failures" $ do
+      parseCommand "bogus" `shouldBe` CmdUnknown "bogus"
+      parseCommand "" `shouldBe` CmdUnknown ""
+
+    it "parses the CLI-parity commands with their arguments" $ do
+      parseCommand "search hello world" `shouldBe` CmdSearch "hello world"
+      parseCommand "count" `shouldBe` CmdCount Nothing
+      parseCommand "count 7" `shouldBe` CmdCount (Just "7")
+      parseCommand "resolve nostr:npub1abc" `shouldBe` CmdResolve "nostr:npub1abc"
+      parseCommand "verify alice@example.com" `shouldBe` CmdVerify "alice@example.com" Nothing
+      parseCommand "verify alice@example.com npub1abc"
+        `shouldBe` CmdVerify "alice@example.com" (Just "npub1abc")
+      parseCommand "limit 250" `shouldBe` CmdLimit 250
+      parseCommand "publish post.md My Title" `shouldBe` CmdPublish "post.md" (Just "My Title")
+      parseCommand "publish post.md" `shouldBe` CmdPublish "post.md" Nothing
+      parseCommand "ingest" `shouldBe` CmdIngest Nothing
+      parseCommand "ingest on" `shouldBe` CmdIngest (Just True)
+      parseCommand "ingest off" `shouldBe` CmdIngest (Just False)
+
+    it "keeps malformed CLI-parity commands as unknown values" $ do
+      parseCommand "search" `shouldBe` CmdUnknown "search"
+      parseCommand "resolve" `shouldBe` CmdUnknown "resolve"
+      parseCommand "limit abc" `shouldBe` CmdUnknown "limit abc"
+      parseCommand "ingest maybe" `shouldBe` CmdUnknown "ingest maybe"
+      parseCommand "publish" `shouldBe` CmdUnknown "publish"
 
     it "documents every command it parses" $
       commandHelp `shouldSatisfy` (not . null)
@@ -421,6 +465,83 @@ tuiSpec = describe "TUI" $ do
       named (SCompose (CTDm "abc")) `shouldBe` "compose"
       named SHelp `shouldBe` "help"
 
+  describe "App key routing and drawing" $ do
+    it "chooses the compose cursor only on the compose screen" $ do
+      let cl = CursorLocation (Location (0, 0)) (Just NComposeEdit) True
+      fmap cursorLocationName (chooseCursor st0 [cl]) `shouldBe` Nothing
+      fmap cursorLocationName (chooseCursor (st0 { asScreen = SCompose CTNote }) [cl])
+        `shouldBe` Just (Just NComposeEdit)
+      fmap cursorLocationName (chooseCursor (st0 { asScreen = SCompose CTNote }) [])
+        `shouldBe` Nothing
+
+    it "matches Ctrl-modified characters and the four immediate keys" $ do
+      isCtrl 'g' (V.EvKey (V.KChar 'g') [V.MCtrl]) `shouldBe` True
+      isCtrl 'g' (V.EvKey (V.KChar 'g') []) `shouldBe` False
+      isCtrl 'x' (V.EvKey (V.KChar 'g') [V.MCtrl]) `shouldBe` False
+      isCtrl 'g' (V.EvKey V.KEnter [V.MCtrl]) `shouldBe` False
+      map (\c -> isImmediateKey (V.EvKey (V.KChar c) [])) "aRdm" `shouldBe` [True, True, True, True]
+      isImmediateKey (V.EvKey (V.KChar 'a') [V.MCtrl]) `shouldBe` False
+      isImmediateKey (V.EvKey (V.KChar 'x') []) `shouldBe` False
+      isImmediateKey (V.EvKey V.KEnter []) `shouldBe` False
+
+    it "gives every key to an open command line, running it on Enter" $ do
+      let st = st0 { asCmdLine = Just "q" }
+      planKey st (V.EvKey (V.KChar 'q') []) `shouldBe` PlanForward
+      planKey st (V.EvKey V.KEnter []) `shouldBe` PlanCommand
+
+    it "routes compose keys: send, cancel, promote, edit" $ do
+      let st = st0 { asScreen = SCompose CTNote }
+      planKey st (V.EvKey (V.KChar 'g') [V.MCtrl]) `shouldBe` PlanSendCompose
+      planKey st (V.EvKey V.KEsc []) `shouldBe` PlanForward
+      planKey st (V.EvKey (V.KChar 'E') []) `shouldBe` PlanPromoteEditor
+      planKey st (V.EvKey (V.KChar 'x') []) `shouldBe` PlanToEditor
+      planKey (st { asCompose = editor NComposeEdit Nothing "draft" }) (V.EvKey (V.KChar 'E') [])
+        `shouldBe` PlanToEditor
+
+    it "routes thread keys n and o, and nothing off-thread" $ do
+      let st = st0 { asScreen = SThread "abc" }
+      planKey st (V.EvKey (V.KChar 'n') []) `shouldBe` PlanResolveMentions
+      planKey st (V.EvKey (V.KChar 'o') []) `shouldBe` PlanFetchRelatives
+      planKey st0 (V.EvKey (V.KChar 'n') []) `shouldBe` PlanForward
+
+    it "runs the search on Enter, or opens the selected result" $ do
+      e <- mkEv 1 "hit"
+      let bare = st0 { asScreen = SSearch }
+          withSel = st0 { asScreen = SSearch, asList = list NFeedList (Seq.fromList [e]) 1 }
+      planKey bare (V.EvKey V.KEnter []) `shouldBe` PlanRunSearch
+      planKey withSel (V.EvKey V.KEnter []) `shouldBe` PlanOpenSearchResult
+
+    it "routes an open command line's Enter to the command runner" $ do
+      planKey (st0 { asCmdLine = Just "count" }) (V.EvKey V.KEnter []) `shouldBe` PlanCommand
+      planKey (st0 { asCmdLine = Just "count" }) (V.EvKey (V.KChar 'c') []) `shouldBe` PlanForward
+
+    it "sends immediately on a feed or search key, forwards elsewhere" $ do
+      planKey st0 (V.EvKey (V.KChar 'a') []) `shouldBe` PlanImmediate
+      planKey (st0 { asScreen = SSearch }) (V.EvKey (V.KChar 'R') []) `shouldBe` PlanImmediate
+      planKey st0 (V.EvKey (V.KChar 'j') []) `shouldBe` PlanForward
+      planKey (st0 { asScreen = SRelays }) (V.EvKey (V.KChar 'a') []) `shouldBe` PlanForward
+
+    it "wires the app record to the pure draw and cursor functions" $ do
+      lg <- newLogger Error
+      store <- openMemoryStore lg
+      pool <- newPool lg (const (pure ()))
+      let backend = inProcessBackend lg ":memory:" store pool [] (\_ -> pure ())
+          app = tuiApp backend
+      appDraw app `seq` appAttrMap app st0 `seq` (pure () :: IO ())
+      appChooseCursor app st0 [] `seq` (pure () :: IO ())
+      closeStore store
+
+    it "renders the status bar, command line, and log pane" $ do
+      statusBar st0 `seq` cmdLine st0 `seq` logPane st0 `seq` (pure () :: IO ())
+      cmdLine (st0 { asCmdLine = Just "relays" }) `seq` (pure () :: IO ())
+      logPane (st0 { asShowLog = True, asLog = Seq.fromList [LogEntry Info "line"] }) `seq` (pure () :: IO ())
+
+    it "draws every screen, including help" $ do
+      mapM_ (\s -> drawUI (st0 { asScreen = s }) `seq` (pure () :: IO ()))
+        [ SFeed, SThread "x", SSearch, SDm, SRelays, SLists, SOutbox
+        , SCompose CTNote, SHelp ]
+      drawHelp `seq` (pure () :: IO ())
+
   describe "Backend.tbFetchThread" $ do
     it "fetches threads from the store without touching relays" $ do
       lg <- newLogger Error
@@ -457,6 +578,19 @@ tuiSpec = describe "TUI" $ do
         tbGet backend (T.replicate 64 "0") `shouldReturn` Nothing
         hits <- tbSearch backend "hello" False Nothing Nothing 10
         map evId hits `shouldBe` [evId e1]
+
+    it "resolves a kind:pubkey:d address and toggles ingest" $ do
+      withBackend $ \backend st -> do
+        sk <- generatePrivateKey
+        let art = mkEvAs sk 1 30023 "article body" [["d", "hello"]]
+            addr = "30023:" <> pubKeyHex (derivePublicKey sk) <> ":hello"
+        _ <- insertEvent st art
+        tbAddress backend addr `shouldReturn` Just art
+        tbAddress backend "30023:deadbeef:nope" `shouldReturn` Nothing
+        tbAddress backend "not-an-address" `shouldReturn` Nothing
+        -- Empty pool: (un)subscribing just broadcasts to nobody.
+        tbSetIngest backend True emptyFilter `shouldReturn` ()
+        tbSetIngest backend False emptyFilter `shouldReturn` ()
 
     it "reports empty relays, outbox, and refusal to delete nothing" $ do
       withBackend $ \backend _st -> do
@@ -630,6 +764,52 @@ tuiSpec = describe "TUI" $ do
           merged = step (EvFetched [e2]) opened
       asThread merged `shouldBe` [e1] -- e2 not added because tag is malformed
 
+  describe "State mention jump (worker ordering)" $ do
+    it "keeps the root first when it is also in the fetch" $ do
+      e1 <- mkEv 1 "root"
+      e2 <- mkEvTagged 2 "reply" [["e", evId e1]]
+      let opened = step (key (V.EvKey V.KEnter []))
+                     (step (key (V.EvKey (V.KChar 'g') [])) (step (EvIncoming e1) st0))
+          merged = step (EvFetched [e1, e2]) opened
+      asThread merged `shouldBe` [e1, e2]
+
+    it "loads the referenced thread after a jump, root included" $ do
+      oldRoot <- mkEv 1 "old root"
+      newRoot <- mkEv 2 "new root"
+      reply   <- mkEvTagged 3 "new reply" [["e", evId newRoot]]
+      let onOld = step (key (V.EvKey V.KEnter []))
+                    (step (key (V.EvKey (V.KChar 'g') [])) (step (EvIncoming oldRoot) st0))
+          jumped = step (EvResolvedMention (RTEvent (evId newRoot))) onOld
+          merged = step (EvFetched [newRoot, reply]) jumped
+      asScreen merged `shouldBe` SThread (evId newRoot)
+      asThread merged `shouldBe` [newRoot, reply]
+
+    it "a mention jump replaces the open thread instead of appending" $ do
+      oldRoot <- mkEv 1 "old"
+      newRoot <- mkEv 2 "new"
+      let onOld = step (key (V.EvKey V.KEnter []))
+                    (step (key (V.EvKey (V.KChar 'g') [])) (step (EvIncoming oldRoot) st0))
+          jumped = handleResolvedMention (RTEvent (evId newRoot)) onOld
+      asScreen jumped `shouldBe` SThread (evId newRoot)
+      asThread jumped `shouldBe` []
+
+    it "seeds the thread from the model when the root is already known" $ do
+      e1 <- mkEv 1 "root"
+      let st = handleResolvedMention (RTEvent (evId e1)) (step (EvIncoming e1) st0)
+      asScreen st `shouldBe` SThread (evId e1)
+      asThread st `shouldBe` [e1]
+
+    it "a fetch applied before the jump lands on the stale thread" $ do
+      oldRoot <- mkEv 1 "old"
+      newRoot <- mkEv 2 "new"
+      reply   <- mkEvTagged 3 "new reply" [["e", evId newRoot]]
+      let onOld = step (key (V.EvKey V.KEnter []))
+                    (step (key (V.EvKey (V.KChar 'g') [])) (step (EvIncoming oldRoot) st0))
+          stale = step (EvFetched [newRoot, reply]) onOld
+      -- The bug the worker order avoids: with the old thread open, the new
+      -- thread's events are not attributed to it.
+      asThread stale `shouldBe` [oldRoot]
+
   describe "State.pushEvent deduplication" $ do
     it "dedupes by id in pushEvent" $ do
       e1 <- mkEv 1 "first"
@@ -739,6 +919,7 @@ tuiSpec = describe "TUI" $ do
       asMuted st `shouldBe` Set.empty
       asOutbox st `shouldBe` 0
       asStats st `shouldBe` Nothing
+      asIngest st `shouldBe` False
       asCmdLine st `shouldBe` Nothing
       asLog st `shouldBe` Seq.empty
       asQuit st `shouldBe` False
@@ -912,6 +1093,28 @@ tuiSpec = describe "TUI" $ do
       asScreen st `shouldBe` SHelp
       asCmdLine st `shouldBe` Nothing
 
+    it "opens search with the query already in place" $ do
+      let st = applyCommand (CmdSearch "gm nostr") st0
+      asScreen st `shouldBe` SSearch
+      asSearchQuery st `shouldBe` "gm nostr"
+      asCmdLine st `shouldBe` Nothing
+
+    it "sets the feed limit in the filter" $ do
+      let st = applyCommand (CmdLimit 250) st0
+      fLimit (asFilter st) `shouldBe` Just 250
+      asCmdLine st `shouldBe` Nothing
+
+    it "toggles ingest, honouring an explicit on/off" $ do
+      asIngest (applyCommand (CmdIngest Nothing) st0) `shouldBe` True
+      asIngest (applyCommand (CmdIngest (Just True)) st0) `shouldBe` True
+      asIngest (applyCommand (CmdIngest (Just False)) (st0 { asIngest = True })) `shouldBe` False
+
+    it "closes the command line for the commands the edge runs" $ do
+      asCmdLine (applyCommand (CmdCount Nothing) st0) `shouldBe` Nothing
+      asCmdLine (applyCommand (CmdResolve "x") st0) `shouldBe` Nothing
+      asCmdLine (applyCommand (CmdVerify "a@b.c" Nothing) st0) `shouldBe` Nothing
+      asCmdLine (applyCommand (CmdPublish "f.md" Nothing) st0) `shouldBe` Nothing
+
   describe "Views.Feed muting filter" $ do
     it "filters out events from muted authors (retroactive on EvMuted)" $ do
       e1 <- mkEv 1 "from muted"
@@ -1028,6 +1231,14 @@ tuiSpec = describe "TUI" $ do
     it "handleResolvedMention does nothing for RTOpaque" $ do
       let st = handleResolvedMention (RTOpaque "unknown") st0
       asScreen st `shouldBe` SFeed
+
+    it "handleResolvedMention logs authors and addresses instead of switching" $ do
+      let a = handleResolvedMention (RTAuthor "abc123") st0
+          r = handleResolvedMention (RTAddress "30023:pk:d") st0
+      asScreen a `shouldBe` SFeed
+      map leMsg (toList (asLog a)) `shouldBe` ["author abc123"]
+      asScreen r `shouldBe` SFeed
+      map leMsg (toList (asLog r)) `shouldBe` ["address 30023:pk:d (open with :resolve)"]
 
   describe "Krivostr.Cli.Options pure helpers" $ do
     describe "parseWhen" $ do

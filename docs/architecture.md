@@ -51,7 +51,7 @@ Pure Haskell. No network, no database, no clock — timestamps arrive as
 | `Krivostr.Key` | x-only keys, `nsec`/`npub` NIP-19, `ncryptsec` NIP-49. |
 | `Krivostr.Logging` | `Writer`-based logger for functions that explain themselves. |
 
-Tested with `hspec` (613 examples). `QuickCheck` is a declared dependency but no
+Tested with `hspec` (647 examples). `QuickCheck` is a declared dependency but no
 property uses it yet — every core test is example-based.
 
 ## Client
@@ -75,7 +75,7 @@ JSON API), `aeson` (JSON).
 
 `krivostr serve` runs the bridge, which owns the pool and the store. Every
 other subcommand opens the store directly and exits (except `feed --follow`
-and `watch`, which stream).
+and `watch`, which stream, and `tui`, which runs interactively).
 
 `krivostr serve` binds to the interface specified by `--host` (default
 `127.0.0.1`). The `--help` text cites a `KRIVOSTR_BRIDGE_HOST` variable, but the
