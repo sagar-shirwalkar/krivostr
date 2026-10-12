@@ -166,3 +166,46 @@ nip47Spec = describe "NIP-47 wallet connect" $ do
   describe "kinds" $
     it "uses 13194, 23194, and 23195" $
       (infoEventKind, requestEventKind, responseEventKind) `shouldBe` (13194, 23194, 23195)
+
+  -- Selector and constructor sweep: every field read, every Method variant
+  -- produced and shown, and Enum/Bounded walked, so none of the record
+  -- surface is left unreached by the protocol tests above.
+  describe "record and constructor sweep" $ do
+    it "reads every WalletConn field, comparing and showing it" $ do
+      wcWalletPubkey conn `shouldBe` T.replicate 64 "a"
+      wcRelays conn `shouldBe` ["wss://r1.example", "wss://r2.example"]
+      wcSecret conn `shouldBe` T.replicate 64 "b"
+      wcLud16 conn `shouldBe` Just "me@example.com"
+      conn `shouldBe` WalletConn (T.replicate 64 "a") ["wss://r1.example", "wss://r2.example"] (T.replicate 64 "b") (Just "me@example.com")
+      show conn `shouldSatisfy` (not . null)
+
+    it "walks Method through Enum and Bounded" $ do
+      ([minBound .. maxBound] :: [Method]) `shouldBe` allMethods
+      mapM_ (\m -> show m `shouldSatisfy` (not . null)) allMethods
+      fromEnum MSignMessage `shouldSatisfy` (> fromEnum MGetInfo)
+
+    it "round-trips every method name through methodFromText" $
+      mapM_ (\m -> methodFromText (methodToText m) `shouldBe` Right m) allMethods
+
+    it "reads every Request field and shows it" $ do
+      let r = Request MPayInvoice (object ["invoice" .= ("lnbc1" :: Text)])
+      reqMethod r `shouldBe` MPayInvoice
+      show r `shouldSatisfy` (not . null)
+      parseRequest (encodeRequest r) `shouldBe` Right r
+
+    it "reads every WalletError field and shows it" $ do
+      let e = WalletError "PAYMENT_FAILED" "nope"
+      weCode e `shouldBe` "PAYMENT_FAILED"
+      weMessage e `shouldBe` "nope"
+      show e `shouldSatisfy` (not . null)
+
+    it "reads every Response field, shows it, and round-trips it" $ do
+      let ok = Response MGetBalance (Just (object ["balance" .= (10000 :: Int)])) Nothing
+          err = Response MPayInvoice Nothing (Just (WalletError "PAYMENT_FAILED" "nope"))
+      resType ok `shouldBe` MGetBalance
+      resResult ok `shouldBe` Just (object ["balance" .= (10000 :: Int)])
+      resError ok `shouldBe` Nothing
+      resError err `shouldBe` Just (WalletError "PAYMENT_FAILED" "nope")
+      show ok `shouldSatisfy` (not . null)
+      parseResponse (encodeResponse ok) `shouldBe` Right ok
+      parseResponse (encodeResponse err) `shouldBe` Right err

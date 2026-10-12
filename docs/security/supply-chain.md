@@ -28,7 +28,7 @@ tags in aquasecurity/setup-trivy, to commits carrying a Python
 infostealer. The malware harvested SSH keys, cloud credentials, Docker
 configuration files, and cryptocurrency wallets from CI runners.
 
-Any workflow referencing aquasecurity/trivy-action@v0.28 — or any other
+Any workflow referencing `aquasecurity/trivy-action@v0.28` — or any other
 tag — pulled the backdoored commit automatically on the next run. There was
 no warning, no failed checksum, no signal that anything had changed. The
 tag pointed at a different commit than it had the day before.
@@ -46,6 +46,32 @@ maintenance cost.
 Every third-party action used in this repository, with its current pin and
 the date it was last verified. Update the table when a pin changes; it is
 the record of what "current" means.
+
+| Action | Pin | Version | Used in |
+|---|---|---|---|
+| `actions/checkout` | `b4ffde65f46336ab88eb53be808477a3936bae11` | v4.1.1 | all workflows except `dependency-review.yml` |
+| `actions/checkout` | `11d5960a326750d5838078e36cf38b85af677262` | v4.4.0 | `dependency-review.yml` |
+| `actions/setup-node` | `49933ea5288caeca8642d1e84afbd3f7d6820020` | unmarked | `ci.yml`, `ui.yml`, `release.yml` |
+| `actions/cache` | `0057852bfaa89a56745cba8c7296529d2fc39830` | unmarked | `ci.yml`, `release.yml` |
+| `actions/upload-artifact` | `ea165f8d65b6e75b540449e92b4886f43607fa02` | unmarked | `ci.yml`, `release.yml` |
+| `actions/download-artifact` | `d3f86a106a0bac45b974a628896c90dbdf5c8093` | unmarked | `release.yml` |
+| `actions/dependency-review-action` | `a1d282b36b6f3519aa1f3fc636f609c47dddb294` | v5.0.0 | `dependency-review.yml` |
+| `actions/attest-build-provenance` | `4d101475d8b20a2381f78447822ac1eab6504dd8` | v4 | `release.yml` |
+| `sigstore/cosign-installer` | `6f9f17788090df1f26f669e9d70d6ae9567deba6` | v4.1.2 | `release.yml` |
+| `github/codeql-action/init` | `1190a975f95ce23525efb6a3fc21ea29567c1b52` | v3 | `codeql.yml` |
+| `github/codeql-action/analyze` | `1190a975f95ce23525efb6a3fc21ea29567c1b52` | v3 | `codeql.yml` |
+| `github/codeql-action/upload-sarif` | `1190a975f95ce23525efb6a3fc21ea29567c1b52` | v3 | `codeql.yml` |
+| `google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml` | `375a0e8ebdc98e99b02ac4338a724f5750f21213` | unmarked | `osv-scanner-pr.yml` |
+| `google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml` | `375a0e8ebdc98e99b02ac4338a724f5750f21213` | unmarked | `osv-scanner-scheduled.yml` |
+| `ossf/scorecard-action` | `2d1146689b8cda280b9bc96326124645441f03bc` | unmarked | `scorecard.yml` |
+
+Two things to notice. `dependency-review.yml` pins a newer `checkout`
+(v4.4.0) than everything else (v4.1.1) — harmless, but the odd one out when
+the pins next move together. And several pins carry no trailing version
+comment, against the policy above — `setup-node`, `cache`, both artifact
+actions, both OSV reuses, and `scorecard`. The SHAs are what the runners
+resolve; the missing comments are what a human cannot read. Next touch of
+those files should add them.
 
 ---
 
@@ -69,72 +95,19 @@ tagobj=$(gh api repos/actions/checkout/git/refs/tags/v4.1.1 --jq '.object.sha')
 gh api "repos/actions/checkout/git/tags/${tagobj}" --jq '.object.sha'
 ```
 
-To refresh the whole inventory at once:
+To refresh the whole inventory at once, run
+[`scripts/resolve-action-pins.sh`](../../scripts/resolve-action-pins.sh),
+which resolves each action's tag to its commit SHA via `gh api`:
 
 ```bash
-#!/usr/bin/env bash
-# Resolve a GitHub Actions version tag to the full-length commit SHA that
-# `uses:` requires.
-#
-# Why `gh api` and not `git ls-remote`:
-#
-#   `git ls-remote --tags <url> refs/tags/<ref>` returns two lines for an
-#   annotated tag (the tag object, then its peeled commit) and one line for
-#   a lightweight tag. `tail -1` picks the right one in both cases, but the
-#   correctness depends on an output ordering that git does not document as
-#   a guarantee. A silent change there would hand you a tag-object SHA with
-#   no error, and GitHub Actions will happily accept it — which is the worst
-#   kind of wrong.
-#
-#   `gh api repos/<owner>/<repo>/commits/<ref>` dereferences annotated tags
-#   server-side and always returns a commit. One code path, one failure mode.
-#
-# Requires `gh` to be authenticated. If it is not, the `git ls-remote` form
-# is a fine fallback; see the note at the bottom.
-set -euo pipefail
-
-resolve() {
-  local repo="$1" ref="$2" sha
-  if ! sha=$(gh api "repos/${repo}/commits/${ref}" --jq '.sha' 2>/dev/null); then
-    printf '%-40s %s\n' "$repo" "FAILED to resolve ${ref}" >&2
-    return 1
-  fi
-  printf '%-40s %s  # %s\n' "$repo" "$sha" "$ref"
-}
-
-# Every third-party action used by this repository. Update this list when an
-# action is added or a version is bumped; the output is what goes into the
-# workflow files and into the inventory table in
-# docs/security/supply-chain.md.
-actions=(
-  "actions/checkout                    v4.1.1"
-  "actions/setup-node                  v4"
-  "actions/cache                       v4"
-  "actions/upload-artifact             v4"
-  "actions/download-artifact           v4"
-  "docker/setup-buildx-action          v3"
-  "docker/build-push-action            v6"
-  "github/codeql-action                v3"
-  "google/osv-scanner-action           v2.3.1"
-  "ossf/scorecard-action               v2.4.4"
-  "zaproxy/action-baseline             v0.14.0"
-  "gitleaks/gitleaks-action            v2"
-)
-
-failed=0
-for entry in "${actions[@]}"; do
-  # Split on the run of spaces between repo and ref.
-  repo="${entry%% *}"
-  ref="${entry##* }"
-  resolve "$repo" "$ref" || failed=$((failed + 1))
-done
-
-if [ "$failed" -gt 0 ]; then
-  echo >&2
-  echo "${failed} action(s) failed to resolve" >&2
-  exit 1
-fi
+scripts/resolve-action-pins.sh
 ```
+
+The script's action list mirrors the inventory table above. An earlier
+version of this document pasted the script here and additionally listed
+`zaproxy/action-baseline` and `gitleaks/gitleaks-action`, neither of which
+any workflow uses — both are gone from the script. If a workflow re-adds
+one, its row returns to the table first, the script second.
 
 ---
 
@@ -183,11 +156,14 @@ yesterday, which is all a supply chain compromise needs to be.
 
 ## What is not pinned
 
-1. **Docker base images.** `haskell:9.10.3-slim-bookworm` is a mutable tag.
-Pinning it to a digest would be more correct and is a change worth making;
-it is not currently done because the digest changes with every base image
-security update and the pin would need to be refreshed constantly. The
-tradeoff is explicit: base image drift is accepted, action drift is not.
+1. **Docker base images — mostly pinned.** [`docker/Dockerfile`](../../docker/Dockerfile)
+pins every stage by digest: `haskell:9.10.3-slim-bookworm@sha256:…`,
+`node:22-alpine@sha256:…`, and `debian:bookworm-slim@sha256:…`. The remaining
+gap is [`docker/Dockerfile.linux`](../../docker/Dockerfile.linux), which still
+builds from the mutable `haskell:9.10.3-slim-bookworm` tag. Pinning that too
+would be more correct; it is left as a tag because the digest has to be
+refreshed with every base-image security update. The tradeoff is explicit: the
+release-binary builder tracks a moving tag, everything else is pinned.
 2. **Haskell and npm dependencies.** These are resolved through
 `stack.yaml.lock `and `pnpm-lock.yaml,` both of which are committed. The
 lockfiles pin exact versions with cryptographic hashes, which is the
@@ -235,9 +211,9 @@ compromise — say so in the report and it will be handled first.
 
 The krivostr client, bridge, and core library:
 
-- **Key handling.** The local signer's PBKDF2 + AES-GCM wrapping, the
-  non-extractability of the derived `CryptoKey`, the failure modes of
-  NIP-07 and NIP-46 signers.
+- **Key handling.** The local signer's session-only memory lifetime and its
+  risk acknowledgment, the failure modes of NIP-07 and NIP-46 signers, the
+  NIP-49 module (present in core and UI, not wired into the picker).
 - **Cryptographic implementation.** The Schnorr signing and verification
   in `core/`, the bech32 encoding in the UI, the canonical serialisation
   used for event IDs.
@@ -263,10 +239,10 @@ without GitHub:
 
 ```bash
 cosign verify-blob \
-  --bundle krivostr-0.6.2-linux-amd64.tar.gz.bundle \
+  --bundle krivostr-0.7.4-linux-amd64.tar.gz.bundle \
   --certificate-identity-regexp 'https://github.com/sagar-shirwalkar/krivostr/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  krivostr-0.6.2-linux-amd64.tar.gz
+  krivostr-0.7.4-linux-amd64.tar.gz
 ```
 
 A missing or failing attestation means the file did not come from this

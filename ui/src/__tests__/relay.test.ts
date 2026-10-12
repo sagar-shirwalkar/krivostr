@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { connect } from '../nostr/relay';
+import { backoffMs, connect } from '../nostr/relay';
 import { NostrEvent } from '../nostr/event';
 
 /**
@@ -196,18 +196,36 @@ describe('publish and close', () => {
     expect(socket.closed).toBe(true);
   });
 
-  it('reports socket close', () => {
-    const { socket, handle } = connectTo();
-    socket.open();
-    socket.close();
-    expect(handle.state()).toBe('closed');
+  it('redials instead of settling on socket close', () => {
+    vi.useFakeTimers();
+    try {
+      const { handle, states, socket } = connectTo();
+      socket.open();
+      states.length = 0;
+      socket.close();
+      // A drop is not a verdict: the handle stays on the socket and budgets a redial.
+      expect(handle.state()).toBe('connecting');
+      expect(states.at(-1)).toMatch(/^connecting:reconnecting in \d+s/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('reports socket error', () => {
-    const { socket, handle } = connectTo();
-    socket.open();
-    socket.onerror?.(new Event('error'));
-    expect(handle.state()).toBe('error');
+  it('keeps its state on socket error and lets the close decide', () => {
+    vi.useFakeTimers();
+    try {
+      const { handle, states, socket } = connectTo();
+      socket.open();
+      states.length = 0;
+      socket.onerror?.(new Event('error'));
+      // Error is a detail line, never a state: browsers deliver close next,
+      // and one drop must schedule exactly one redial.
+      expect(handle.state()).toBe('connecting');
+      expect(states).toContain('open:socket error');
+      expect(states.at(-1)).toMatch(/^connecting:reconnecting in \d+s/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -245,8 +263,120 @@ describe('count', () => {
   });
 });
 
-describe('onEose', () => {
-  it('routes EOSE sub ids to the handler', () => {
+describe('reconnect', () => {
+  const policy = { maxAttempts: 2, baseMs: 1000, capMs: 8000 };
+  const connectPolicy = () => {
+    const states: string[] = [];
+    const handle = connect(
+      'wss://relay.example',
+      {
+        onEvent: () => undefined,
+        onState: (s, detail) => states.push(detail ? `${s}:${detail}` : s),
+      },
+      policy,
+    );
+    return { handle, states, socket: FakeSocket.instances.at(-1)! };
+  };
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('backoffMs doubles per attempt and caps', () => {
+    expect(backoffMs(1, policy)).toBe(1000);
+    expect(backoffMs(2, policy)).toBe(2000);
+    expect(backoffMs(3, policy)).toBe(4000);
+    expect(backoffMs(10, policy)).toBe(8000);
+  });
+
+  it('redials with backoff after a drop and replays subscriptions', () => {
+    const { handle, states, socket } = connectPolicy();
+    handle.subscribe('a', { kinds: [1] });
+    socket.open();
+    socket.close();
+    expect(handle.state()).toBe('connecting');
+    expect(states.at(-1)).toBe('connecting:reconnecting in 1s (attempt 1/2)');
+    expect(FakeSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(1000);
+    expect(FakeSocket.instances).toHaveLength(2);
+    const redialed = FakeSocket.instances.at(-1)!;
+    redialed.open();
+    expect(handle.state()).toBe('open');
+    // The dead socket held sub 'a'; the redial re-issues it unprompted.
+    expect(redialed.parsed()[0]).toEqual(['REQ', 'a', { kinds: [1] }]);
+  });
+
+  it('gives up after the budget and stays down', () => {
+    const { handle, socket } = connectPolicy();
+    socket.open();
+    socket.close();
+    vi.advanceTimersByTime(1000);
+    const second = FakeSocket.instances.at(-1)!;
+    second.close();
+    vi.advanceTimersByTime(2000);
+    const third = FakeSocket.instances.at(-1)!;
+    third.close();
+    expect(handle.state()).toBe('closed');
+    vi.advanceTimersByTime(60_000);
+    expect(FakeSocket.instances).toHaveLength(3);
+  });
+
+  it('resets the budget on every open', () => {
+    const { handle, socket } = connectPolicy();
+    socket.open();
+    socket.close();
+    vi.advanceTimersByTime(1000);
+    const second = FakeSocket.instances.at(-1)!;
+    second.open();
+    // A later drop gets a full new budget, not the remainder.
+    second.close();
+    vi.advanceTimersByTime(1000);
+    expect(FakeSocket.instances).toHaveLength(3);
+    expect(handle.state()).toBe('connecting');
+  });
+
+  it('never redials after close()', () => {
+    const { handle, socket } = connectPolicy();
+    socket.open();
+    handle.close();
+    expect(handle.state()).toBe('closed');
+    vi.advanceTimersByTime(60_000);
+    expect(FakeSocket.instances).toHaveLength(1);
+  });
+
+  it('reconnect() redials immediately and replays', () => {
+    const { handle, socket } = connectPolicy();
+    handle.subscribe('a', { kinds: [1] });
+    socket.open();
+    socket.close();
+    handle.reconnect();
+    expect(FakeSocket.instances).toHaveLength(2);
+    const redialed = FakeSocket.instances.at(-1)!;
+    redialed.open();
+    expect(handle.state()).toBe('open');
+    expect(redialed.parsed()[0]).toEqual(['REQ', 'a', { kinds: [1] }]);
+  });
+
+  it('reconnect() is a no-op when open or closed', () => {
+    const { handle, socket } = connectPolicy();
+    socket.open();
+    handle.reconnect();
+    expect(FakeSocket.instances).toHaveLength(1);
+    handle.close();
+    handle.reconnect();
+    expect(FakeSocket.instances).toHaveLength(1);
+  });
+
+  it('rejects outstanding counts on drop instead of hanging them', async () => {
+    const { handle, socket } = connectPolicy();
+    socket.open();
+    const p = handle.count({ kinds: [1] });
+    const assertion = expect(p).rejects.toThrow('connection lost');
+    socket.close();
+    await assertion;
+  });
+});
+
+describe('onEose', () => {  it('routes EOSE sub ids to the handler', () => {
     const eosed: string[] = [];
     connect('wss://relay.example', {
       onEvent: () => undefined,

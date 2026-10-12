@@ -70,6 +70,12 @@ nip25Spec = describe "NIP-25 reactions" $ do
       reactionOf (reaction "+" [["e", "target-id"], ["k", "many"]])
         `shouldBe` Just (Reaction "target-id" "" Nothing "+")
 
+  describe "isReaction" $ do
+    it "is true only for a kind 7 with an e tag" $ do
+      isReaction (reaction "+" [["e", "x"]]) `shouldBe` True
+      isReaction (reaction "+" [["p", "alice"]]) `shouldBe` False
+      isReaction target `shouldBe` False
+
   describe "isLike / isDislike" $ do
     it "reads + as a like" $
       isLike (reaction "+" [["e", "x"]]) `shouldBe` True
@@ -113,6 +119,12 @@ nip25Spec = describe "NIP-25 reactions" $ do
     it "rejects other kinds and tagless reposts" $ do
       repostOf target `shouldBe` Nothing
       repostOf (repost 6 "" []) `shouldBe` Nothing
+
+    it "recognises a repost only when it cites an e tag" $ do
+      isRepost (repost 6 "" [["e", "target-id"]]) `shouldBe` True
+      isRepost (repost 16 "" [["e", "art-id"], ["k", "30023"]]) `shouldBe` True
+      isRepost (repost 6 "" []) `shouldBe` False
+      isRepost target `shouldBe` False
 
     it "quotes with q and never with e" $ do
       let q = target {evTags = [["q", "target-id", "wss://r"]]}

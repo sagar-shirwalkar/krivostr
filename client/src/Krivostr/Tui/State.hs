@@ -1,0 +1,382 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+-- | The pure TUI transition: 'TuiEvent' in, 'AppState' out, no IO anywhere.
+-- This module is the hspec target — see @client/test/TuiSpec.hs@. Key handling
+-- lives here too (including the quit request as 'asQuit'), so every key is
+-- tested without a terminal; 'Krivostr.Tui.App' only forwards events and
+-- turns @asQuit@ into 'halt'.
+module Krivostr.Tui.State
+  ( step
+  , stepKey
+  , pushEvent
+  , pushLog
+  , pushLogText
+  , applyCommand
+  , selectedEvent
+  , findEvent
+  , mergeFetched
+  , clearPending
+  , stepCmdKey
+  , stepSearchKey
+  , stepNavKey
+  , popScreen
+  , composeFor
+  , commentFor
+  , revealSelected
+  , yankSelected
+  , stepEnter
+  , cycleScreen
+  , cycleScreenBack
+  , listMentions
+  , handleResolvedMention
+  ) where
+
+import Brick.Widgets.Edit (editor)
+import Brick.Widgets.List
+  (listMoveDown, listMoveToBeginning, listMoveToEnd, listMoveUp, listReplace, listSelectedElement)
+import Data.Foldable (toList)
+import Data.List (nubBy, sortOn)
+import Data.Maybe (maybeToList)
+import Data.Sequence ((<|), (|>))
+import qualified Data.Sequence as Seq
+import qualified Data.Set as Set
+import qualified Data.Text as T
+import Data.Text (Text)
+import qualified Graphics.Vty.Input.Events as V
+import Krivostr.Event (Event, evId, evKind, evPubkey, evTags, evContent, evCreatedAt)
+import Krivostr.Filter (Filter (fLimit))
+import Krivostr.Logging (LogEntry (..), LogLevel (..))
+import qualified Krivostr.Nip.Nip27 as Nip27
+import Krivostr.Nip.Nip27 (findMentions)
+import Krivostr.Tui.Dispatch (Command (..), parseCommand)
+import Krivostr.Tui.Types
+import Krivostr.Tui.Views.Thread (threadReplies)
+
+-- | Total transition. Every constructor is handled; unknown input degrades
+-- to a log line, never a crash.
+step :: TuiEvent -> AppState -> AppState
+step ev st = case ev of
+  EvIncoming e     -> maybeIncrementUnread (pushEvent e st)
+  EvPublishDone eid r -> pushLog (publishEntry eid r) (clearPending eid st)
+  EvAsyncResult k r   -> pushLog (asyncEntry k r) st
+  EvMuted hex      -> pushLogText ("muted " <> hex) (purgeMutedAuthor hex st)
+  EvFetched evs    -> mergeFetched evs st
+  EvTick          -> st
+  EvLog entry     -> pushLog entry st
+  EvVty v         -> stepKey v st
+  EvResolveMentions ms -> st { asMentions = ms }
+  EvResolvedMention rt -> handleResolvedMention rt st
+  EvComposeSent   -> popScreen st
+
+-- | Increment unread counter when a new event arrives and we're not on the feed.
+maybeIncrementUnread :: AppState -> AppState
+maybeIncrementUnread st
+  | asScreen st == SFeed = st
+  | otherwise            = st { asUnread = asUnread st + 1 }
+
+-- | Handle a resolved mention by opening the appropriate screen. The App
+-- edge posts this before its fetch, so the thread is swapped here and the
+-- later 'EvFetched' merges into the new thread; see 'openThread'. Authors
+-- and addresses have no view to open yet, so they are logged in full rather
+-- than silently dropped.
+handleResolvedMention :: ResolveTarget -> AppState -> AppState
+handleResolvedMention rt st = case rt of
+  RTAuthor hex  -> pushLogText ("author " <> hex) st
+  RTEvent eid   -> openThread eid st
+  RTAddress addr -> pushLogText ("address " <> addr <> " (open with :resolve)") st
+  RTOpaque hrp  -> pushLogText (hrp <> " is not a resolvable reference") st
+
+-- | Open the thread rooted at @eid@: the root when the model already holds
+-- it, plus the replies the model has, oldest first. Jumping to a mention
+-- uses this instead of the old thread's contents, and 'mergeFetched' fills
+-- the rest — the root included, since the fetch may carry it.
+openThread :: Text -> AppState -> AppState
+openThread eid st = st
+  { asScreen = SThread eid
+  , asThread = root <> sortOn evCreatedAt (threadReplies eid (toList (asFeed st)))
+  }
+  where
+    root = maybeToList (findEvent eid st)
+
+-- | List mentions in the focused thread event. Pure: extracts mentions from
+-- the focused event's content and posts them to the log pane.
+listMentions :: AppState -> AppState
+listMentions st = case (asScreen st, selectedEvent st) of
+  (SThread _, Just e) ->
+    let ms = findMentions (evContent e)
+    in pushLogText ("mentions: " <> T.intercalate ", " (map Nip27.meRaw ms)) (st { asMentions = ms })
+  _ -> pushLogText "not in a thread" st
+
+-- | A publish settled: drop its pending marker. The log line is written by
+-- the caller ('pushLog' above); this only clears the marker.
+clearPending :: Text -> AppState -> AppState
+clearPending eid st = st { asPending = Set.delete eid (asPending st) }
+
+-- | Insert a muted author into the mute set and retroactively purge all
+-- their events from the feed and open thread. Rebuilds the list widget
+-- with selection re-pointed by event id so the cursor doesn't jump.
+-- Only rebuilds the list widget when on the feed screen (search borrows it;
+-- popScreen re-syncs on Esc).
+purgeMutedAuthor :: Text -> AppState -> AppState
+purgeMutedAuthor hex st =
+  let st' = st { asMuted = Set.insert hex (asMuted st) }
+      feed = Seq.filter (\e -> evPubkey e /= hex) (asFeed st')
+      thread = filter (\e -> evPubkey e /= hex) (asThread st')
+      -- Re-point selection by event id: find the event at the old index,
+      -- then find its new index in the filtered feed.
+      oldSel = fst <$> listSelectedElement (asList st')
+      oldEventId = oldSel >>= \i -> Seq.lookup i (asFeed st') >>= Just . evId
+      newSel = oldEventId >>= \eid -> Seq.findIndexL ((== eid) . evId) feed
+      newList = case asScreen st' of
+        SFeed -> listReplace feed newSel (asList st')
+        _     -> asList st'
+  in st' { asFeed = feed, asThread = thread, asList = newList }
+
+-- | The focused event, if the widget has a selection at all.
+selectedEvent :: AppState -> Maybe Event
+selectedEvent st = snd <$> listSelectedElement (asList st)
+
+-- | Find an event by id in the feed, then the open thread. Pure model
+-- lookup; the store and relays are the worker's job.
+findEvent :: Text -> AppState -> Maybe Event
+findEvent eid st =
+  case filter ((== eid) . evId) (toList (asFeed st) <> asThread st) of
+    (e : _) -> Just e
+    []      -> Nothing
+
+-- | Merge fetched events into the feed and, when a thread is open, into it
+-- too. A fetched event belongs to the open thread when it is the root
+-- (@id == rid@) or cites it (@e@ tag contains @rid@) — including the root
+-- matters because a mention jump reaches the thread only through this fetch.
+-- Order is preserved (root first, then replies), so dedupe keeps the first
+-- occurrence.
+mergeFetched :: [Event] -> AppState -> AppState
+mergeFetched evs st =
+  let fed = foldr pushEvent st evs
+  in case asScreen st of
+    SThread rid -> fed { asThread = dedupe (asThread fed <> filter (relevant rid) evs) }
+    _           -> fed
+  where
+    relevant r e = evId e == r || cites r e
+    cites r e = any isReply (evTags e)
+      where
+        isReply (t : rest) = t == "e" && r `elem` rest
+        isReply []         = False
+    dedupe = nubBy (\a b -> evId a == evId b)
+
+-- | Prepend an event to the feed unless its id is already there or its
+-- author is muted; cap at 'feedCap' newest. Newest-first is the invariant
+-- the views render, so the prepend goes left and the cap drops the right
+-- ('Seq.take' keeps the left). The widget follows the model (selection
+-- preserved by 'listReplace').
+pushEvent :: Event -> AppState -> AppState
+pushEvent e st
+  | any ((== evId e) . evId) (toList (asFeed st)) = st
+  | Set.member (evPubkey e) (asMuted st)          = st
+  | otherwise =
+      let feed = Seq.take feedCap (e <| asFeed st)
+          sel = fst <$> listSelectedElement (asList st)
+      in st { asFeed = feed, asList = listReplace feed sel (asList st) }
+
+-- | Append a log entry, keeping the newest 'logCap'. The pane is a
+-- diagnostic tail: old entries leave from the left.
+pushLog :: LogEntry -> AppState -> AppState
+pushLog e st = st { asLog = Seq.drop (max 0 (Seq.length appended - logCap)) appended }
+  where
+    appended = asLog st |> e
+
+-- | Short entries for worker completions. Failures are warnings: the status
+-- bar shows the latest, the log pane keeps the history.
+publishEntry :: Text -> Either String () -> LogEntry
+publishEntry eid (Right ()) = LogEntry Info ("published " <> eid)
+publishEntry eid (Left err) = LogEntry Warn ("publish failed " <> eid <> ": " <> T.pack err)
+
+-- | Short entries for async completions, keyed by the requesting command.
+asyncEntry :: Text -> Either String Text -> LogEntry
+asyncEntry k (Right t) = LogEntry Info (k <> ": " <> t)
+asyncEntry k (Left e)  = LogEntry Warn (k <> " failed: " <> T.pack e)
+
+-- | Log plain text at Info level.
+pushLogText :: Text -> AppState -> AppState
+pushLogText t = pushLog (LogEntry Info t)
+
+-- | Leave command-line mode.
+closeCmd :: AppState -> AppState
+closeCmd st = st { asCmdLine = Nothing }
+
+-- | Route a parsed ':' command. Unknown input is a log line, not an error.
+-- Every command's pure state change lands here; the commands that also need
+-- IO (search, count, resolve, verify, publish, ingest, limit-refresh) are
+-- run by the App edge after this returns, reading the same 'Command'.
+applyCommand :: Command -> AppState -> AppState
+applyCommand cmd st = case cmd of
+  CmdQuit        -> st { asQuit = True, asCmdLine = Nothing }
+  CmdRelays      -> closeCmd (st { asScreen = SRelays })
+  CmdLists       -> closeCmd (st { asScreen = SLists })
+  CmdOutbox      -> closeCmd (st { asScreen = SOutbox })
+  CmdDm          -> closeCmd (st { asScreen = SDm })
+  CmdHelp        -> closeCmd (st { asScreen = SHelp })
+  CmdSearch q    -> closeCmd (st { asScreen = SSearch, asSearchQuery = q })
+  CmdLimit n     -> closeCmd (st { asFilter = (asFilter st) { fLimit = Just n } })
+  CmdIngest m    -> closeCmd (st { asIngest = maybe (not (asIngest st)) id m })
+  CmdCount _     -> closeCmd st
+  CmdResolve _   -> closeCmd st
+  CmdVerify _ _  -> closeCmd st
+  CmdPublish _ _ -> closeCmd st
+  CmdUnknown raw -> closeCmd (pushLogText ("unknown command: " <> raw) st)
+
+-- | Key handling. Three layers, checked in order: an open command line
+-- owns every key; the search screen owns printable input; otherwise the
+-- navigation layer. M0 covered @q@/@:/@~/@Esc@/@Enter@/@Backspace@; M1 adds
+-- @j/k/g/G@ movement, @Enter@ to thread, @/@ to search, and @Esc@ to pop
+-- back to the feed. Anything else is ignored — unbound keys must never do
+-- anything surprising.
+stepKey :: V.Event -> AppState -> AppState
+stepKey v st = case asCmdLine st of
+  Just buf -> stepCmdKey v buf st
+  Nothing
+    | asScreen st == SSearch -> stepSearchKey v st
+    | otherwise -> stepNavKey v st
+
+-- | Command-line editing. @Enter@ dispatches (see 'applyCommand'), @Esc@
+-- cancels, @Backspace@ deletes; a leading colon would nest command lines.
+stepCmdKey :: V.Event -> Text -> AppState -> AppState
+stepCmdKey v buf st = case v of
+  V.EvKey V.KEsc []   -> st { asCmdLine = Nothing }
+  V.EvKey V.KEnter [] -> applyCommand (parseCommand buf) st
+  V.EvKey V.KBS []    -> st { asCmdLine = Just (T.dropEnd 1 buf) }
+  V.EvKey (V.KChar c) []
+    -- A leading colon would nest command lines; colons elsewhere are
+    -- ordinary input (nostr: references, relay URLs).
+    | c == ':' && T.null buf -> st
+    | otherwise -> st { asCmdLine = Just (buf <> T.singleton c) }
+  _ -> st
+
+-- | Search-screen input. @Enter@ is deliberately a no-op here: running the
+-- search hits SQLite, so the App edge runs it and swaps the widget. Pure
+-- step tests cover everything up to that edge.
+stepSearchKey :: V.Event -> AppState -> AppState
+stepSearchKey v st = case v of
+  V.EvKey V.KEsc []   -> popScreen st
+  V.EvKey V.KEnter [] -> st
+  V.EvKey V.KBS []    -> st { asSearchQuery = T.dropEnd 1 (asSearchQuery st) }
+  V.EvKey (V.KChar c) [] -> st { asSearchQuery = asSearchQuery st <> T.singleton c }
+  _ -> st
+
+-- | Navigation and screen moves on feed-like screens. Movement keys only
+-- act where the feed widget is visible (feed, search results); everywhere
+-- else they are ignored rather than moving a hidden widget.
+stepNavKey :: V.Event -> AppState -> AppState
+stepNavKey v st = case v of
+  V.EvKey (V.KChar 'q') [] -> st { asQuit = True }
+  V.EvKey (V.KChar '?') [] -> st { asScreen = SHelp }
+  V.EvKey (V.KChar ':') [] -> st { asCmdLine = Just "" }
+  V.EvKey (V.KChar '~') [] -> st { asShowLog = not (asShowLog st) }
+  V.EvKey (V.KChar 'f') [] -> st { asFollowing = not (asFollowing st) }
+  V.EvKey (V.KChar '/') [] -> st { asScreen = SSearch, asSearchQuery = "" }
+  V.EvKey V.KEsc []        -> if asScreen st == SFeed then st else popScreen st
+  V.EvKey V.KEnter []      -> stepEnter st
+  V.EvKey (V.KChar 'j') [] -> moveWhenVisible listMoveDown st
+  V.EvKey (V.KChar 'k') [] -> moveWhenVisible listMoveUp st
+  V.EvKey (V.KChar 'g') [] -> moveWhenVisible listMoveToBeginning st
+  V.EvKey (V.KChar 'G') [] -> moveWhenVisible listMoveToEnd st
+  V.EvKey (V.KChar 'r') [] -> composeFor selectedEvent CTReply st
+  V.EvKey (V.KChar 'A') [] -> composeFor selectedEvent CTReact st
+  V.EvKey (V.KChar 'Q') [] -> composeFor selectedEvent CTQuote st
+  V.EvKey (V.KChar 'c') [] -> commentFor st
+  V.EvKey (V.KChar 'v') [] -> revealSelected st
+  V.EvKey (V.KChar 'y') [] -> yankSelected st
+  V.EvKey (V.KChar '\t') [] -> cycleScreen st
+  V.EvKey V.KBackTab []     -> cycleScreenBack st
+  V.EvKey (V.KChar 'n') [] -> case asScreen st of
+    SThread _ -> listMentions st
+    _         -> st
+  V.EvKey (V.KChar c) [] | asScreen st == SLists, c >= '1', c <= '3' ->
+    st { asListTab = fromEnum c - fromEnum '1' }
+  _ -> st
+  where
+    nav f s = s { asList = f (asList s) }
+    moveWhenVisible f s = case asScreen s of
+      SFeed   -> nav f s
+      SSearch -> nav f s
+      _       -> s
+
+-- | Cycle screens backwards: Feed → Help → Outbox → DM → Lists → Relays → Feed
+cycleScreenBack :: AppState -> AppState
+cycleScreenBack s = case asScreen s of
+  SFeed   -> s { asScreen = SHelp }
+  SHelp   -> s { asScreen = SOutbox }
+  SOutbox -> s { asScreen = SDm }
+  SDm     -> s { asScreen = SLists }
+  SLists  -> s { asScreen = SRelays }
+  SRelays -> s { asScreen = SFeed, asUnread = 0 }
+  _       -> s
+
+-- | Cycle through screens: Feed → Relays → Lists → DM → Outbox → Help → Feed
+cycleScreen :: AppState -> AppState
+cycleScreen s = case asScreen s of
+  SFeed   -> s { asScreen = SRelays }
+  SRelays -> s { asScreen = SLists }
+  SLists  -> s { asScreen = SDm }
+  SDm     -> s { asScreen = SOutbox }
+  SOutbox -> s { asScreen = SHelp }
+  SHelp   -> s { asScreen = SFeed, asUnread = 0 }
+  _       -> s
+
+-- | Back to the feed, restoring its widget from the model. Search results
+-- are a borrowed widget, not model state — leaving the screen gives them back.
+-- The compose editor resets too: a cancelled compose leaves nothing behind.
+popScreen :: AppState -> AppState
+popScreen st = st
+  { asScreen = SFeed
+  , asSearchQuery = ""
+  , asCompose = editor NComposeEdit Nothing ""
+  , asList = listReplace (asFeed st) Nothing (asList st)
+  , asUnread = 0
+  }
+
+-- | Open compose for the focused event, or log that nothing is focused.
+-- 'A' (react) prefills @+@: most reactions are likes, and deleting one
+-- character beats typing an emoji every time.
+composeFor :: (AppState -> Maybe Event) -> (Text -> ComposeTarget) -> AppState -> AppState
+composeFor sel mk st = case sel st of
+  Nothing -> pushLogText "nothing focused" st
+  Just e  -> st
+    { asScreen = SCompose (mk (evId e))
+    , asCompose = editor NComposeEdit Nothing (prefill (mk (evId e)))
+    }
+  where
+    prefill (CTReact _) = "+"
+    prefill _           = ""
+
+-- | Comment on the focused event unless it is a note (NIP-22 threads
+-- everything but kind 1; that refusal is the spec's, quoted).
+commentFor :: AppState -> AppState
+commentFor st = case selectedEvent st of
+  Nothing -> pushLogText "nothing focused" st
+  Just e
+    | evKind e == 1 -> pushLogText "that is a kind 1 note: use reply, not comment" st
+    | otherwise -> st { asScreen = SCompose (CTComment (evId e)) }
+
+-- | Reveal-once for NIP-36: session-only, never persisted, like the web UI.
+revealSelected :: AppState -> AppState
+revealSelected st = case selectedEvent st of
+  Nothing -> st
+  Just e  -> st { asRevealed = Set.insert (evId e) (asRevealed st) }
+
+-- | Log the focused id in full: terminal selection copies what the eye
+-- cannot reliably retype.
+yankSelected :: AppState -> AppState
+yankSelected st = case selectedEvent st of
+  Nothing -> pushLogText "nothing focused" st
+  Just e  -> pushLogText ("yanked " <> evId e) st
+
+-- | @Enter@: on the feed, open a thread for the focused event (root plus
+-- whatever replies the model already holds — the store fetch for missing
+-- relatives is the App edge's @o@, not this); anywhere else, stay.
+stepEnter :: AppState -> AppState
+stepEnter st = case asScreen st of
+  SFeed -> case selectedEvent st of
+    Nothing -> st
+    Just e  -> openThread (evId e) st
+  _ -> st

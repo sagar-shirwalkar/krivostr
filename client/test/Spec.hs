@@ -12,6 +12,9 @@ import Data.Aeson (eitherDecodeStrict, encode, object, (.=))
 import Data.Aeson.Types (parseMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.List (isSuffixOf)
+import Data.Version (showVersion)
+import qualified Paths_krivostr_client as Paths
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import qualified Database.SQLite3 as SQLite
 import System.IO.Temp (withSystemTempDirectory)
@@ -44,7 +47,7 @@ import Krivostr.Bridge (BridgeState (..), ClientState (..), handleClientMsg, max
 import Krivostr.Cli.Api (filterOf, kindsOf, route, tagParams)
 import Network.HTTP.Types (statusCode)
 import Network.Wai (responseStatus)
-import Krivostr.Pool (BroadcastFailure (..), broadcast, broadcastEvent, newPool, poolRelays, sendTo)
+import Krivostr.Pool (BroadcastFailure (..), broadcast, broadcastEvent, newPool, newPoolWithKey, poolRelays, sendTo, subscribe)
 import qualified Data.Map.Strict as M
 import Krivostr.Nip.Nip01
 import Krivostr.Nip.Nip42
@@ -52,6 +55,9 @@ import Krivostr.Nip.Nip47 (Method (..), WalletConn (..))
 import Krivostr.Relay (parseUrl)
 import Krivostr.Store
 import Krivostr.Wire
+import TuiSpec (tuiSpec)
+import CliSpec (cliSpec)
+import CliIoSpec (cliIoSpec)
 import Data.Aeson (Value, toJSON)
 import Data.Aeson.Types (parseEither)
 
@@ -81,6 +87,20 @@ mkSignedAt sk created kind content =
 
 main :: IO ()
 main = hspec $ do
+  tuiSpec
+  cliSpec
+  cliIoSpec
+  describe "package paths" $ do
+    it "reports the package version" $
+      showVersion Paths.version `shouldBe` "0.7.4.0"
+    it "resolves every install directory" $ do
+      dirs <- sequence
+        [ Paths.getBinDir, Paths.getLibDir, Paths.getDynLibDir, Paths.getDataDir
+        , Paths.getLibexecDir, Paths.getSysconfDir ]
+      dirs `shouldSatisfy` all (not . null)
+    it "joins a data file name onto the data directory" $ do
+      p <- Paths.getDataFileName "sample.json"
+      p `shouldSatisfy` ("sample.json" `isSuffixOf`)
   describe "Store" $ do
     it "round-trips an event" $ do
       lg <- newLogger Error
@@ -118,6 +138,26 @@ main = hspec $ do
       removeOutbox st (evId a)
       outboxCount st `shouldReturn` 1
       map evContent <$> dequeueOutbox st 10 `shouldReturn` ["second"]
+      closeStore st
+
+    it "inserts a batch in one transaction and reports the total" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      let a = mkSigned sk 1 "batch one"
+          b = mkSigned sk 1 "batch two"
+      n <- insertEvents st [a, b, a]
+      n `shouldBe` 2
+      closeStore st
+
+    it "runs an ad-hoc SQL query through the escape hatch" $ do
+      lg <- newLogger Error
+      st <- openMemoryStore lg
+      sk <- generatePrivateKey
+      insertEvent st (mkSigned sk 1 "ad hoc")
+      rows <- queryEventsWith st
+        "SELECT id, pubkey, created_at, kind, tags, content, sig FROM events" []
+      map evContent rows `shouldBe` ["ad hoc"]
       closeStore st
 
     it "remembers, lists, and forgets relays" $ do
@@ -515,6 +555,15 @@ main = hspec $ do
       poolRelays pool `shouldReturn` []
       sendTo pool "wss://x.example" (CClose "s") `shouldReturn` False
       broadcast pool (CClose "s") `shouldReturn` ()
+
+    it "builds a keyed pool and subscribes into the void" $ do
+      lg <- newLogger Error
+      sk <- generatePrivateKey
+      pool <- newPoolWithKey lg (const (pure ())) sk
+      poolRelays pool `shouldReturn` []
+      -- With no relays connected a subscription broadcasts to nobody and
+      -- must not throw.
+      subscribe pool "krivostr-cli" [onlyKinds [1]]
 
   describe "signUnsigned" $ do
     it "floors created_at to whole seconds" $ do

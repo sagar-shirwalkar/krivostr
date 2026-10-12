@@ -15,33 +15,34 @@ scanner is worse than no scanner.
 
 | Workflow | Category | Trigger | Fails the build? |
 |---|---|---|---|
-| [`codeql.yml`][codeql] | SAST, TypeScript | PR, push to main, weekly | Yes |
+| [`codeql.yml`][codeql] | SAST, TypeScript + workflows | PR, push to main, weekly | Yes |
 | [`osv-scanner-pr.yml`][osvpr] | Dependency diff | PR | Yes, on new findings |
 | [`osv-scanner-scheduled.yml`][osvsch] | Full dependency scan | push to main, weekly | No, reports only |
-| [`zap.yml`][zap] | HTTP surface, passive | PR touching `client/` or `docker/` | Configurable |
 | [`scorecard.yml`][scorecard] | Repository posture | push to main, weekly | No, informational |
-| Dependabot alerts | Dependency notification | Continuous | No |
+| Dependabot updates + alerts | Dependency notification | Weekly / continuous | No |
 
-Dependabot **version updates** are deliberately disabled. Only alerts are
-enabled, which means GitHub notifies on a known CVE but does not open
-update PRs. The reasoning is in [`supply-chain.md`](supply-chain.md).
+Dependabot **version updates** run weekly (Monday 05:30 UTC) for GitHub
+Actions, Docker, and npm via [`.github/dependabot.yml`](../../.github/dependabot.yml)
+— there is deliberately no Haskell entry, because Dependabot cannot read
+`stack.yaml.lock`. Alerts notify continuously on known CVEs but do not open
+PRs by themselves. The reasoning is in [`supply-chain.md`](supply-chain.md).
 
 [codeql]: ../../.github/workflows/codeql.yml
 [osvpr]: ../../.github/workflows/osv-scanner-pr.yml
 [osvsch]: ../../.github/workflows/osv-scanner-scheduled.yml
-[zap]: ../../.github/workflows/zap.yml
 [scorecard]: ../../.github/workflows/scorecard.yml
 
 ---
 
 ## CodeQL
 
-**What it checks:** TypeScript and JavaScript source in `ui/`, using the
-`security-extended` query pack. Catches injection sinks, insecure
+**What it checks:** TypeScript and JavaScript source in `ui/` plus the
+workflow files themselves (`javascript-typescript` and `actions` languages),
+using the `security-extended` query pack. Catches injection sinks, insecure
 randomness, path traversal, weak cryptography, and unsafe deserialisation.
 
 **When it fires:** every pull request targeting `main`, every push to
-`main`, and weekly (Monday 03:00 UTC).
+`main`, and weekly (Wednesday 17:38 UTC).
 
 **Why it is in the stack:** it is the only SAST tool in the set that reads
 the source rather than the dependencies, and the UI is the component that
@@ -95,30 +96,6 @@ tab. Review them monthly.
 
 ---
 
-## ZAP baseline
-
-**What it checks:** the HTTP surface of the bridge. Passive only — it
-observes the responses to requests it makes and flags missing security
-headers, information disclosure, and misconfiguration. It does not attack.
-
-**When it fires:** PRs that touch `client/` or `docker/`.
-
-**Why it is in the stack:** it is the only check that looks at what the
-bridge actually sends over HTTP. The Dockerfile's internal checks verify
-the binary; ZAP verifies its behaviour.
-
-**Tuning:** the baseline scan is configured with `fail_action: false` in
-the workflow, so findings are reported but do not gate merges. This is
-deliberate for a first pass. If the finding set stabilises at zero, flip it
-to `true` and let it gate. If it stabilises at a small set of known
-non-issues, add them to `.zap/rules.tsv` and then flip it.
-
-**Known limitation:** ZAP does not understand WebSocket protocols. It
-will scan `/` and the static assets, not `/ws`. Nostr's wire format is out
-of scope for it, and no attempt is made to reach it.
-
----
-
 ## OSSF Scorecard
 
 **What it checks:** repository posture, not code. Eighteen checks covering
@@ -146,17 +123,20 @@ a target.
 
 ---
 
-## Dependabot alerts
+## Dependabot updates and alerts
 
-**What it does:** notifies via the Security tab and email when a dependency
-has a known CVE. Does not open PRs.
+**What it does:** opens weekly version-update PRs for GitHub Actions,
+Docker base images, and npm (`ui/`), and notifies via the Security tab and
+email when any dependency has a known CVE.
 
-**When it fires:** continuously, as GitHub's advisory database is updated.
+**When it fires:** updates weekly (Monday 05:30 UTC); alerts continuously,
+as GitHub's advisory database is updated.
 
-**Coverage:** npm, Docker, GitHub Actions. Not Haskell. See the OSV
+**Coverage:** GitHub Actions, Docker, npm. Not Haskell — Dependabot cannot
+read `stack.yaml.lock`. See the OSV
 section above for what covers the Haskell tree.
 
-**Tuning:** none, but note the volume. If an alert arrives for a dependency
+**Tuning:** none on the alerts, but note the volume. If an alert arrives for a dependency
 that is not actually reachable in krivostr's code path, note that in the
 alert's dismissal reason rather than dismissing silently. The dismissal
 reasons are visible to anyone reading the Security tab and are the audit
@@ -174,7 +154,8 @@ maintained, integrates with GitHub Actions, and produces findings worth
 acting on. The type system catches whole classes of bugs that SAST tools
 target in other languages, and the remaining risk is logic and resource
 management, which no scanner reads well. The compensating controls are
-`-Wall`, `-Werror` in CI, and review.
+`-Wall` (warnings are reviewed, not fatal — there is no `-Werror` in the
+build) and human review.
 
 **Container image CVE scanning.** The Linux release pipeline builds
 `docker/Dockerfile.linux`, but no workflow scans the resulting image for
@@ -184,9 +165,9 @@ Debian's security process. Adding Trivy is a one-file change if the gap
 matters; it is currently judged not worth the runner cost.
 
 **Runtime behaviour.** No workflow runs the client or the bridge under
-adversarial conditions. ZAP observes the HTTP surface passively; nothing
-sends malformed Nostr events, malformed WebSocket frames, or oversized
-payloads.
+adversarial conditions. Nothing sends malformed Nostr events, malformed
+WebSocket frames, or oversized payloads, and nothing observes the HTTP
+surface the bridge actually serves.
 
 **Cryptographic correctness.** No workflow verifies that the Schnorr
 implementation is correct. It is covered by unit tests against known
@@ -212,4 +193,4 @@ Three questions before adding one, in order:
    [`supply-chain.md`](supply-chain.md).
 
 The set above is at the point where each tool covers a distinct surface and
-none is redundant. Adding a seventh requires retiring one of the first six.
+none is redundant. Adding a sixth requires retiring one of the first five.

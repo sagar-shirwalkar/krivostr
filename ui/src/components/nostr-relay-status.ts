@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { RelayHandle, RelayState, connect } from '../nostr/relay';
-import { connectBridge, chooseTransport } from '../nostr/bridge';
+import { connectBridge, chooseTransport, BRIDGE_URL } from '../nostr/bridge';
 import { DEFAULT_RELAYS, outboxFor, parseRelayList, RelayHint } from '../nostr/nip65';
 import { FilterSpec, compile } from '../nostr/filter';
 import { NostrEvent } from '../nostr/event';
@@ -48,6 +48,14 @@ export class NostrRelayStatus extends LitElement {
     .bad  { background: var(--coral); }
     .relay { color: var(--text-dim); font-size: var(--step--1); font-family: var(--font-mono); }
     .hint { color: var(--mute); font-size: var(--step--1); }
+    .warn { color: var(--amber); font-size: var(--step--1); font-family: var(--font-mono); }
+    .warn button {
+      background: transparent; border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--amber);
+      font-family: var(--font-mono); font-size: var(--step--1);
+      padding: 0 var(--s-2); margin: 0 var(--s-1); cursor: pointer;
+    }
+    .warn button:hover { border-color: var(--amber); }
     .relay button {
       background: transparent; border: none; color: var(--mute);
       font-family: var(--font-mono); cursor: pointer; padding: 0 0 0 var(--s-1);
@@ -127,7 +135,10 @@ export class NostrRelayStatus extends LitElement {
     handle.subscribe('global', FEED_FILTER);
     handle.subscribe('user-relay-list', { kinds: [10002], limit: 1 });
     if (this.lastMutePubkey) {
-      handle.subscribe('own-mute-list', { kinds: [10002], authors: [this.lastMutePubkey], limit: 1 });
+      // Mute lists are NIP-51 kind 10000 — not 10002 (relay lists). A wrong
+      // kind here subscribes a second relay-list feed and muting silently
+      // never receives anything.
+      handle.subscribe('own-mute-list', { kinds: [10000], authors: [this.lastMutePubkey], limit: 1 });
     }
   }
 
@@ -168,7 +179,7 @@ export class NostrRelayStatus extends LitElement {
   subscribeOwn(pubkey: string): void {
     this.lastMutePubkey = pubkey;
     for (const slot of this.slots) {
-      slot.handle.subscribe('own-mute-list', { kinds: [10002], authors: [pubkey], limit: 1 });
+      slot.handle.subscribe('own-mute-list', { kinds: [10000], authors: [pubkey], limit: 1 });
     }
   }
 
@@ -380,6 +391,9 @@ export class NostrRelayStatus extends LitElement {
     this.slots = this.slots.map((slot) =>
       slot.url === url ? { ...slot, state: s } : slot,
     );
+    // Once the bridge has opened, any return to connecting means a drop, not
+    // startup — which is what lets the unreachable warning tell the two apart.
+    if (url === 'bridge' && s === 'open') this.bridgeOpened = true;
   }
 
   override disconnectedCallback(): void {
@@ -393,12 +407,45 @@ export class NostrRelayStatus extends LitElement {
     return 'bad';
   }
 
+  /**
+   * The bridge slot failed (closed or errored) while the page expects it.
+   * The dot already turns red; the hint line next to it names the two escape
+   * hatches, so a dead bridge teaches instead of just looking broken. Only
+   * ever renders on failure — production UX is untouched.
+   */
+  private bridgeOpened = false;
+
+  private bridgeDown(): boolean {
+    if (this.transport !== 'bridge') return false;
+    const slot = this.slots.find((s) => s.url === 'bridge');
+    if (slot === undefined) return false;
+    // Backoff reconnects report connecting, so state alone cannot tell
+    // startup (silent) from a drop (warn): a drop is connecting-or-worse
+    // after the slot has opened at least once.
+    if (slot.state === 'closed' || slot.state === 'error') return true;
+    return slot.state === 'connecting' && this.bridgeOpened;
+  }
+
+  /**
+   * Manual redial for a dead bridge slot: resets the backoff budget and dials
+   * now, for the bridge that restarted faster than the backoff — or finished
+   * starting after the budget ran out. Bound to the retry button in the
+   * unreachable warning; a no-op unless the slot actually dropped.
+   */
+  private retryBridge(): void {
+    const slot = this.slots.find((s) => s.url === 'bridge');
+    slot?.handle.reconnect();
+  }
+
   override render() {
     const removable = (url: string): boolean =>
       this.transport === 'relay' && url !== 'bridge' && this.slots.length > 1;
     return html`
       ${this.transport === 'bridge'
         ? html`<span class="hint">transport: bridge</span>`
+        : ''}
+      ${this.bridgeDown()
+        ? html`<span class="warn">bridge unreachable at ${BRIDGE_URL} — <button @click=${() => this.retryBridge()}>retry</button> · if running pnpm dev, set VITE_BRIDGE_URL=ws://localhost:8081/ws, or use ?transport=relay</span>`
         : ''}
       ${this.slots.map(
         (s) => html`

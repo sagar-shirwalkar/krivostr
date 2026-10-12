@@ -11,7 +11,7 @@ that also exists in the repo is a copy that goes stale.
 
 ```bash
 stack build --fast     # build
- stack test             # 636 examples: 551 core, 85 client
+ stack test             # 1093 examples: 647 core, 446 client
 stack ghci krivostr-core   # REPL against the pure layer
 ```
 
@@ -26,8 +26,8 @@ cd ui
 pnpm install --frozen-lockfile
 pnpm dev              # Vite dev server
 pnpm typecheck        # tsc --noEmit
-pnpm test             # 292 unit tests (jsdom)
-pnpm test:browser     # 25 browser tests (real Chromium)
+pnpm test             # 310 unit tests (jsdom)
+pnpm test:browser     # 29 browser tests (real Chromium)
 pnpm coverage         # v8, thresholds at 80
 ```
 
@@ -44,6 +44,8 @@ On CI you also need `--with-deps`; `make test-ui` handles the local case.
 
 Running `pnpm dev` needs `VITE_BRIDGE_URL` pointing at a running bridge, or
 `?transport=bridge` on the URL — the Vite dev server does not proxy `/ws`.
+(Localhost pages default to bridge transport when the variable is unset, so
+pointing the URL at the bridge is usually enough.)
 
 ## Make targets
 
@@ -53,11 +55,25 @@ Running `pnpm dev` needs `VITE_BRIDGE_URL` pointing at a running bridge, or
 | `make test` | `test-backend` + `test-ui` (unit **and** browser). |
 | `make coverage` | Backend report plus the UI v8 report. |
 | `make linux-binary` | Release binary via Docker — needs Docker. |
-| `make verify-version TAG=v0.6.2` | Fails if the tag disagrees with `client/package.yaml`. |
+| `make verify-version TAG=v0.7.4` | Fails if the tag disagrees with `client/package.yaml`. |
 | `make docker` / `make docker-down` | Image build, compose teardown. |
 | `make clean` | Build trees, `dist`, `ui/dist`, coverage output. |
 
 See the [Makefile](../Makefile) for the exact recipes.
+
+## Sharp edges
+
+- **Fresh clone, browser tests red.** `pnpm install` fetches the Playwright
+  driver, not Chromium. Run `pnpm exec playwright install chromium` (or just
+  `make test-ui`, which does it) before reading the failure as real.
+- **Coverage is local-only.** CI runs no coverage job; the `.hpc-threshold`
+  ratchet and the v8 thresholds gate your machine and review discipline, not
+  the merge queue.
+- **Docker is CI territory.** `make linux-binary` produces a release artifact;
+  validate Docker and release changes through GitHub Actions, never `docker
+  run` on your workstation.
+- **`.cabal` files are generated.** Edit `package.yaml` and let hpack
+  regenerate; a hand-edit vanishes on the next build without warning.
 
 ## Coverage
 
@@ -67,10 +83,11 @@ The two sides behave differently, and the difference is worth understanding.
 across the board and passes.
 
 **Backend coverage is a ratchet.** `.hpc-threshold` pins the measured total
-— currently **54%** (794 of 1447) — and `scripts/check-coverage.sh` fails
-the build when coverage drops below it. The threshold is a floor, not a
-goal: when new tests raise the measured number, raise the pin in the same
-change. Never lower it to make the build green.
+(`min: 70`) and `scripts/check-coverage.sh` fails the build when coverage
+drops below it. The threshold is a floor, not a goal: when new tests raise the
+measured number, raise the pin in the same change. Never lower it to make the
+build green. Run `make coverage` for the current figure; the percentage is
+deliberately not copied here so it cannot go stale.
 
 The NIP modules are well covered; the IO layers (Store,
 Pool, Relay, Bridge, Cli) are not. CI does not run coverage at all, so this
@@ -103,8 +120,8 @@ nothing is pushed to a registry, and there is no `CHANGELOG.md` to update.
 
 1. Bump `version` in [`client/package.yaml`](../client/package.yaml). It is the
    single source of truth: a Cabal version carries a fourth component, so
-   `0.6.2.0` in the package file is released as the tag `v0.6.2`.
-2. Check the tag before pushing it: `make verify-version TAG=v0.6.2`.
+   `0.7.4.0` in the package file is released as the tag `v0.7.4`.
+2. Check the tag before pushing it: `make verify-version TAG=v0.7.4`.
 3. Tag and push. The tag is what triggers the release.
 
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on a
@@ -113,9 +130,10 @@ nothing is pushed to a registry, and there is no `CHANGELOG.md` to update.
 [`docker/Dockerfile.linux`](../docker/Dockerfile.linux)), macOS, and Windows.
 
 **The UI deploys separately.** [`.github/workflows/ui.yml`](../.github/workflows/ui.yml)
-publishes `ui/dist` to Cloudflare Pages on every push to `main`. The Pages
-deployment needs `VITE_BRIDGE_URL` set in the Pages environment, or the built
-UI has no bridge to talk to.
+publishes `ui/dist` to Cloudflare Pages on pushes touching `ui/`. The workflow
+builds with `VITE_BRIDGE_URL` taken from the repository's variables
+(`vars.VITE_BRIDGE_URL`) — it must be a repo variable, not a Pages-project
+setting, because the build happens before upload.
 
 ## Docker
 

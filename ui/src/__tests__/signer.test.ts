@@ -125,6 +125,7 @@ describe('publish boundary', () => {
       count: () => Promise.resolve(0),
       publish: (e: unknown) => published.push(e),
       close: () => undefined,
+      reconnect: () => undefined,
     };
     const pk = await signer.pubkey();
     if (pk._tag !== 'Ok') throw new Error();

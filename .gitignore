@@ -39,7 +39,9 @@ docker/.env
 AGENTS.md
 .kilocode/
 
-# Scripts
-scripts/check-coverage.sh
-scripts/hpc-coverage.py
+# Planning
+planning/
+
+# scripts
+scripts/resolve-action-pins.sh
 scripts/resolve-action-shas.sh

@@ -50,6 +50,20 @@ nip22Spec = describe "NIP-22 comments" $ do
       commentOf (comment [["K", "30023"], ["k", "30023"]]) `shouldBe` Nothing
       commentOf (comment [["E", "x"], ["e", "x"]]) `shouldBe` Nothing
 
+  describe "isComment and scope accessors" $ do
+    it "recognises a well-formed comment" $ do
+      let tags = buildCommentTags articleRef Nothing
+          c = comment tags
+      isComment c `shouldBe` True
+      commentRoot c `shouldBe` Just articleRef {refRelay = "wss://r"}
+      commentParent c `shouldBe` Just articleRef {refRelay = "wss://r"}
+
+    it "rejects malformed comments and has no scope for them" $ do
+      isComment (comment []) {evKind = 1} `shouldBe` False
+      isComment (comment [["K", "30023"], ["k", "30023"]]) `shouldBe` False
+      commentRoot (comment []) {evKind = 1} `shouldBe` Nothing
+      commentParent (comment []) {evKind = 1} `shouldBe` Nothing
+
   describe "buildCommentTags" $ do
     it "addresses plain events by id alone" $
       buildCommentTags (ItemRef (Just "note-9") Nothing 42 "carol" "") Nothing

@@ -124,6 +124,7 @@ The UI's `FilterSpec` presents tag filters as a `tags` record and
 | 57 | Lightning zaps | ✅ kind 9734 request + 9735 receipts, LNURL flow, UI zap dialog |
 | 59 | Gift wrap | ✅ NIP-59 kind 1059 (rumor → NIP-44 seal → ephemeral-key wrap) |
 | 17 | Private direct messages | ✅ NIP-17 (rumor → NIP-44 seal → gift wrap, randomized timestamp ±2 days) |
+| 11 | Relay info | ◐ parses `RelayInfo` with `supported_nips`; nothing fetches it on connect |
 | 65 | Relay list metadata | ◐ kind 10002 drives CLI read relays; `writeRelays` unused |
 
 **NIP-04 is a backend feature.** `krivostr dm` encrypts with `encryptNip04` in
@@ -152,8 +153,10 @@ Two security fixes over the reference spec:
 and the UI's hand-rolled [`bech32.ts`](../ui/src/nostr/bech32.ts); the TLV
 pointers are `Krivostr.Nip.Nip19` and matching `nevent`/`naddr` codecs in
 `bech32.ts` (type 0 id/identifier, 1 relays, 2 author, 3 uint32 kind).
-Mentions resolve them: `nevent` to its id, `naddr` to its coordinate, and
-`krivostr resolve` understands both.
+Mentions resolve them: `nevent` to its id, `naddr` to its coordinate.
+`krivostr resolve` handles both by looking up the local store — an `nevent`
+by id, an `naddr` by `kind:pubkey:d` (see `Store.getEventByAddress`) — and
+reports a miss as "not in the local store" rather than failing.
 
 **NIP-21 `nostr:` URIs open in the client.** `parseNostrUri` accepts exactly
 one reference and nothing else; clicks dispatch `mention-open`, and the app
@@ -196,11 +199,15 @@ TypeScript implementations share the same derivation logic.
 challenge. The bridge and CLI implement a single-challenge queue (a new
 challenge invalidates the previous one) to prevent challenge-queue exhaustion.
 
-**NIP-40 expiration** tags let the bridge and UI purge ephemeral ciphertexts
-deterministically, shrinking the window in which a stolen SQLite file is useful.
+**NIP-40 expiration** is parse helpers only: `Krivostr.Nip.Nip40` reads the
+`expiration` tag, but neither the bridge's retention job (a `created_at`
+cutoff) nor the browser cache consults it, so an expired event lingers until
+it ages out. See [storage.md](storage.md).
 
-**NIP-11 relay info** is requested on connect to discover whether a relay
-supports NIP-42, NIP-59, NIP-50, or PoW before sending traffic.
+**NIP-11 relay info** is parsed, never fetched. `Krivostr.Nip.Nip11` decodes
+the document and answers `supportsNip`, but no code requests it on connect —
+neither the pool nor the browser — so no relay's capabilities are discovered
+in practice.
 
 **NIP-05 identifiers** resolve `alice@example.com` through the domain's
 `/.well-known/nostr.json` (always HTTPS, with the `?name=` query some hosts
@@ -251,8 +258,10 @@ feed and renders comment threads.
 **NIP-27 mentions** scan `nostr:` URIs out of free text: `npub` to hex
 authors, `note` to ids, `nprofile` through its TLV. `nsec` parses as opaque
 and is never decoded. `krivostr resolve` prints authors, relays, and stored
-events; the UI renders mentions as labelled spans (click-through is NIP-21's
-phase).
+events: `nevent` resolves to its event id and `naddr` to its
+`kind:pubkey:d` coordinate, and both are looked up in the local store
+(`Store.getEventByAddress` answers the address form). The UI renders mentions
+as labelled spans; click-through is NIP-21's job.
 
 **NIP-36 sensitive content** is the `content-warning` tag — presence is the
 signal, the reason advisory, and a reasonless tag still counts. `feed` hides

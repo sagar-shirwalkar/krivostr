@@ -37,6 +37,12 @@ export interface RelayHandle {
    */
   readonly count: (f: FilterSpec) => Promise<number>;
   readonly close: () => void;
+  /**
+   * Dial now, resetting the reconnect budget. No-op when open or after
+   * `close()` — a closed handle stays closed. The manual counterpart to
+   * automatic redial: UI retry buttons call this.
+   */
+  readonly reconnect: () => void;
   readonly publish: (e: NostrEvent) => void;
 }
 
@@ -46,28 +52,53 @@ interface RelayNotice {
   readonly detail: string;
 }
 
-export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
+/**
+ * Bounded redial policy. Six attempts at 1/2/4/8/16/32s cover a bridge
+ * restart several times over (~63s total) without hammering a relay that is
+ * down for real. The budget resets on every successful open, so a flappy
+ * relay in hour one cannot steal hour five's reconnect.
+ */
+export interface ReconnectPolicy {
+  readonly maxAttempts: number;
+  readonly baseMs: number;
+  readonly capMs: number;
+}
+
+export const DEFAULT_RECONNECT: ReconnectPolicy = { maxAttempts: 6, baseMs: 1000, capMs: 32000 };
+
+/** Backoff for 1-based attempt n: base, doubling, capped. Pure, tested. */
+export const backoffMs = (attempt: number, p: ReconnectPolicy): number =>
+  Math.min(p.capMs, p.baseMs * 2 ** (attempt - 1));
+
+export const connect = (
+  url: string,
+  handlers: RelayHandlers,
+  policy: ReconnectPolicy = DEFAULT_RECONNECT,
+): RelayHandle => {
   let state: RelayState = 'connecting';
-  /** Subscription ids we have sent, so `close()` can revoke them cleanly. */
-  const subs = new Set<string>();
+  /** Subscription id to filter, so a redial replays what the dead socket held. */
+  const subs = new Map<string, FilterSpec>();
   /**
    * Frames composed before the socket opened. A REQ sent into a half-open
    * socket throws, and the first subscription always happens during
    * construction, so this queue is load-bearing rather than defensive.
    */
   const pending: string[] = [];
+  /** Attempts used in the current budget; reset on open and on `reconnect()`. */
+  let attempts = 0;
+  /**
+   * True once a drop has been seen (scheduled redial or manual retry armed).
+   * `onopen` replays subscriptions exactly when this is set, then clears it —
+   * which is what keeps the initial open replay-free and every redial replayed.
+   */
+  let redial = false;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** True once `close()` runs: a closed handle never redials. */
+  let userClosed = false;
 
   const set = (s: RelayState, detail?: string): void => {
     state = s;
     handlers.onState(s, detail);
-  };
-
-  const ws = new WebSocket(url);
-
-  const send = (payload: unknown): void => {
-    const json = JSON.stringify(payload);
-    if (state === 'open') ws.send(json);
-    else pending.push(json);
   };
 
   /**
@@ -80,15 +111,70 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
   const counting = new Map<string, { resolve: (n: number) => void; reject: (e: Error) => void }>();
   let countSeq = 0;
 
-  ws.onopen = () => {
-    set('open');
-    while (pending.length > 0) ws.send(pending.shift()!);
+  const failCounts = (): void => {
+    // A dropped socket settles its waiters now rather than hanging them to
+    // their 10s timeout: the reply they wait for will never arrive on it.
+    for (const [, waiter] of counting) waiter.reject(new Error('connection lost'));
+    counting.clear();
   };
 
-  ws.onclose = () => set('closed');
-  ws.onerror = () => set('error', 'socket error');
+  const scheduleRedial = (): void => {
+    // Browsers fire error and close for one drop; schedule once. A closed
+    // handle and an exhausted budget both stay down.
+    if (userClosed || retryTimer !== undefined) return;
+    attempts += 1;
+    if (attempts > policy.maxAttempts) {
+      set('closed', 'reconnect budget exhausted');
+      return;
+    }
+    const delay = backoffMs(attempts, policy);
+    set('connecting', `reconnecting in ${Math.round(delay / 1000)}s (attempt ${attempts}/${policy.maxAttempts})`);
+    redial = true;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      dial();
+    }, delay);
+  };
 
-  ws.onmessage = (msg: MessageEvent<string>) => {
+  // `ws` is replaced on every redial; everything else (subs, pending,
+  // counting) outlives any one socket, which is what makes the handle
+  // transparent to callers across drops. Assigned by dial(), which always
+  // runs before any use — hence the definite-assignment assertion.
+  let ws!: WebSocket;
+  const dial = (): void => {
+    ws = new WebSocket(url);
+
+    ws.onopen = () => {
+      // A redial replays every tracked subscription before flushing what
+      // queued during the outage. Re-sending an id the relay still holds is
+      // harmless — re-subscribing replaces it — which is what makes the
+      // replay unconditional rather than diffed.
+      const replay = redial;
+      redial = false;
+      attempts = 0;
+      if (replay) {
+        for (const [id, f] of subs) ws.send(JSON.stringify(['REQ', id, toWire(f)]));
+      }
+      set('open');
+      while (pending.length > 0) ws.send(pending.shift()!);
+    };
+
+    ws.onclose = () => {
+      failCounts();
+      scheduleRedial();
+      // Every outcome is settled inside: scheduled (connecting), terminally
+      // exhausted (closed), user-closed (already closed), or already
+      // scheduled by a preceding error. Nothing left to do here by design.
+    };
+    ws.onerror = () => {
+      // The close event follows and carries the decision; the error itself
+      // is only a detail line, never a state, so one drop schedules once.
+      handlers.onState(state, 'socket error');
+      failCounts();
+      scheduleRedial();
+    };
+
+    ws.onmessage = (msg: MessageEvent<string>) => {
     let data: unknown;
     try {
       data = JSON.parse(msg.data);
@@ -144,12 +230,21 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
         break;
     }
   };
+  };
+
+  const send = (payload: unknown): void => {
+    const json = JSON.stringify(payload);
+    if (state === 'open') ws.send(json);
+    else pending.push(json);
+  };
+
+  dial();
 
   return {
     url,
     state: () => state,
     subscribe: (id: string, f: FilterSpec) => {
-      subs.add(id);
+      subs.set(id, f);
       send(['REQ', id, toWire(f)]);
     },
     unsubscribe: (id: string) => {
@@ -165,8 +260,28 @@ export const connect = (url: string, handlers: RelayHandlers): RelayHandle => {
         send(['COUNT', id, toWire(f)]);
       }),
     publish: (e: NostrEvent) => send(['EVENT', e]),
+    reconnect: () => {
+      // Manual redial: only a dropped handle qualifies — one that already
+      // scheduled (or exhausted) a budget. Open handles are already there,
+      // closed handles were closed on purpose, and an initial dial still in
+      // flight must not grow a twin.
+      if (userClosed || state === 'open' || !redial) return;
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+      attempts = 0;
+      set('connecting', 'retrying now');
+      dial();
+    },
     close: () => {
-      for (const id of subs) send(['CLOSE', id]);
+      userClosed = true;
+      redial = false;
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+      for (const id of subs.keys()) send(['CLOSE', id]);
       subs.clear();
       pending.length = 0;
       // Outstanding counts reject now rather than hanging until their

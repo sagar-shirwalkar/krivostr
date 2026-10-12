@@ -3,46 +3,52 @@
 ## Defaults
 
 krivostr connects to three public relays, hard-coded in
-[`client/src/Krivostr/Cli/Nostr.hs:42`](../client/src/Krivostr/Cli/Nostr.hs):
+`client/src/Krivostr/Cli/Nostr.hs` (`defaultRelays`):
 
 - `wss://relay.damus.io`
 - `wss://nos.lol`
 - `wss://relay.primal.net`
 
-**There is no environment variable or config file for this list.** No
-`KRIVOSTR_UPSTREAMS` exists. Changing the set means editing that source list and
-rebuilding. Every relay krivostr opens is one of these three, or a relay named
-in a bunker URL.
-
-The one supported override is a repeatable flag on `serve`:
+Those are the fallback, not the whole story. The effective upstream set
+resolves in three layers — `--upstream` flags, then the `relay_config` table
+in SQLite, then the compiled-in defaults — and flags union with the table
+rather than overriding it:
 
 ```bash
 krivostr serve --upstream wss://relay.example.com --upstream wss://nos.lol
+krivostr relay list      # the effective set serve would connect to
+krivostr relay add wss://my-relay.example     # remembered in SQLite
+krivostr relay remove wss://relay.damus.io    # forgotten (see below)
 ```
 
-Passing at least one `--upstream` replaces the defaults entirely; passing none
-keeps all three. There is no equivalent flag on the other subcommands, and no
-environment variable anywhere.
+A flag adds a relay for one run without disturbing the saved set; when both
+flags and table are empty, the three defaults apply. `relay list` prints the
+effective set, noting on stderr when it falls back to defaults so stdout stays
+a clean URL list.
+
+Two honest details. The bridge's 30-second loop (`retryRelays`) picks up
+`relay add` automatically, but a `relay remove` only forgets — a connection
+already in use stays until it drops or the bridge restarts. For a live disconnect, use
+`DELETE /relays` on the running bridge instead. And a newly connected relay
+(upstream or bunker) is replayed every live client subscription, so it joins
+the feed instead of sitting silent.
 
 ## NIP-11 relay info
 
 The core `Krivostr.Nip.Nip11` module parses the NIP-11 document and answers
-`supportsNip`. Nothing requests it on connect yet, so no relay's capabilities
-are discovered in practice. A relay may:
+`supportsNip`; no CLI subcommand prints it yet, and nothing requests it on
+connect, so no relay's capabilities are discovered in practice. When that
+changes, the capabilities worth asking about are:
 
-- Enforces NIP-42 on reads (required for NIP-59 read privacy)
-- Serves kind 1059 (gift wrap)
-- Honours NIP-50 search
-- Supports PoW (NIP-13)
-
-The core `Krivostr.Nip.Nip11` module parses the document and answers
-`supportsNip`; no CLI subcommand prints it yet.
+- Whether the relay enforces NIP-42 on reads (required for NIP-59 read privacy)
+- Whether it serves kind 1059 (gift wrap)
+- Whether it honours NIP-50 search
+- Whether it supports PoW (NIP-13)
 
 ## NIP-65 relay hints
 
 `Krivostr.Nip.Nip65` parses kind 10002 into `readRelays` and `writeRelays`.
-`krivostr relay-hints <npub>` looks up a pubkey's most recent kind 10002 in the
-local store and prints the read relays. The UI has a matching reader in
+The UI has a matching reader in
 [`ui/src/nostr/nip65.ts`](../ui/src/nostr/nip65.ts).
 
 Three limits worth knowing:
@@ -50,9 +56,11 @@ Three limits worth knowing:
 - **krivostr never publishes kind 10002.** It can read your relay list; it will
   not write one for you.
 - **`writeRelays` is parsed and then ignored.** Publishing does not consult it.
-- **Publishing uses `dmRelays`, or the default set if there are none** — see
-  `Cli.Nostr`. The outbox model this NIP describes is *not* what happens, and
-  the "personal relay" framing below should be read with that in mind.
+- **Sends consult stored read hints first.** `feed --follow`, `dm`, and the
+  other send paths try the newest kind-10002 read relays in the store when no
+  `--relay` flag names relays explicitly, falling back to the compiled-in
+  defaults. There is no `relay-hints` subcommand; the hints are an input to
+  sending, not something printed.
 
 ## NIP-42 authentication
 
@@ -84,8 +92,8 @@ that runs on your machine. It:
 
 - Caches events from upstream relays.
 - Serves them from SQLite on request.
-- Forwards your publishes to your write relays (currently `dmRelays` or the
-  default set).
+- Forwards your publishes to the effective upstream set (flags ∪ table, else
+  defaults), queueing in the SQLite `outbox` what no relay confirms.
 - Enforces a retention policy (30 days for ephemeral, forever for persistent
   kinds).
 - Does not yet require browser clients to authenticate (NIP-42 on the bridge is
@@ -98,14 +106,16 @@ WebSocket connections.
 
 ## Choosing relays
 
-Because the list is a source constant, the honest options are:
+The supported options, in increasing permanence:
 
-1. Pass `--upstream` to `krivostr serve`.
-2. Edit `defaultRelays` in `Cli/Nostr.hs` so the change applies to every
+1. Pass `--upstream` to `krivostr serve` (one run).
+2. `krivostr relay add` to remember a relay, `krivostr relay remove` to forget
+   one (plus a restart, or `DELETE /relays`, to drop a live connection).
+3. Edit `defaultRelays` in `Cli/Nostr.hs` so the change applies to every
    subcommand.
-3. Use a NIP-46 bunker, whose relay *is* configurable per signer — the only
-   place a user can name an arbitrary relay without a flag.
+4. Use a NIP-46 bunker, whose relay *is* configurable per signer — the only
+   place a user can name an arbitrary relay without a flag or a table row.
 
-If relay configuration becomes a real requirement, the change is small and
-belongs in `Cli.Nostr`: read a `KRIVOSTR_UPSTREAMS` value, fall back to the
-defaults, and document it in `.env.example`.
+**There is no environment variable or config file for this list.** No
+`KRIVOSTR_UPSTREAMS` exists; the `relay_config` table is the persistent
+store, and the compiled-in defaults are the fallback.

@@ -38,9 +38,11 @@ FROM haskell:9.10.3-slim-bookworm AS build
 
 # libsecp256k1 is deliberately absent: BIP-340 is implemented in pure
 # Haskell (core/src/Krivostr/Schnorr.hs), so the only C in the build is the
-# sqlite3 amalgamation that sqlite-simple compiles itself.
+# sqlite3 amalgamation that sqlite-simple compiles itself. libtinfo6 is needed
+# because vty-unix links against terminfo.
 RUN apt-get update && apt-get install --no-install-recommends -y \
       ca-certificates \
+      libtinfo6 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -74,12 +76,13 @@ RUN stack build --copy-bins --local-bin-path /out \
 #   libgmp             GHC's Integer arithmetic
 #   libz               pulled in by the compression libraries in the dependency
 #                      set
+#   libtinfo           terminal handling via vty-unix terminfo
 # Anything outside that list means the binary has picked up a dependency the
 # release notes would not mention.
 RUN set -eu; \
     ldd /out/krivostr | tee /tmp/ldd.txt; \
     if grep "=>" /tmp/ldd.txt \
-       | grep -vE "libc\.so|libm\.so|libdl\.so|libpthread\.so|libgmp\.so|libz\.so|ld-linux|ld64"; then \
+       | grep -vE "libc\.so|libm\.so|libdl\.so|libpthread\.so|libgmp\.so|libz\.so|libtinfo\.so|ld-linux|ld64"; then \
       echo "::error::binary depends on libraries this file does not expect"; \
       exit 1; \
     fi; \
@@ -113,3 +116,14 @@ RUN set -eu; \
 
 FROM scratch AS artifact
 COPY --from=build /out/krivostr /krivostr
+
+# Runtime image with explicitly declared dependencies. libtinfo6 is required
+# by vty-unix (via terminfo), and we name it explicitly rather than relying on
+# transitive pulls from bash.
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install --no-install-recommends -y \
+      ca-certificates \
+      libtinfo6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=artifact /krivostr /usr/local/bin/krivostr
+ENTRYPOINT ["krivostr"]

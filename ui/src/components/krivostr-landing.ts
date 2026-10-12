@@ -118,7 +118,7 @@ export class KrivostrLanding extends LitElement {
     return html`
       <header class="nav">
         <div class="mark" @click=${this.enter}>
-          Krivostr<span style="color:var(--mute)">/0.6.2</span>
+          Krivostr<span style="color:var(--mute)">/0.7.4</span>
         </div>
         <nav>
           <a href="https://github.com/nostr-protocol/nostr" target="_blank">protocol</a>
@@ -158,7 +158,7 @@ export class KrivostrLanding extends LitElement {
         <article class="feature">
           <span class="num">03 / bridge</span>
           <h3>More than a client.</h3>
-          <p>Run it headless as a team caching proxy, an algorithmic trading bot, or an offline daemon. The local bridge multiplexes upstream relays, silently answers NIP-42 auth challenges, and queues your NIP-17 gift-wrapped messages when you go off-grid. Query your archive via SQL or the CLI.</p>
+          <p>Run it headless as a team caching proxy, an algorithmic trading bot, or an offline daemon. The local bridge multiplexes upstream relays, silently answers NIP-42 auth challenges, and queues your unconfirmed sends when you go off-grid. Query your archive via SQL or the CLI.</p>
         </article>
       </section>
       <div class="stack-callout">

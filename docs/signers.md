@@ -56,7 +56,7 @@ is checked with `isNip07Available()` before the option is offered.
 | **Pros** | Key never enters the page. Recommended production path. |
 | **Cons** | Requires an extension the user trusts. |
 
-Supported extensions: Alby, nos2x, Nostore, Flamingo.
+Supported extensions: Alby, nos2x, Flamingo.
 
 ## NIP-46 (remote bunker)
 
@@ -88,9 +88,9 @@ interface), and the picker heading nudges main identities toward the bunker.
 ## Generating a key
 
 `krivostr keygen` prints an `nsec`/`npub` pair.
-`Krivostr.Key.generatePrivateKey` reads 32 bytes from **`/dev/urandom`**,
-which is POSIX-only: `keygen` will not work on Windows, and there is no
-fallback entropy source. On a malformed draw it retries.
+`Krivostr.Key.generatePrivateKey` draws 32 bytes from the operating system's
+CSPRNG via the `crypton` library — cross-platform, so `keygen` now works on
+Windows, Linux, and macOS alike. On a malformed draw it retries.
 
 ## Choosing a signer
 
@@ -103,3 +103,20 @@ fallback entropy source. On a malformed draw it retries.
 
 Note what is *not* on this list: "local nsec with a strong passphrase" (legacy
 local signer has no passphrase — use NIP-49 instead).
+
+## Sharp edges
+
+- **A pasted key lives in two places, briefly.** The `nsec` (and any
+  `bunker://` or `nostr+walletconnect://` URI, which carries a secret) passes
+  through an `<input>` and, on the CLI side, through `KRIVOSTR_NSEC` in the
+  environment — shell history and process listings see both. Export per
+  session, prefer a leading-space ` HISTCONTROL=ignorespace` prefix or
+  per-command assignment, and never paste a main-identity key into the hosted
+  demo.
+- **The risk acknowledgment is per tab, not per key.** A new tab asks again
+  even for the same burner key. That friction is deliberate; do not "fix" it
+  with persistence.
+- **`keygen` entropy is cross-platform.** `generatePrivateKey` draws from the
+  OS CSPRNG via `crypton`: works on Windows, Linux, and macOS. Generate keys
+  where the OS gives entropy, move the `nsec` over, and keep it out of chat
+  logs.

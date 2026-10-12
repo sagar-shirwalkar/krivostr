@@ -95,6 +95,9 @@ describe('<krivostr-relay-status>', () => {
   });
 
   it('connects and disconnects a direct relay', async () => {
+    // Direct-relay behavior needs relay transport; the test page itself is
+    // loopback, which now defaults to bridge. Pin it explicitly.
+    history.replaceState(null, '', '?transport=relay');
     const el = document.createElement('krivostr-relay-status') as NostrRelayStatus;
     document.body.appendChild(el);
     await el.updateComplete;
@@ -107,9 +110,11 @@ describe('<krivostr-relay-status>', () => {
     await el.updateComplete;
     expect(el.connectedUrls).not.toContain('wss://added.example');
     el.remove();
+    history.replaceState(null, '', window.location.pathname);
   });
 
   it('refuses to add the same relay twice', async () => {
+    history.replaceState(null, '', '?transport=relay');
     const el = document.createElement('krivostr-relay-status') as NostrRelayStatus;
     document.body.appendChild(el);
     await el.updateComplete;
@@ -118,6 +123,102 @@ describe('<krivostr-relay-status>', () => {
     await el.updateComplete;
     expect(el.connectedUrls.filter((u) => u === 'wss://dup.example')).toHaveLength(1);
     expect(el.shadowRoot!.querySelector('.err')).toBeTruthy();
+    el.remove();
+    history.replaceState(null, '', window.location.pathname);
+  });
+
+  it('subscribes the viewer mute list as kind 10000, not relay lists', async () => {    const sent: string[] = [];
+    const sockets: Array<{ open: () => void }> = [];
+    vi.stubGlobal(
+      'WebSocket',
+      class {
+        onopen: (() => void) | null = null;
+        onclose: (() => void) | null = null;
+        onerror: ((e: unknown) => void) | null = null;
+        onmessage: ((m: { data: string }) => void) | null = null;
+        constructor(public url: string) {
+          sockets.push({
+            open: () => {
+              this.onopen?.();
+            },
+          });
+        }
+        send(data: string) {
+          sent.push(data);
+        }
+        close() {}
+      },
+    );
+    const el = document.createElement('krivostr-relay-status') as NostrRelayStatus;
+    document.body.appendChild(el);
+    await el.updateComplete;
+    for (const s of sockets) s.open();
+    // A kind-10002 subscription here fetches relay lists, which the feed's
+    // mute filter can never use — the mute list is NIP-51 kind 10000.
+    el.subscribeOwn('abc123pubkey');
+    const mute = sent
+      .map((s) => JSON.parse(s) as unknown[])
+      .find((m) => m[0] === 'REQ' && m[1] === 'own-mute-list');
+    expect(mute).toBeDefined();
+    expect(mute![2]).toEqual({ kinds: [10000], authors: ['abc123pubkey'], limit: 1 });
+    el.remove();
+  });
+
+  it('names the escape hatches when the bridge slot fails', async () => {
+    const sockets: Array<{ open: () => void; close: () => void }> = [];
+    const instances: Array<{ sent: string[] }> = [];
+    vi.stubGlobal(
+      'WebSocket',
+      class {
+        onopen: (() => void) | null = null;
+        onclose: (() => void) | null = null;
+        onerror: ((e: unknown) => void) | null = null;
+        onmessage: ((m: { data: string }) => void) | null = null;
+        sent: string[] = [];
+        constructor(public url: string) {
+          sockets.push({
+            open: () => {
+              this.onopen?.();
+            },
+            close: () => {
+              this.onclose?.();
+            },
+          });
+          instances.push(this);
+        }
+        send(data: string) {
+          this.sent.push(data);
+        }
+        close() {}
+      },
+    );
+    // Loopback test page → bridge transport by default; no param needed.
+    const el = document.createElement('krivostr-relay-status') as NostrRelayStatus;
+    document.body.appendChild(el);
+    await el.updateComplete;
+    // Connecting: no warning yet.
+    expect(el.shadowRoot!.querySelector('.warn')).toBeNull();
+    for (const s of sockets) s.open();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.warn')).toBeNull();
+    // Closed: the hint names both escape hatches.
+    for (const s of sockets) s.close();
+    await el.updateComplete;
+    const warn = el.shadowRoot!.querySelector('.warn');
+    expect(warn).toBeTruthy();
+    expect(warn!.textContent).toContain('bridge unreachable at ws://');
+    expect(warn!.textContent).toContain('VITE_BRIDGE_URL=ws://localhost:8081/ws');
+    expect(warn!.textContent).toContain('?transport=relay');
+    // Retry redials now; the warning persists until the redial opens.
+    (warn!.querySelector('button') as HTMLButtonElement).click();
+    await el.updateComplete;
+    expect(instances).toHaveLength(2);
+    expect(el.shadowRoot!.querySelector('.warn')).toBeTruthy();
+    sockets[1].open();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.warn')).toBeNull();
+    const replayed = instances[1].sent.map((s) => JSON.parse(s) as unknown[]);
+    expect(replayed.find((m) => m[0] === 'REQ' && m[1] === 'global')).toBeDefined();
     el.remove();
   });
 });
